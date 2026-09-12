@@ -15,7 +15,8 @@ Objectifs principaux :
 
 Phase actuelle :
 - **Phase 0.5 — Reuse Spike : DONE**
-- **Phase 1 — MVP 0.1 : READY TO START**
+- **Phase 1 / Slice 0 — Contrats providers : DONE** (`src/orchestrator/providers/`)
+- **Phase 1 / Slice 1+ : READY TO START**
 
 Phases complétées :
 - **Phase 0** — Spécification et architecture
@@ -51,8 +52,8 @@ Task → AI Dev Orchestrator (quotas, gouvernance, sélection)
 Construire (dans cet ordre) :
 
 **Slice 0 — Contrats normalisés (pré-requis)**
-1. **ProviderState, ProviderAvailability, QuotaWindow, ResetCredit** — contrats de sérialisation
-2. **Interface ProviderAdapter** — `probe() → ProviderState`
+1. **ProviderState, ProviderAvailability, QuotaWindow, ResetCredit** — contrats de sérialisation ✅ DONE
+2. **Interface ProviderAdapter** — `probe() → ProviderState` ✅ DONE
 3. **ClaudeCodeAdapter** — implémentation Claude stream-json
 4. **CodexAdapter** — implémentation Codex app-server
 5. **Tests avec fixtures spike** — valider contrats avant intégration
