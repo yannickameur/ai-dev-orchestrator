@@ -517,17 +517,53 @@ testable offline, et documenter explicitement ses dépendances.
   `tests/test_mvp_manager.py`
 - Dépend de : Slice 7 (WorkItem/MVP existent déjà)
 
-**Slice 9 — Independent author/reviewer orchestration**
-- Cycle : `author worker != reviewer worker`, préférence
-  `author provider != reviewer provider` (réutilise `WorkerSelector`/
-  `WorkerSelectionPolicy` existants, ne réimplémente rien)
-- Le reviewer produit un verdict structuré (`APPROVED` /
-  `REJECTED` + findings) ; un rejet repart en correction avec un handoff
-  structuré (Slice 7)
-- Cette logique n'appartient jamais à `RalphExecutionEngine` — elle vit
-  dans l'orchestration MVP/quality gates
+**Slice 9 — Independent author/reviewer orchestration — ✅ DONE**
+- `ReviewRecord`/`ReviewFinding`/`ReviewStatus`/`ReviewPolicy`/`ReviewStore`
+  (`src/orchestrator/review.py`, sqlite3 stdlib, store dédié)
+- Invariant absolu vérifié au niveau du contrat lui-même :
+  `reviewer_worker_id != author_worker_id` (`ReviewRecord.__post_init__`
+  lève si violé) ; préférence/obligation `provider` différent **jamais
+  dupliquée** — entièrement déléguée à la `WorkerSelectionPolicy` déjà
+  configurée sur l'instance `WorkerSelector` injectée (Slice 4)
+- L'« author » d'une review = le worker de la **dernière** exécution de
+  développement soumise à revue (pas nécessairement le développeur
+  initial du WorkItem) — dérivé localement à chaque cycle, jamais d'un
+  historique reconstruit
+- Review exécutée via `RalphExecutionEngine` (jamais `claude`/`codex`/
+  `ralph` en direct) ; verdict canonique = events métier
+  `review.approved`/`review.rejected`, jamais interprétation libre de
+  stdout ; `exit_code` reste un fait d'audit uniquement
+- `REJECTED` distingué explicitement d'un défaut d'event fiable (`ERROR`) :
+  `RalphExecutionEngine` collapse les deux en `FAILED`, mais
+  `MVPManager._determine_review_verdict` ré-inspecte les events pour ne
+  jamais confondre un vrai rejet motivé (findings) avec une absence de
+  signal
+- Findings parsés depuis le payload de `review.rejected` selon un contrat
+  explicite : tableau JSON d'objets → findings structurés ; texte brut
+  (pattern validé par le spike) → un finding unique enveloppant le texte
+- Nouveaux statuts `WorkItemStatus.REVIEWING`/`NEEDS_REWORK` (transitions
+  validées : `RUNNING→REVIEWING→{COMPLETED,NEEDS_REWORK,BLOCKED}`,
+  `NEEDS_REWORK→RUNNING`) ; `NEEDS_REWORK` directement éligible pour
+  `MVPManager` (pas de re-vérification de dépendances, déjà établies)
+- Boucle bornée par `ReviewPolicy.max_review_cycles` (défaut 3) ; limite
+  atteinte ⇒ `BLOCKED` avec raison explicite, jamais de retry technique
+  automatique (rework métier motivé par des findings ≠ retry technique
+  aveugle d'une exécution crashée — distinction documentée)
+- Reviewer indisponible (aucun worker éligible indépendant) ⇒ jamais de
+  fallback silencieux vers le même provider/worker ; `ReviewRecord` `ERROR`
+  persisté, WorkItem `BLOCKED` explicite, fail-closed (pas encore
+  `WAITING_RESET`, différé à Slice 11)
+- `COMPLETED` exige désormais : succès dev **et** gate `PASSED` (si
+  configuré) **et** review `APPROVED` (si configuré) — intégration
+  opt-in via `quality_gate_runner`/`review_store` optionnels sur
+  `MVPManager`, comportement Slice 7/8 préservé si absents
+- Handoff enrichi : `decisions` (résumé d'approbation) ou `open_issues`
+  (résumé structuré des findings) selon le verdict — jamais de dépendance
+  au contexte conversationnel du worker précédent
 - Recoupe et précise l'ancienne Phase 3 (« Séparation Developer/Reviewer »
   ci-dessous), dont le contenu reste valable comme contexte
+- Tests : `tests/test_review.py` + intégration dans
+  `tests/test_mvp_manager.py` (100% offline)
 - Dépend de : Slice 7, Slice 8 (verdict de review = une validation parmi
   d'autres)
 
@@ -764,8 +800,12 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
   - **Slice 8 (Project validation commands + quality gates) — DONE** : voir
     `src/orchestrator/validation.py`, intégration minimale/opt-in dans
     `src/orchestrator/mvp_manager.py`, et les tests associés.
-- **Next** : Slice 9 — Independent author/reviewer orchestration — voir
-  « Découpage incrémental » ci-dessus pour la suite complète (Slice 9 à 14).
+  - **Slice 9 (Independent author/reviewer orchestration) — DONE** : voir
+    `src/orchestrator/review.py`, statuts `REVIEWING`/`NEEDS_REWORK` dans
+    `src/orchestrator/project_state.py`, intégration minimale/opt-in dans
+    `src/orchestrator/mvp_manager.py`, et les tests associés.
+- **Next** : Slice 10 — Release gate + activity report — voir
+  « Découpage incrémental » ci-dessus pour la suite complète (Slice 10 à 14).
 
 ## Comment reprendre ce projet à froid
 

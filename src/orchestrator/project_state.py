@@ -63,11 +63,22 @@ def _as_tuple_of_str(values: Iterable[str], *, field_name: str) -> tuple[str, ..
 
 
 class WorkItemStatus(str, Enum):
-    """Minimal WorkItem lifecycle. PLANNED/READY/RUNNING are non-terminal."""
+    """Minimal WorkItem lifecycle.
+
+    PLANNED/READY/RUNNING/REVIEWING/NEEDS_REWORK are non-terminal.
+    REVIEWING and NEEDS_REWORK were added in Slice 9 for independent
+    review + bounded rework: REVIEWING is the transient state while a
+    review execution is in flight; NEEDS_REWORK means a review rejected
+    the work and a bounded number of rework cycles remain — it is
+    directly eligible for a new development execution (no dependency
+    re-check needed, since the WorkItem was already READY once).
+    """
 
     PLANNED = "planned"
     READY = "ready"
     RUNNING = "running"
+    REVIEWING = "reviewing"
+    NEEDS_REWORK = "needs_rework"
     COMPLETED = "completed"
     FAILED = "failed"
     BLOCKED = "blocked"
@@ -89,7 +100,13 @@ class MVPStatus(str, Enum):
 _WORK_ITEM_TRANSITIONS: dict[WorkItemStatus, frozenset[WorkItemStatus]] = {
     WorkItemStatus.PLANNED: frozenset({WorkItemStatus.READY, WorkItemStatus.BLOCKED}),
     WorkItemStatus.READY: frozenset({WorkItemStatus.RUNNING}),
-    WorkItemStatus.RUNNING: frozenset({WorkItemStatus.COMPLETED, WorkItemStatus.FAILED}),
+    WorkItemStatus.RUNNING: frozenset(
+        {WorkItemStatus.COMPLETED, WorkItemStatus.FAILED, WorkItemStatus.REVIEWING}
+    ),
+    WorkItemStatus.REVIEWING: frozenset(
+        {WorkItemStatus.COMPLETED, WorkItemStatus.NEEDS_REWORK, WorkItemStatus.BLOCKED}
+    ),
+    WorkItemStatus.NEEDS_REWORK: frozenset({WorkItemStatus.RUNNING}),
     WorkItemStatus.COMPLETED: frozenset(),
     WorkItemStatus.FAILED: frozenset(),
     WorkItemStatus.BLOCKED: frozenset(),
@@ -557,6 +574,25 @@ class ProjectStateStore:
 
     def mark_work_item_failed(self, work_item_id: str) -> WorkItem:
         return self._transition_work_item(work_item_id, WorkItemStatus.FAILED)
+
+    def mark_work_item_reviewing(self, work_item_id: str) -> WorkItem:
+        return self._transition_work_item(work_item_id, WorkItemStatus.REVIEWING)
+
+    def mark_work_item_needs_rework(self, work_item_id: str) -> WorkItem:
+        return self._transition_work_item(work_item_id, WorkItemStatus.NEEDS_REWORK)
+
+    def mark_work_item_blocked(self, work_item_id: str, *, reason: str) -> WorkItem:
+        """Blocks a WorkItem for a reason other than dependency resolution.
+
+        Unlike ``refresh_readiness``'s own BLOCKED transitions (dependency
+        graph problems, only ever applied from PLANNED), this is the
+        public entry point callers (MVPManager) use for other legitimate
+        reasons that must fail-closed rather than dangle — e.g. no
+        eligible independent reviewer available, or a bounded review/rework
+        loop exhausted without approval.
+        """
+        _require_non_empty_str(reason, field_name="reason")
+        return self._transition_work_item(work_item_id, WorkItemStatus.BLOCKED, reason=reason)
 
     def _transition_work_item(
         self, work_item_id: str, new_status: WorkItemStatus, *, reason: str | None = None
