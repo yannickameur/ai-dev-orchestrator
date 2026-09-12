@@ -83,7 +83,7 @@ Livrables :
   (`USE`/`ADAPT`/`INSPIRE`/`WATCH`/`REJECT`)
 - Matrice **BUILD / REUSE / ADAPT / DEFER** par composant prévu de notre
   architecture (MVP Manager, Task model, Task scheduler, SQLite persistence,
-  Worker registry, Worker adapters, ModelRouter, QuotaManager,
+  Worker registry, Worker adapters, WorkerSelector, QuotaManager,
   recovery/reconciliation, Workspace abstraction, Git/GitHub, PR workflow,
   Reviewer, Quality Gates) — voir `docs/ECOSYSTEM.md`
 - Décision explicite sur `mikeyobrien/ralph-orchestrator` (le concurrent
@@ -106,141 +106,184 @@ section 1).
 
 Sortie de phase : validation explicite de l'utilisateur.
 
-### Phase 0.5 — Reuse Spike
+### Phase 0.5 — Reuse Spike (DONE)
 
-Objectif : appliquer le principe REUSE FIRST jusqu'au bout — ne pas se fier
-uniquement à une lecture de code/documentation (Phase 0) pour trancher
-BUILD vs REUSE/ADAPT, mais **tester réellement** les composants les plus
-proches sur un dépôt jetable avant de décider ce que nous devons construire.
+Objectif : valider par expérimentation réelle les briques REUSE candidate,
+particulièrement Ralph Orchestrator, avant de démarrer Phase 1.
 
-Cette phase est **bloquante** : la Phase 1 ne doit pas commencer tant
-qu'elle n'est pas validée par l'utilisateur.
+Résultats documentés dans `docs/SPIKE_RALPH.md`.
 
-#### Spike Ralph Orchestrator
+#### Conclusions principales
 
-Sur un dépôt jetable (pas `ai-dev-orchestrator`, pas `ha-ai`), tester :
+- **Ralph 2.10.1 : REUSE comme moteur d'exécution/workflow**
+  - Boucle d'exécution complète (itération, timeouts, metrics, handoff)
+  - Workflows pré-construits : `builtin:code-assist` (Planner→Builder→Critic→Finalizer)
+  - Preset de review : `builtin:review` (Reviewer→Analyzer→Closer)
+  - Backends multiples et sélection par hat
+  - **⚠️ Limitation critique** : pas de fallback intelligent si un hat échoue
 
-1. installation et fonctionnement de Ralph ;
-2. détection/utilisation de Claude Code comme backend ;
-3. détection/utilisation de Codex comme backend ;
-4. création d'un plan ;
-5. exécution d'une petite tâche de bout en bout ;
-6. utilisation de deux hats configurés avec deux backends différents ;
-7. une quality gate déclenchée par un test qui échoue ;
-8. persistance et reprise après interruption (kill du process) ;
-9. le workflow reviewer (preset `presets/review.yml` ou `wave-review.yml`) ;
-10. le workflow de revue de PR via `ralph loops publish-review`/`rebase` +
-    `gh` (pour vérifier concrètement s'il existe une intégration `gh`/API
-    GitHub réelle à l'usage, au-delà de ce que la lecture de code a montré) ;
-11. observation des informations d'exécution accessibles : backend, modèle
-    si disponible, session, erreurs, usage/coût, timeout ;
-12. comportement observé lorsqu'un backend échoue (fallback ? erreur
-    bloquante ? aucune action ?).
+- **Télémétrie des quotas : REUSE providers natifs**
+  - Claude Code : `stream-json` retourne directement les fenêtres de quota
+  - Codex : app-server expose `account/rateLimits/read` structuré
+  - Multi-fenêtres validées (5h + 7j pour Claude, 5h + 7j pour Codex)
 
-#### Questions auxquelles le spike doit répondre
+- **AI Dev Orchestrator = couche de gouvernance + sélection**
+  - Ne pas reconstruire l'event loop, les hats, la revue, le TDD cycle
+  - Construire : Provider Adapters légers, QuotaManager multi-fenêtres,
+    Worker Selector (capability > governance > quota > cost),
+    Author ≠ Reviewer enforcement, fallback explicite
 
-Pour chacun de nos composants prévus, classer **après expérimentation**
-(pas seulement après lecture de code) parmi `REUSE` / `ADAPT` / `BUILD` /
-`DEFER` :
+- **Matrice revisitée** (voir `docs/SPIKE_RALPH.md`, tableau final)
+  - Task scheduler → `REUSE` Ralph complet
+  - Planner/Builder/Critic/Finalizer → `REUSE` code-assist
+  - Review workflow → `REUSE` review preset
+  - Quotas Claude/Codex → `REUSE` APIs natives
+  - QuotaWindow multi-fenêtres → `BUILD` (Ralph ne le gère pas)
+  - Author ≠ Reviewer → `BUILD` (gouvernance, Ralph est logique)
+  - Worker selection → `BUILD` (WorkerSelector, ordre strict)
+  - Provider adapters → `BUILD` légers (normalisation)
 
-- Task scheduler
-- Worker registry
-- subprocess manager
-- event loop
-- persistence
-- Workspace abstraction
-- Git worktrees
-- GitHub PR
-- Reviewer
-- Quality Gates
-- Recovery
+Sortie de phase : validée, prête pour Phase 1.
 
-#### Critère de décision
+### Phase 1 — MVP 0.1 : gouvernance + sélection + Ralph integration
 
-Si Ralph couvre correctement une capability à l'usage, nous ne la
-réimplémentons pas sans raison démontrable. Notre développement spécifique
-doit se concentrer prioritairement sur ce qui manque réellement, notamment :
+**Architecture** : AI Dev Orchestrator est une couche mince de gouvernance
+et de sélection au-dessus de Ralph Orchestrator (moteur d'exécution réutilisé).
 
-- gestion des quotas d'abonnements CLI ;
-- plusieurs fenêtres de quotas/reset ;
-- stratégie free/local > subscription > paid ;
-- routage tenant compte des capacités ;
-- garantie de politique d'indépendance auteur/reviewer (pas seulement
-  configurabilité) ;
-- gestion MVP au niveau supérieur, si Ralph ne la couvre pas suffisamment ;
-- orchestration multi-projets, si nécessaire.
+Objectif : mettre en place les briques **différenciantes** — gestion des
+quotas d'abonnement CLI, sélection intelligente des workers, gouvernance
+stricte (Author ≠ Reviewer enforcement) — sans reconstruire l'event loop,
+les hats, la revue ou le cycle TDD que Ralph fournit déjà.
 
-Livrables de cette phase :
-- Un compte-rendu du spike (fichier à définir, ex. `docs/SPIKE_RALPH.md`)
-  documentant, pour chaque question ci-dessus, ce qui a été observé
-  concrètement (pas supposé) et la classification REUSE/ADAPT/BUILD/DEFER
-  qui en résulte
-- Mise à jour de la matrice Build vs Reuse de `docs/ECOSYSTEM.md` si le
-  spike contredit une décision provisoire actuelle
-- Mise à jour de `MVP_SPEC.yaml` uniquement si le spike change réellement le
-  périmètre du MVP 0.1
+**Composants à construire (REUSE FIRST appliqué), ordre imposé** :
 
-Pour cette phase : aucune installation, aucun développement Python du
-projet lui-même — uniquement l'expérimentation sur le dépôt jetable et la
-documentation qui en résulte.
+**1. Contrats normalisés**
+- **ProviderState, ProviderAvailability, QuotaWindow, ResetCredit** (data classes)
+  - Sérialisation JSON claire pour échanges inter-modules
+  - Champs : provider, account, availability, observed_at, quota_windows, reset_credits
+  - Validés par fixtures spike avant implémentation d'adapters
 
-Sortie de phase : validation explicite de l'utilisateur.
+**2. Interface ProviderAdapter**
+- Signature minimale : `probe() → ProviderState`
+- Garanties : jamais d'exécution (pas `codex exec` dans probe) — ne doit
+  **jamais** devenir un moteur d'exécution, l'exécution appartient à
+  RalphExecutionEngine (étape 9)
 
-### Phase 1 — MVP 0.1 : boucle cœur, mono-processus, local
+**3. ClaudeCodeAdapter**
+- Parse stream-json des quotas natifs
+- Retourne ProviderState normalisé
 
-Objectif : une boucle Task → Worker → Exécution → Résultat qui fonctionne de
-bout en bout sur un seul projet, en local, sans GitHub.
+**4. CodexAdapter**
+- Requête app-server `account/rateLimits/read`
+- Retourne ProviderState normalisé
 
-Livrables :
-- Modèles de données `MVP`, `Task`, `Worker`, `Execution`, `QuotaWindow` (SQLite)
-- `Execution` porte une identité complète : `task_id`, `worker_id`, `provider`,
-  `model`, `role`, `started_at`, `finished_at`, `status`, `exit_code`,
-  `session_id` (optionnel), `git_sha_before`/`git_sha_after` (optionnels,
-  renseignés quand un workspace Git est utilisé) — cf. section « Modèle
-  conceptuel » ci-dessous
-- États `Execution.status` : `RUNNING`, `DONE`, `FAILED`, `INTERRUPTED`.
-  États `Task.status` : `PENDING`, `IN_PROGRESS`, `DONE`, `FAILED`,
-  `RECOVERY_REQUIRED`
-- Détection au démarrage du moteur des `Execution` restées `RUNNING`
-  (process précédent tué) → passage en `INTERRUPTED`, tâche associée passée
-  en `RECOVERY_REQUIRED`. Une tâche en `RECOVERY_REQUIRED` ne peut pas être
-  relancée automatiquement : une action explicite de réconciliation est
-  requise (même simple : confirmation manuelle) avant tout nouveau `run`
-- `WorkerRegistry` chargé depuis `config/workers.yaml` ; chaque `Worker`
-  déclare ses `roles` (spécialisations) et ses `capabilities` (types de
-  tâches qu'il sait traiter), en plus de son `priority_tier` / `cost_tier`
-- `ModelRouter`, ordre de sélection strict :
-  1. capacité(s) requise(s) par la tâche (`required_capabilities`)
-  2. rôle/spécialisation requis (`required_role`)
-  3. disponibilité et quota (via `QuotaManager`)
-  4. classe de coût / priorité (`priority_tier`), utilisée en dernier
-     comme départage entre candidats déjà éligibles sur 1-3
-  Un worker gratuit/local mais inadapté à la tâche (capacité ou rôle
-  manquant) n'est jamais sélectionné, même seul disponible.
-- `QuotaManager` construit sur une table `quota_windows` (un provider/modèle
-  peut avoir **plusieurs fenêtres** : `window_type`, `remaining` ou état
-  connu/inconnu, `reset_at`, `observed_at`, `source`). Le MVP 0.1 peut ne
-  peupler qu'une fenêtre par worker en pratique, mais le schéma autorise
-  plusieurs fenêtres sans migration de rupture. États dérivés d'une fenêtre :
-  `AVAILABLE`, `EXHAUSTED`, `WAITING_RESET`, `ERROR`
-- Adaptateurs subprocess : Claude Code, Codex CLI, Ollama/Qwen
-- Capture systématique : stdout, stderr, exit code, durée, worker, modèle
-- Abstraction **Workspace/Repository** : interface (ex. `prepare(task)`,
-  `commit_point()`, `finalize(task, result)`) dont dépend le moteur ; une
-  implémentation `LocalGitWorkspace` (branche locale par tâche, sans réseau)
-  pour le MVP 0.1. Le moteur ne manipule jamais Git directement
-- CLI minimal (`orchestrator mvp ...`, `orchestrator task ...`, y compris une
-  commande de réconciliation pour les tâches `RECOVERY_REQUIRED`)
-- Suite `pytest`
+**5. Fixtures capturées + tests offline**
+- Fixtures issues des captures du spike (stream-json Claude, app-server Codex)
+- Valident les contrats et adapters sans appel réseau réel avant intégration
 
-Détail des critères d'acceptation : voir `MVP_SPEC.yaml`.
+**6. QuotaManager**
+- Consulte les ProviderAdapters pour découvrir l'état de chaque provider
+- Gère la politique de fraîcheur :
+  - Chaque observation porte `observed_at`
+  - TTL / freshness configurable
+  - Re-probe sur provider failure
+  - Claude ne doit jamais être appelée juste pour rafraîchir un quota
+- États par fenêtre : AVAILABLE, EXHAUSTED, WAITING_RESET, UNKNOWN/STALE, ERROR
 
-Explicitement **hors périmètre** pour cette phase : LangGraph, LiteLLM,
-OpenHands, Temporal, PR-Agent, infrastructure distribuée, UI complexe,
-orchestration parallèle, intégration GitHub, exécution multi-projets,
-réconciliation automatique complexe après interruption (une réconciliation
-manuelle/explicite suffit, mais le modèle ne doit pas empêcher d'automatiser
-cela plus tard).
+**7. WorkerSelector**
+- Ordre conceptuel strict :
+  1. Capability match (peut-il faire le job ?)
+  2. Governance rules (politique acceptée ?)
+  3. Availability / Quota (ressource disponible ?)
+  4. Cost tier (free > subscription > paid)
+- Gouvernance :
+  - Author != Reviewer : policy-driven and configurable
+    - Preference : reviewer.provider != author.provider
+    - Fallback allowed per policy : reviewer.model != author.model
+  - Fallback must be explicit and policy-driven (peut être automatique si policy l'autorise)
+- Retourne un `SelectedWorker` ou erreur (WAITING_RESET, NO_AVAILABLE, etc.)
+
+**8. Persistence / execution audit** (SQLite)
+- `MVP` : périmètre, critères d'acceptation
+- `Task` : unité de travail de l'Orchestrateur (pas un Ralph runtime task)
+  - Rôles/capabilities requis, statut (PENDING, IN_PROGRESS, DONE, FAILED, RECOVERY_REQUIRED)
+- `Worker` : `worker_id` (stable, technique), `display_name` (lisible,
+  jamais utilisé pour une décision de gouvernance), provider, `model`,
+  `reasoning_effort` (si applicable), rôles, capabilities, coût tier
+- `Execution` : identité complète (task_id, worker_id, provider, model,
+  reasoning_effort, role, started_at, finished_at, status, exit_code,
+  session_id, git_sha_before/after) + lien vers QuotaWindow à l'exécution —
+  c'est l'audit trail permettant de vérifier post-facto author != reviewer
+- `QuotaWindow` : multiple par provider, window_type, utilisation,
+  reset_at, source (Claude stream-json, Codex API, local, etc.)
+- Réconciliation : détection au démarrage des `Execution` orphelines
+  `RUNNING` → `INTERRUPTED`, tâche en `RECOVERY_REQUIRED` ; réconciliation
+  explicite avant retry (pas de retry aveugle)
+
+**9. RalphExecutionEngine (wrapper)**
+- Classe encapsulant Ralph 2.10.1
+- Lance un processus Ralph avec un preset (code-assist ou review)
+- Mappe les task_id / role / required_capabilities → hats Ralph
+- Collecte les événements Ralph + résultats
+- NE FAIT PAS d'appels Git directs : utilise Workspace
+- Événements custom applicatifs (`work.start`, `review.ready`,
+  `review.approved`, `review.rejected`) — jamais `task.*` (réservé au
+  coordinateur Ralph)
+- Ne se fie pas au `reason` de fin de boucle Ralph seul (peu fiable) ; lit
+  les événements métier explicites publiés par les hats
+- Retourne un `ExecutionResult` exploitable
+- L'exécution appartient exclusivement à ce composant, jamais à ProviderAdapter
+
+**10. MVPManager**
+- Crée/valide/archive les MVPs
+- Stocke les critères d'acceptation
+- Lié aux tâches
+
+**Compléments MVP 0.1** (pas de rang fixe imposé par le spike, à intégrer
+autour des étapes ci-dessus) :
+
+- **OllamaAdapter** (futur, hors 3 adapters MVP 0.1)
+  - Gestion état local / API native
+
+- **Abstraction Workspace (interface découplée du moteur)**
+  - Interface : `prepare(task)`, `finalize(task, result)`
+  - Le moteur Ralph **manipule Git via subprocess**, jamais via AI Dev Orchestrator
+  - Implémentation MVP 0.1 : `LocalGitWorkspace`
+    - Prépare un workspace Git local
+    - Pas de réseau, pas de GitHub
+    - Capture git_sha_before/after pour l'identité d'Execution
+    - Stratégie d'isolation (branche locale, worktree, etc.) configurable
+  - Workspace est une abstraction pour que le moteur ne dépende d'aucune stratégie Git
+    particulière (branche locale, GitHub, worktree, PR) — c'est un détail interchangeable
+
+- **CLI minimal**
+  - `python -m orchestrator mvp create --name <name> --criteria <json>`
+  - `python -m orchestrator task create --mvp <id> --role developer --capability ...`
+  - `python -m orchestrator task run <task_id>`
+  - `python -m orchestrator task list --mvp <id>`
+  - `python -m orchestrator task reconcile <task_id> --action retry`
+  - `python -m orchestrator quota status`
+
+- **Suite de tests**
+  - Unitaires : adapters, WorkerSelector, QuotaManager
+  - Intégrés : orchestration complète task → Ralph → result
+  - Fixtures : faux workers, faux quotas, Ralph mock si nécessaire
+
+**Explicitement hors périmètre Phase 1 — Ralph fournit déjà (REUSE)** :
+- Event loop, runtime task queue
+- Hats/roles, per-hat backend (Claude/Codex)
+- Planner, Builder/TDD, review/rework, Finalizer/completion gates
+- Timeouts, event/history persistence
+- Workflows builtin utiles (`builtin:code-assist`, `builtin:review`)
+- Intégration GitHub (Phase 2, hors Ralph)
+- Rôles spécialisés supplémentaires (Phase 3)
+- Infrastructure distribuée, UI, parallel orchestration
+
+**Prérequis exécution** :
+- Ralph installé localement (`npm install -g @ralph-orchestrator/ralph-cli`)
+- Claude Code CLI disponible et authentifié (abonnement Pro ou Max)
+- Codex CLI disponible et authentifié (ChatGPT Plus)
+- SQLite3 (stdlib Python)
 
 ## Modèle conceptuel (aperçu)
 
@@ -289,7 +332,7 @@ Objectif : imposer qu'un agent ne valide jamais son propre code, et permettre
 `Developer.model != Reviewer.model` (puis `!= Reviewer.provider`).
 
 Livrables :
-- Règle de routage dans `ModelRouter` : exclure du rôle Reviewer tout worker
+- Règle de routage dans `WorkerSelector` : exclure du rôle Reviewer tout worker
   dont le `model` (puis `provider`) apparaît déjà dans une `Execution` avec
   le rôle Developer sur la même tâche — entièrement dérivé des champs
   `worker_id`/`provider`/`model`/`role` déjà présents sur `Execution` depuis
@@ -311,7 +354,7 @@ Livrables :
   seule en Phase 1) : quotidienne, horaire, concurrente, etc.
 - Boucle de reprise (scheduler simple) qui repasse chaque fenêtre de
   `WAITING_RESET` → `AVAILABLE` à l'heure prévue (`reset_at`)
-- Bascule automatique de `ModelRouter` vers un worker alternatif pendant
+- Bascule automatique de `WorkerSelector` vers un worker alternatif pendant
   l'attente
 
 Prérequis : Phase 1 (le schéma `quota_windows` existe déjà, seul son usage
@@ -339,13 +382,12 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
 
 ## État actuel
 
-- Phase en cours : **Phase 0.5 — Reuse Spike** (Phase 0 — Ecosystem Study
-  terminée et corrigée, `docs/ECOSYSTEM.md` rédigé ; le protocole
-  expérimental de la Phase 0.5 est défini, en attente de validation
-  utilisateur avant exécution du spike)
-- Aucun code Python n'a encore été écrit. Aucune installation effectuée.
-- Prochaine étape après validation utilisateur : exécuter le spike sur un
-  dépôt jetable, puis démarrer la Phase 1.
+- **Phase 0 — DONE** : Spécification et architecture.
+- **Phase 0.5 — DONE** : Reuse Spike validant Ralph Orchestrator 2.10.1.
+  Résultats détaillés dans `docs/SPIKE_RALPH.md`.
+- **Phase 1 — READY TO START** : MVP 0.1 (gouvernance + sélection + Ralph integration).
+  Aucun code Python du projet n'a encore été écrit.
+- **Next** : Démarrer Phase 1 avec le contrat Provider Adapters (ProviderState).
 
 ## Comment reprendre ce projet à froid
 
