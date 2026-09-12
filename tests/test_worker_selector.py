@@ -30,6 +30,7 @@ from orchestrator.providers.contracts import (
 from orchestrator.quota_manager import QuotaManager, QuotaPolicy
 from orchestrator.worker_selector import (
     NoEligibleWorkerError,
+    ProviderSelectionDiagnostic,
     ReviewIndependenceError,
     UnknownWorkerError,
     Worker,
@@ -594,3 +595,94 @@ class TestResetCreditsAndQuotaNumbersIgnored:
         )
 
         assert selected.worker_id == "claude_dev_01"
+
+
+class TestSelectionFailureDiagnostics:
+    """Slice 11: structured, read-only diagnostics attached to a selection
+    failure — never used by WorkerSelector itself to wait/retry/rank.
+    """
+
+    def test_no_eligible_worker_diagnostic_reports_quota_exhausted_with_reset(self, tmp_path) -> None:
+        reset_at = UTC_NOW + timedelta(hours=3)
+        window = QuotaWindow(
+            window_type="five_hour", source="claude_stream_json", observed_at=UTC_NOW,
+            utilization=1.0, reset_at=reset_at,
+        )
+        manager = _quota_manager(
+            {
+                "anthropic": FakeAdapter(
+                    _state("anthropic", available=False, reason=UnavailabilityReason.QUOTA_EXHAUSTED, windows=(window,))
+                )
+            }
+        )
+        selector = WorkerSelector([_alice()], manager)
+
+        with pytest.raises(NoEligibleWorkerError) as exc_info:
+            asyncio.run(
+                selector.select(WorkerSelectionRequest(required_capabilities=frozenset({"developer"})))
+            )
+
+        diagnostics = exc_info.value.diagnostics
+        assert len(diagnostics) == 1
+        assert diagnostics[0] == ProviderSelectionDiagnostic(
+            provider="anthropic", available=False, reason="quota_exhausted", reset_at=(reset_at,)
+        )
+
+    def test_no_eligible_worker_diagnostic_reports_probe_error(self, tmp_path) -> None:
+        boom = RuntimeError("provider unreachable")
+        manager = _quota_manager({"anthropic": FakeAdapter(boom)})
+        selector = WorkerSelector([_alice()], manager)
+
+        with pytest.raises(NoEligibleWorkerError) as exc_info:
+            asyncio.run(
+                selector.select(WorkerSelectionRequest(required_capabilities=frozenset({"developer"})))
+            )
+
+        diagnostics = exc_info.value.diagnostics
+        assert diagnostics[0].provider == "anthropic"
+        assert diagnostics[0].available is False
+        assert diagnostics[0].reason == "probe_error"
+        assert diagnostics[0].reset_at == ()
+
+    def test_no_eligible_worker_diagnostic_empty_when_no_candidates_at_all(self) -> None:
+        manager = _quota_manager({})
+        selector = WorkerSelector([_alice(capabilities=frozenset({"developer"}))], manager)
+
+        with pytest.raises(NoEligibleWorkerError) as exc_info:
+            asyncio.run(
+                selector.select(WorkerSelectionRequest(required_capabilities=frozenset({"security_reviewer"})))
+            )
+
+        assert exc_info.value.diagnostics == ()
+
+    def test_review_independence_diagnostic_reports_all_candidate_providers(self, tmp_path) -> None:
+        alice = _alice()
+        second_claude = Worker(
+            worker_id="claude_dev_02", display_name="Bob", provider="anthropic",
+            backend="claude_code", model="haiku", capabilities=frozenset({"developer", "reviewer"}),
+            priority=50,
+        )
+        manager = _quota_manager({"anthropic": FakeAdapter(_state("anthropic"))})
+        policy = WorkerSelectionPolicy(require_distinct_provider_for_review=True)
+        selector = WorkerSelector([alice, second_claude], manager, policy)
+
+        with pytest.raises(ReviewIndependenceError) as exc_info:
+            asyncio.run(
+                selector.select(
+                    WorkerSelectionRequest(
+                        required_capabilities=frozenset({"reviewer"}),
+                        author_worker_id="claude_dev_01",
+                    )
+                )
+            )
+
+        diagnostics = exc_info.value.diagnostics
+        assert len(diagnostics) == 1
+        assert diagnostics[0].provider == "anthropic"
+        assert diagnostics[0].available is True
+
+    def test_no_eligible_worker_default_diagnostics_when_constructed_directly(self) -> None:
+        # Backward compatible: existing callers construct this error without
+        # diagnostics (e.g. tests injecting a fake WorkerSelector failure).
+        error = NoEligibleWorkerError(WorkerSelectionRequest(required_capabilities=frozenset()))
+        assert error.diagnostics == ()

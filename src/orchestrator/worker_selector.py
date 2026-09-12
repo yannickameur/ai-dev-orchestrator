@@ -32,9 +32,14 @@ Design invariants:
   unexpected exception is a programming failure and is never swallowed or
   turned into "not available" — it propagates to the caller unchanged.
 - Quota *numbers* (``quota_windows``, ``utilization``, reset credits) are
-  never read here: the canonical availability signal already answers the
-  only question this module asks. Utilization is not used to rank workers
-  unless a policy explicitly asks for that in the future.
+  never used to rank or select a worker: the canonical availability signal
+  (``ProviderState.availability.available``) alone answers the only
+  question this module asks. Since Slice 11, ``QuotaWindow.reset_at``
+  values ARE read, but strictly for attaching read-only diagnostics to a
+  selection *failure* (see ``ProviderSelectionDiagnostic`` below) — never
+  to decide who is selected. This module still never waits, retries, or
+  schedules anything itself; a caller (orchestration-level) uses the
+  diagnostics to decide whether waiting could plausibly help.
 - Reset credits are visible on ``ProviderState`` but this module never
   consumes one, never calls a consume/usage endpoint, and never treats
   their mere presence as making an otherwise-unavailable provider
@@ -54,6 +59,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Iterable, Sequence
 
 from orchestrator.quota_manager import ProviderProbeError, QuotaManager
@@ -172,6 +178,27 @@ class WorkerSelectionRequest:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderSelectionDiagnostic:
+    """Read-only facts about one candidate provider's state at selection time.
+
+    Attached to a selection failure (never to a success) so a caller —
+    typically an orchestration-level wait/resume decision, never this
+    module — can distinguish *why* a provider wasn't usable: quota
+    exhausted with a known reset time, an unavailable/unknown reason, or a
+    probe error. This module never interprets these facts itself; it never
+    waits, retries, or ranks anything by them.
+    """
+
+    provider: str
+    available: bool
+    reason: str
+    reset_at: tuple[datetime, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "reset_at", tuple(sorted(self.reset_at)))
+
+
 class WorkerSelectorError(Exception):
     """Base for WorkerSelector domain errors."""
 
@@ -185,14 +212,26 @@ class UnknownWorkerError(WorkerSelectorError):
 
 
 class NoEligibleWorkerError(WorkerSelectorError):
-    """Raised when no registered worker survives capability/governance/availability filters."""
+    """Raised when no registered worker survives capability/governance/availability filters.
 
-    def __init__(self, request: WorkerSelectionRequest) -> None:
+    ``diagnostics`` covers every candidate provider considered for this
+    selection (not just the ones that ended up eligible) — see
+    ``ProviderSelectionDiagnostic``. Defaults to ``()`` for callers that
+    construct this error directly (e.g. tests) without diagnostics.
+    """
+
+    def __init__(
+        self,
+        request: WorkerSelectionRequest,
+        *,
+        diagnostics: tuple[ProviderSelectionDiagnostic, ...] = (),
+    ) -> None:
         super().__init__(
             "no eligible worker for required_capabilities="
             f"{set(request.required_capabilities)!r}"
         )
         self.request = request
+        self.diagnostics = diagnostics
 
 
 class ReviewIndependenceError(WorkerSelectorError):
@@ -201,15 +240,24 @@ class ReviewIndependenceError(WorkerSelectorError):
     Distinct from ``NoEligibleWorkerError``: eligible reviewer candidates
     did exist, but none of them satisfied
     ``require_distinct_provider_for_review`` against the author's provider.
+    ``diagnostics`` covers every candidate provider considered (including
+    providers that exist among registered reviewer-capable workers but
+    were themselves unavailable) — see ``ProviderSelectionDiagnostic``.
     """
 
-    def __init__(self, author: Worker) -> None:
+    def __init__(
+        self,
+        author: Worker,
+        *,
+        diagnostics: tuple[ProviderSelectionDiagnostic, ...] = (),
+    ) -> None:
         super().__init__(
             f"no reviewer on a provider distinct from author {author.worker_id!r} "
             f"(provider={author.provider!r}) is available, and "
             "require_distinct_provider_for_review=True forbids falling back"
         )
         self.author = author
+        self.diagnostics = diagnostics
 
 
 class WorkerSelector:
@@ -234,11 +282,12 @@ class WorkerSelector:
         author = self._resolve_author(request.author_worker_id)
 
         candidates = self._filter_by_capabilities_and_governance(request, author)
-        available_by_provider = await self._probe_needed_providers(candidates)
+        diagnostics = await self._diagnose_candidate_providers(candidates)
+        available_by_provider = {d.provider: d.available for d in diagnostics}
         eligible = [w for w in candidates if available_by_provider.get(w.provider, False)]
 
         if not eligible:
-            raise NoEligibleWorkerError(request)
+            raise NoEligibleWorkerError(request, diagnostics=diagnostics)
 
         if author is None:
             return self._pick_best(eligible)
@@ -247,7 +296,7 @@ class WorkerSelector:
 
         if self._policy.require_distinct_provider_for_review:
             if not cross_provider:
-                raise ReviewIndependenceError(author)
+                raise ReviewIndependenceError(author, diagnostics=diagnostics)
             return self._pick_best(cross_provider)
 
         if self._policy.prefer_distinct_provider_for_review and cross_provider:
@@ -277,27 +326,40 @@ class WorkerSelector:
             and request.required_capabilities <= worker.capabilities
         ]
 
-    async def _probe_needed_providers(self, candidates: Sequence[Worker]) -> dict[str, bool]:
+    async def _diagnose_candidate_providers(
+        self, candidates: Sequence[Worker]
+    ) -> tuple[ProviderSelectionDiagnostic, ...]:
         providers = sorted({worker.provider for worker in candidates})
         if not providers:
-            return {}
+            return ()
         results = await asyncio.gather(
             *(self._quota_manager.get(provider) for provider in providers),
             return_exceptions=True,
         )
-        available: dict[str, bool] = {}
+        diagnostics: list[ProviderSelectionDiagnostic] = []
         for provider, result in zip(providers, results):
             if isinstance(result, ProviderProbeError):
                 # Expected provider-level failure: not available for this
                 # selection, but other providers are still evaluated.
-                available[provider] = False
+                diagnostics.append(
+                    ProviderSelectionDiagnostic(provider=provider, available=False, reason="probe_error")
+                )
             elif isinstance(result, BaseException):
                 # Programming failure, not a provider failure: never
                 # swallowed or turned into "not available".
                 raise result
             else:
-                available[provider] = result.availability.available is True
-        return available
+                available = result.availability.available is True
+                reason = "available" if available else (
+                    result.availability.reason.value if result.availability.reason else "unknown"
+                )
+                reset_at = tuple(w.reset_at for w in result.quota_windows if w.reset_at is not None)
+                diagnostics.append(
+                    ProviderSelectionDiagnostic(
+                        provider=provider, available=available, reason=reason, reset_at=reset_at
+                    )
+                )
+        return tuple(diagnostics)
 
     def _pick_best(self, candidates: Sequence[Worker]) -> Worker:
         # Deterministic, documented tie-break: highest priority first, then
