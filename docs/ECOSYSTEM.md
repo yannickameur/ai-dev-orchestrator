@@ -102,7 +102,7 @@ de dépendance directe pour certaines (`gh` CLI, `litellm`, workers candidats).
 - **Chevauchement avec notre roadmap** : fort sur Worker adapters, rôles (hats) avec backends indépendants, event bus, mémoire long terme, reprise après interruption, revue de code multi-hats, exécution parallèle (worktrees + waves). Nul sur QuotaManager multi-fenêtres et sur intégration GitHub PR réelle (gh CLI/API).
 - **Réutilisable précisément** : le pattern de `cli_backend.rs` (struct de config + fonctions de construction par backend, pas un trait par adaptateur) est transposable en Python. Le modèle JSONL+`FileLock` (`file_lock.rs`, `task_store.rs`) est une référence si on voulait éviter SQLite. Les presets `review.yml`/`wave-review.yml` sont une référence directe de prompt-engineering pour notre rôle Reviewer.
 - **Inspiration seulement** : hats/events pour la modélisation des rôles et du routage ; mémoire long terme typée avec budget d'injection ; `handoff.md` comme reprise lisible par un humain ; verrouillage de loop + worktrees + waves pour l'exécution parallèle ; pipeline reviewer→analyzer→synthesizer comme modèle de revue en plusieurs passes.
-- **Manques** : pas de QuotaManager multi-fenêtres (AVAILABLE/EXHAUSTED/WAITING_RESET/ERROR) ; pas d'intégration GitHub PR via `gh`/API (voir nuance ci-dessus) ; pas de ModelRouter dynamique par coût/capacité/disponibilité (le backend est assigné statiquement par hat en config, pas choisi dynamiquement selon quota/coût).
+- **Manques** : pas de QuotaManager multi-fenêtres (AVAILABLE/EXHAUSTED/WAITING_RESET/ERROR) ; pas d'intégration GitHub PR via `gh`/API (voir nuance ci-dessus) ; pas de WorkerSelector dynamique par coût/capacité/disponibilité (le backend est assigné statiquement par hat en config, pas choisi dynamiquement selon quota/coût).
   **Distinction clé sur Developer/Reviewer** : Ralph permet de **configurer** des hats avec des backends différents (ex. builder=claude, reviewer=codex) — la capacité technique existe. Mais rien n'empêche structurellement de configurer `reviewer.backend == builder.backend` : il n'y a **aucune garantie de politique** qui interdise automatiquement à un même modèle/provider de valider son propre travail. C'est précisément notre besoin (la seconde option) qui reste non couvert, pas la première.
 - **Coût/complexité d'intégration** : élevé — écosystème Rust monolithique, stack cible probable Python/légère.
 - **Risques de dépendance** : MIT (sûr), mais gouvernance très centralisée sur un seul mainteneur, rythme de release rapide (breaking changes possibles), verrouillage fort si on bâtit dessus (format hats/events propriétaire).
@@ -122,7 +122,7 @@ Developer≠Reviewer (la configurabilité existe, pas la garantie), et sans
 intégration GitHub PR via `gh`/API (nos briques différenciantes, confirmées
 non couvertes après vérification du code source). (B) construire dessus ou
 (C) le forker imposerait d'adopter tout l'écosystème Rust/YAML/hats et
-sacrifierait le contrôle fin sur QuotaManager/ModelRouter/la garantie de
+sacrifierait le contrôle fin sur QuotaManager/WorkerSelector/la garantie de
 politique qui constituent notre valeur ajoutée. (D) contribuer upstream ne
 nous donnerait pas la structure Python légère visée et dépendrait de la
 vision d'un mainteneur externe. (A) continuer seul reste
@@ -172,7 +172,7 @@ l'infirmer expérimentalement avant que la Phase 1 ne démarre.
 - **Licence** : MIT
 - **Activité/maturité** : 6 stars, 1 contributeur, dernier commit 2026-02-27 (créé 2026-01-30, ~1 mois de développement intense puis silence ~6,5 mois). Non archivé mais stale.
 - **Fonctionnalités pertinentes** : DAG de tâches en SQLite avec dépendances, détection de cycle, auto-transitions (déblocage des enfants, auto-complete/fail du parent) ; intégration réelle au protocole **ACP** (`agent-client-protocol`, SDK Rust de Zed) pour parler à tout agent CLI conforme ; « sigils » texte (`<task-done>`, `<task-failed>`, `<next-model>`) comme protocole de signalisation agent→orchestrateur ; agent de vérification en lecture seule après chaque tâche ; gestion SIGINT propre avec collecte de feedback utilisateur mi-boucle ; stratégies de sélection de modèle (cost-optimized, escalate, plan-then-execute) ; mémoire double (journal SQLite FTS5 + knowledge base Markdown zettelkasten).
-- **Chevauchement avec notre roadmap** : fort avec Task/DAG/scheduler, Worker adapters, et le principe « verify avant trust » proche de notre Reviewer/Judge. Le concept ACP est structurellement proche de notre ModelRouter/Worker registry.
+- **Chevauchement avec notre roadmap** : fort avec Task/DAG/scheduler, Worker adapters, et le principe « verify avant trust » proche de notre Reviewer/Judge. Le concept ACP est structurellement proche de notre WorkerSelector/Worker registry.
 - **Réutilisable précisément** : rien à dépendre directement (Rust) ; le schéma logique de `src/dag/db.rs` (tables tasks/dependencies/transitions) et `src/acp/sigils.rs` (grammaire de sigils) sont des références concrètes à relire avant d'implémenter notre Task scheduler.
 - **Inspiration seulement** : sigils texte comme canal de signalisation simple et parsable ; agent de vérification en lecture seule distinct de l'exécuteur ; auto-transitions cascadées du DAG ; interruption SIGINT avec feedback avant reprise.
 - **Manques** : pas de QuotaManager multi-fenêtres, pas de rôles spécialisés (Architecture/Security Reviewer/Documentation/Judge), pas d'abstraction Workspace découplée de Git, pas de multi-projets, un seul provider de modèles dans les stratégies.
@@ -261,7 +261,7 @@ l'infirmer expérimentalement avant que la Phase 1 ne démarre.
 - **Chevauchement avec notre roadmap** : chevauche notre Task scheduler et une partie de la persistance, mais conçu pour Postgres + backend cloud, pas SQLite local mono-machine.
 - **Réutilisable précisément** : découpage `scheduler.py` / `dispatcher.py` / `models.py` comme squelette de fichiers à reproduire, pas le code Postgres/Alembic directement.
 - **Inspiration seulement** : séparation claire « qui décide quand » (automation) vs « qui exécute » (agent-server) — transposable à notre séparation Task scheduler / Worker adapters.
-- **Manques** : aucune notion de quotas d'abonnement CLI, aucun ModelRouter, pas de rôles spécialisés.
+- **Manques** : aucune notion de quotas d'abonnement CLI, aucun WorkerSelector, pas de rôles spécialisés.
 - **Coût/complexité d'intégration** : élevé en dépendance directe (Postgres, Alembic, FastAPI complet), faible en lecture d'architecture.
 - **Risques de dépendance** : très jeune, petit, marqué beta — risque de breaking changes fréquent.
 - **Décision provisoire** : **INSPIRE** — bon exemple de séparation scheduler/dispatcher/run-history, trop lié à une stack cloud Postgres pour être repris tel quel.
@@ -276,7 +276,7 @@ l'infirmer expérimentalement avant que la Phase 1 ne démarre.
 - **Licence** : ⚠️ `NOASSERTION` côté API GitHub — le dépôt mixe en réalité un cœur MIT et des fonctionnalités « Enterprise » propriétaires côté proxy avancé. **À vérifier fichier `LICENSE` précis avant tout usage**, en particulier pour les fonctionnalités de proxy/budget avancées.
 - **Activité/maturité** : 58 551 stars, 11 373 forks, ~377 contributeurs, dernier commit 2026-09-12 (quasi quotidien), 5044 issues ouvertes (forte adoption, mais backlog important).
 - **Fonctionnalités pertinentes** : `router.py` + `router_strategy/` (lowest-cost, tag-based, complexity-based routing, `budget_limiter.py` pour limites $ par provider/fenêtre temporelle), `router_utils/fallback_event_handlers.py` (chaînes de fallback avec cooldown), provider Ollama natif (local/gratuit), `budget_manager.py`, `cost_calculator.py`.
-- **Chevauchement avec notre roadmap** : chevauche la partie « priorité coût » et « fallback entre providers » de notre ModelRouter, et une partie budget $ de QuotaManager — **uniquement pour des API HTTP de complétion**. Vérifié explicitement : `claude_code_endpoints.py` dans le proxy concerne un registre de marketplace de plugins/skills Claude Code servi par le proxy, **pas** le pilotage de sessions Claude Code CLI. Aucune trace de gestion de sessions CLI interactives, de quotas d'abonnement (Claude Code Max/Pro, Codex ChatGPT Plus) ni de subprocess management.
+- **Chevauchement avec notre roadmap** : chevauche la partie « priorité coût » et « fallback entre providers » de notre WorkerSelector, et une partie budget $ de QuotaManager — **uniquement pour des API HTTP de complétion**. Vérifié explicitement : `claude_code_endpoints.py` dans le proxy concerne un registre de marketplace de plugins/skills Claude Code servi par le proxy, **pas** le pilotage de sessions Claude Code CLI. Aucune trace de gestion de sessions CLI interactives, de quotas d'abonnement (Claude Code Max/Pro, Codex ChatGPT Plus) ni de subprocess management.
 - **Réutilisable précisément** : package pip `litellm` utilisable comme couche d'appel unifiée si/quand on ajoute des workers « API payante » (OpenAI/Anthropic API classique) ou un worker Ollama HTTP ; `litellm.Router(fallbacks=...)` et `router_strategy/budget_limiter.py` réutilisables pour le sous-cas « coût/quota $ par provider API ».
 - **Inspiration seulement** : pattern de fallback chain avec cooldown (`_trigger_cooldown_for_failed_deployment`) — bon modèle pour nos états EXHAUSTED/WAITING_RESET, transposé à des CLI plutôt qu'à des endpoints HTTP.
 - **Manques (critique)** : LiteLLM route des appels API HTTP stateless, jamais des sessions CLI interactives avec authentification par abonnement (OAuth device flow Claude Code, login ChatGPT Codex). Ne sait ni lancer un subprocess CLI, ni suivre l'épuisement d'un quota d'abonnement non exposé via API, ni gérer un état « session interrompue à reprendre ». **Notre QuotaManager multi-fenêtres par CLI-worker n'a aucun équivalent ici.**
@@ -313,7 +313,7 @@ l'infirmer expérimentalement avant que la Phase 1 ne démarre.
 - **Activité/maturité** : ~13 500 stars, dernier commit le jour de la recherche, 244 contributeurs, 640 issues ouvertes. Projet Microsoft actif.
 - **Confirmation AutoGen** : le README pointe explicitement un « Migration from AutoGen » (guide dédié sur learn.microsoft.com), confirmant que MAF est bien positionné comme évolution/remplaçant d'AutoGen — cohérent avec la consigne de ne pas privilégier AutoGen pour un nouveau projet.
 - **Fonctionnalités pertinentes** : workflows graph-based (séquentiel, concurrent, handoff, group), checkpointing via `WorkflowCheckpoint`/`CheckpointStorage` (Protocol) avec implémentations `InMemory`/`File` et packages dédiés (`packages/postgres`, `packages/azure-cosmos`) ; abstraction provider très large : packages séparés `anthropic`, `openai`, `bedrock`, `gemini`, `mistral`, `ollama`, `foundry`, `github_copilot`, `claude` — un adapter homogène par provider.
-- **Chevauchement avec notre roadmap** : recoupe notre Worker registry/adapters et notre ModelRouter (abstraction provider), ainsi que notre reprise après interruption (checkpoint + restart).
+- **Chevauchement avec notre roadmap** : recoupe notre Worker registry/adapters et notre WorkerSelector (abstraction provider), ainsi que notre reprise après interruption (checkpoint + restart).
 - **Réutilisable précisément** : le package `agent-framework-ollama` (pattern d'adapter local/gratuit) et la Protocol `CheckpointStorage` sont des références directes ; pas de dépendance directe recommandée vu la lourdeur du framework global.
 - **Inspiration seulement** : structure « un package par provider » pour l'abstraction LLM ; pattern `CheckpointStorage` comme interface pluggable (mémoire/fichier/Postgres/Cosmos) ; « restartability » comme propriété de premier ordre du workflow.
 - **Manques** : pas de QuotaManager multi-fenêtres, pas de priorité coût local>abonnement>payant, pas de contrainte reviewer≠author model, pas de Git/PR natif comme moteur central.
@@ -350,9 +350,9 @@ l'infirmer expérimentalement avant que la Phase 1 ne démarre.
 - **Activité/maturité** : ~70 300 stars, ~8900 forks, ~116 contributeurs. Dernier push observé : 2026-01-21 (~8 mois avant la recherche) — actif mais ralenti. Non archivé.
 - **Fonctionnalités pertinentes** : rôles typés (`ProductManager`, `Architect`, `ProjectManager`, `Engineer`/`Engineer2`, `QaEngineer`, `TeamLeader`, `DataAnalyst`) hérités d'une classe `Role` commune, chacun abonné (`_watch`) à des types d'`Action`/messages (bus pub/sub `Environment` plutôt qu'un scheduler central strict). `Team.run(n_round)` boucle jusqu'à idle ou budget épuisé (`NoMoneyException`), avec sérialisation/désérialisation de `Team` pour reprise.
 - **Chevauchement avec notre roadmap** : rôles spécialisés proches des nôtres (Product, Architecture, Developer, Tester). Reprise via `Team.serialize/deserialize`, mais coarse-grained (état de toute l'équipe), pas un état de tâche fin type INTERRUPTED/RECOVERY_REQUIRED.
-- **Réutilisable précisément** : rien à dépendre directement (framework monolithique, config LLM globale unique, pas de ModelRouter/QuotaManager multi-provider, pas d'adaptateur CLI externe type Claude Code/Codex).
+- **Réutilisable précisément** : rien à dépendre directement (framework monolithique, config LLM globale unique, pas de WorkerSelector/QuotaManager multi-provider, pas d'adaptateur CLI externe type Claude Code/Codex).
 - **Inspiration seulement** : découpage des rôles en classes dédiées avec prompts spécialisés ; pattern pub/sub par abonnement à des types de messages plutôt qu'un graphe figé.
-- **Manques** : ⚠️ **point critique** — dans `engineer.py`, la revue de code (`WriteCodeReview`) est effectuée par le même rôle `Engineer` qui a écrit le code, **violation directe de notre contrainte anti-auto-review**. Pas de QuotaManager, pas de ModelRouter coût/capacité, pas d'abstraction Workspace découplée de Git.
+- **Manques** : ⚠️ **point critique** — dans `engineer.py`, la revue de code (`WriteCodeReview`) est effectuée par le même rôle `Engineer` qui a écrit le code, **violation directe de notre contrainte anti-auto-review**. Pas de QuotaManager, pas de WorkerSelector coût/capacité, pas d'abstraction Workspace découplée de Git.
 - **Coût/complexité d'intégration** : élevé — framework monolithique avec ses propres conventions (Pydantic, Context, LLM config globale).
 - **Risques de dépendance** : MIT sans risque. Activité ralentie mais large communauté ; risque de verrouillage architectural si on adopte son modèle de rôles/Environment tel quel.
 - **Décision provisoire** : **INSPIRE** — s'inspirer du découpage des rôles et du bus pub/sub, **sans reproduire le pattern d'auto-review** Engineer/WriteCodeReview qui contredit directement notre exigence.
@@ -406,7 +406,7 @@ pas comme moteurs d'orchestration concurrents — conformément à la consigne.
 - **Chevauchement avec notre roadmap** : Aider committe lui-même en Git — chevauche potentiellement notre abstraction Workspace (branche par tâche) si non contraint (`--no-auto-commits` ou capture de diff sans commit).
 - **Réutilisable précisément** : invocation scriptable directe (`aider --message "<tâche>" --yes-always --no-auto-commits <fichiers>`), code retour + diff/état du repo comme résultat exploitable. Le mode `--architect` (modèle planificateur distinct du modèle éditeur) est directement réutilisable pour respecter `Developer.model != Reviewer.model` si on assigne des providers différents aux deux rôles.
 - **Inspiration seulement** : séparation architect/editor comme modèle à deux passes, transférable indépendamment de l'outil.
-- **Manques** : pas de rôle Reviewer/Tester séparé en soi ; sa gestion Git automatique peut entrer en conflit avec notre Workspace si non désactivée ; pas de QuotaManager/ModelRouter multi-provider intégré.
+- **Manques** : pas de rôle Reviewer/Tester séparé en soi ; sa gestion Git automatique peut entrer en conflit avec notre Workspace si non désactivée ; pas de QuotaManager/WorkerSelector multi-provider intégré.
 - **Coût/complexité d'intégration** : faible à moyen — CLI mature, mode non interactif direct, mais nécessite de désactiver les auto-commits pour ne pas casser notre abstraction Workspace.
 - **Risques de dépendance** : Apache-2.0 sans risque. Large communauté, rythme de commits en léger ralentissement, nombreuses issues ouvertes (charge de maintenance visible) — risque faible mais à surveiller.
 - **Décision provisoire** : **ADAPT** en tant que worker candidat — bon candidat pour un `AiderWorkerAdapter` (subprocess, `--message`/`--yes-always`, auto-commits désactivés), complémentaire à Claude Code CLI/Codex CLI.
@@ -437,7 +437,7 @@ pas comme moteurs d'orchestration concurrents — conformément à la consigne.
 | **Worker registry** | **BUILD** | INSPIRE ralph-orchestrator (`cli_backend.rs`, construction par backend), microsoft/agent-framework (1 package par provider) | Registre déclaratif YAML propre à notre besoin (rôles + capacités + priorité coût) |
 | **Worker adapters** (Claude Code/Codex/Ollama) | **BUILD** | ADAPT nitodeco/ralph (`AgentProcessManager` : SIGTERM→SIGKILL, stuck detection), INSPIRE ralph-orchestrator (construction par backend) | Adaptateurs subprocess propres, patron de cycle de vie process largement inspirable |
 | **Worker adapters** (extensions futures) | **ADAPT** | SWE-agent/mini-swe-agent, Aider-AI/aider | Utilisables directement comme workers additionnels (CLI scriptable, sortie parseable) après les 3 adaptateurs MVP 0.1 |
-| **ModelRouter** (capacité > rôle > quota > coût) | **BUILD** (cœur) + **ADAPT** partiel | ADAPT BerriAI/litellm (`router.py`/fallback/cooldown) pour le seul sous-cas API payante HTTP ; REJECT litellm pour la partie quotas CLI | Le cœur (capacité/rôle/quota CLI) n'a pas d'équivalent existant |
+| **WorkerSelector** (capacité > rôle > quota > coût) | **BUILD** (cœur) + **ADAPT** partiel | ADAPT BerriAI/litellm (`router.py`/fallback/cooldown) pour le seul sous-cas API payante HTTP ; REJECT litellm pour la partie quotas CLI | Le cœur (capacité/rôle/quota CLI) n'a pas d'équivalent existant |
 | **QuotaManager** (fenêtres multiples, CLI) | **BUILD** intégral | INSPIRE Sean-Shmulevich/ralph (heuristique texte de rate-limit), ADAPT litellm `budget_limiter.py` (sous-cas $ API payante) | Notre besoin différenciant central — aucun projet ne le couvre |
 | **Recovery / réconciliation** | **BUILD** | INSPIRE fortement ralph-orchestrator (`suspend_state.rs`, `loop_lock.rs`, `handoff.rs`), langchain-ai/langgraph (`Interrupt`/`Command`, `thread_id`), changkun/ralph (resume par round) | Meilleure référence de conception : LangGraph (reprise explicite par ID) + ralph-orchestrator (état de suspension durable) |
 | **Workspace abstraction** | **BUILD** (interface) | INSPIRE OpenHands SDK (`openhands-workspace`, backends pluggables), ralph-orchestrator (worktrees + merge_queue) | Interface fine, implémentation `LocalGitWorkspace` seule en MVP 0.1 |
@@ -508,6 +508,129 @@ registry/adapters, Task scheduler, Recovery, Reviewer, Quality Gates) sont
 désormais explicitement provisoires — voir la **Phase 0.5 — Reuse Spike**
 dans `ROADMAP.md`, qui doit les tester avant le début de la Phase 1.
 
+## Phase 0.5 — Reuse Spike Validation (DONE)
+
+**Date** : septembre 2026  
+**Résultats détaillés** : voir `docs/SPIKE_RALPH.md`
+
+La Phase 0.5 (Reuse Spike) a validé expérimentalement les décisions
+provisoires ci-dessus. Confirmations et ajustements principaux :
+
+### Décisions confirmées REUSE
+
+- **Ralph Orchestrator 2.10.1** comme moteur d'exécution/workflow
+  - Boucle d'exécution complète (itération, timeouts, metrics, handoff)
+  - Workflows pré-construits : `builtin:code-assist` opérationnel
+  - Preset de review `builtin:review` opérationnel
+  - Assignation per-hat de backends distincts validée
+  - **Limitation critique observée** : pas de fallback intelligent si un hat
+    échoue — notre responsabilité d'implémenter WorkerSelector/QuotaManager
+    avant de lancer Ralph
+
+- **Claude Code CLI** — telemetry via `stream-json` natif
+  - Windows validées : 5h + 7j
+  - ProviderState contract : validé
+
+- **Codex CLI** — telemetry via app-server API
+  - Windows validées : 5h + 7j (primary=300min, secondary=10080min)
+  - ProviderState contract : validé
+  - `ordinaryUsageAllowed` = signal d'autorisation ; reset credits :
+    `auto_consume=false` toujours
+
+- **Author ≠ Reviewer cross-provider — pattern d'exécution validé**
+  - Chaîne réelle exécutée : auteur Claude (claude-haiku-4-5) introduit un
+    bug volontaire, reviewer Codex (gpt-5.6-terra, reasoning_effort=high) le
+    détecte et publie `review.rejected` sans corriger lui-même
+  - Valide le handoff événementiel cross-provider ; la **garantie de
+    politique** reste `BUILD` (Ralph ne l'impose pas structurellement)
+
+### Décisions confirmées BUILD (aucun équivalent existant)
+
+- **ProviderState / ProviderAvailability / QuotaWindow / ResetCredit** — contrat normalisé
+  - Ralph n'expose pas ces abstractions
+  - Contrat minimal nécessaire avant tout adapter
+
+- **QuotaManager** — multi-fenêtres, politique de fraîcheur
+  - Aucun projet étudié n'implémente cela pour quotas d'abonnement CLI
+  - LiteLLM, OpenRouter, et la famille Ralph traitent des budgets API HTTP,
+    pas des états d'abonnement CLI (Claude Code Pro/Max, Codex Plus)
+
+- **WorkerSelector** (unique nom du composant de sélection)
+  - Ordre strict : capability > governance > quota > cost
+  - Author != Reviewer as enforced policy, not just configurability
+  - Explicit policy-driven fallback
+
+- **WAITING_RESET** état de quota
+  - Comportement observé Ralph (silence si backend épuisé) justifie notre
+    escalade explicite de disponibilité via WAITING_RESET
+
+- **Execution audit trail**
+  - Enregistrement complet (task_id, worker_id, provider, model, role,
+    session_id, git_sha_before/after, exit_code) pour vérifier post-facto
+    l'indépendance author != reviewer
+
+- **Worker identity étendue (model + reasoning_effort)**
+  - Test réel : hat Codex configuré avec `model=gpt-5.6-terra`,
+    `reasoning_effort=low` → confirmé côté session Codex native
+  - `model`/`reasoning_effort` doivent être des champs de premier ordre du
+    `Worker`/`Execution`, pas de simples détails de config Ralph
+  - Séparer `worker_id` (technique, stable) de `display_name` (lisible,
+    jamais utilisé pour une décision de gouvernance)
+
+- **Nommage d'événements applicatifs**
+  - `task.start`/`task.resume` réservés au coordinateur Ralph — ne jamais
+    les réutiliser comme triggers custom (`work.start`, `review.ready`, etc.)
+
+### Décisions ADAPT
+
+- **Ralph integration wrapper** (RalphExecutionEngine)
+  - Ralph en tant qu'exécutant, pas en tant qu'orchestrateur de quotas/sélection
+
+- **Workspace/Git integration**
+  - Ralph manipule Git via subprocess (confirmé)
+  - Notre abstraction Workspace doit rester découplée de Ralph
+
+- **Handoff/recovery patterns**
+  - Ralph's `handoff.md` comme modèle à s'inspirer
+  - Notre INTERRUPTED/RECOVERY_REQUIRED s'aligne
+
+### Décisions DEFER / NOT TESTED
+
+- **GitHub PR integration** — validée comme théoriquement possible via
+  `gh` CLI, mais non testée en spike
+- **Merge governance** — structure de policy, non testée
+- **Crash recovery end-to-end** — seul le déploiement MVP 0.1 permettra
+  d'observer le vrai comportement
+- **Quality-gate failure end-to-end** — idem, Phase 2+
+- **Distributed execution** — hors MVP 0.1
+- **Codex sandbox/permissions override par Ralph** — `NOT VALIDATED` :
+  l'environnement de spike était en `sandbox_mode=danger-full-access`, ce
+  qui ne permet pas de conclure sur un éventuel override Ralph. Non bloquant
+  pour Phase 0.5, à re-tester avant toute hypothèse de sécurité en Phase 1+.
+
+### Limitations de fiabilité observées (à ne pas sous-estimer)
+
+- **Completion promise Ralph** : `LOOP_COMPLETE` produit mais boucle terminée
+  avec `reason=max_iterations` — ne pas se fier au `reason` de fin de boucle
+  seul, se fier aux événements métier applicatifs explicites
+- **Télémétrie Codex dans Ralph** : `input_tokens`/`output_tokens`/`num_turns`/
+  `cost_usd` à 0 même lors d'exécutions Codex réelles et réussies — jamais
+  utiliser les métriques Ralph comme source d'usage/coût Codex
+
+### Impact sur la matrice
+
+| Composant | Matrice (avant spike) | Résultat spike | Décision finale |
+|---|---|---|---|
+| Ralph as execution engine | INSPIRE → REUSE | Validé complet | **REUSE** (code-assist, review, backends par hat) |
+| code-assist workflow | BUILD | Validé opérationnel | **REUSE** Ralph builtin |
+| review preset | BUILD | Validé opérationnel | **REUSE** Ralph builtin |
+| Provider adapters | BUILD | Architecture du contrat validée | **BUILD** adapter légers, contrat ProviderState d'abord |
+| Claude quota telemetry | BUILD | Native API validée | **REUSE** stream-json + **BUILD** adapter normalisé |
+| Codex quota telemetry | BUILD | Native API validée | **REUSE** app-server API + **BUILD** adapter normalisé |
+| WorkerSelector | BUILD | Ordre d'évaluation confirmé | **BUILD** (Ralph n'a pas de fallback) |
+| QuotaManager | BUILD | Besoin validé | **BUILD** (aucun équivalent pour CLI subscriptions) |
+| Workspace/Git abstraction | BUILD | Ralph subprocess pattern validé | **BUILD** interface + LocalGitWorkspace impl |
+
 ## Suivi
 
 Ce document doit être revu :
@@ -516,3 +639,6 @@ Ce document doit être revu :
 - si un projet listé change significativement de statut (licence, maintien,
   version majeure) ;
 - si un nouveau candidat sérieux apparaît dans l'écosystème.
+
+**Phase 0.5 Spike (septembre 2026)** : résultats expérimentaux consolidés
+ci-dessus et dans `docs/SPIKE_RALPH.md`. Prêt pour Phase 1 MVP 0.1.
