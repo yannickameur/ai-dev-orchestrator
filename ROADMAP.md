@@ -725,15 +725,68 @@ testable offline, et documenter explicitement ses dépendances.
 - Dépend de : Slice 7 (état projet dans lequel s'inscrit une attente),
   Slice 9 (sélection reviewer)
 
-**Slice 12 — Multi-agent release planning + roadmap synthesis**
-- Après une release réussie, plusieurs agents IA analysent
-  **indépendamment** (sans s'influencer avant d'avoir produit leur
-  proposition) : roadmap actuelle, état réel du projet, release
-  précédente, résultats de tests, findings de review, dette/risques,
-  travail restant — chacun propose le prochain MVP
-- Un agent de synthèse construit un **diff de roadmap proposé** (KEEP/ADD/
-  MOVE/DROP, risques, dépendances, objectif du prochain MVP, WorkItems,
-  acceptance criteria) — jamais une réécriture opaque de `ROADMAP.md`
+**Slice 12 — Multi-agent release planning + roadmap synthesis — ✅ DONE**
+- Nouveau `orchestrator/planning.py` : `PlanningSnapshot` (contexte
+  factuel durable — contenu + `roadmap_hash` SHA-256 de `ROADMAP.md`,
+  `ActivityReport` de la release chargé depuis `ActivityReportStore`
+  (jamais régénéré), résumé structuré du project state et open
+  issues/blockers dérivés des `incidents` du report), `PlanningSession`
+  (historique jamais écrasé, plusieurs tentatives par release possibles),
+  `PlannerProposal` (VALID/INVALID), `RoadmapProposal`,
+  `RoadmapChange`/`RoadmapChangeType` (KEEP/ADD/MOVE/DROP),
+  `ProposedWorkItem`, `Disagreement` — le tout persisté par un
+  `PlanningStore` dédié (sqlite3 stdlib), jamais un god object sur
+  `ProjectStateStore`
+- **Indépendance structurelle** : `_build_planner_instructions(snapshot)`
+  n'a par signature aucun paramètre par lequel une proposition sœur
+  pourrait fuiter — chaque planner ne voit que le `PlanningSnapshot`
+  commun ; la confrontation des propositions n'a lieu que dans les
+  instructions du synthesizer, qui reçoit toutes les `PlannerProposal`
+  VALID triées par `worker_id` (jamais par ordre d'exécution — testé
+  explicitement : même synthèse quel que soit l'ordre réel des planners)
+- `PlanningPolicy(planner_count=2, prefer_distinct_providers=True,
+  require_distinct_workers=True, prefer_distinct_synthesizer_worker=True)`
+  — `require_distinct_workers` épinglé `True` (même motif que
+  `WorkerSelectionPolicy.require_distinct_worker_for_review`) ; ajouter
+  un 3ᵉ planner (futur Mistral) ne change pas l'algorithme
+- Sélection **exclusivement** via `WorkerSelector` existant (capabilities
+  `release_planning`/`roadmap_synthesis`, jamais de nom de
+  worker/provider en dur) : boucle bornée d'exclusion progressive
+  (`excluded_worker_ids`) pour garantir des `worker_id` distincts et
+  préférer des providers distincts quand c'est possible, sans jamais
+  dupliquer la logique de capabilities/quota de `WorkerSelector`
+- Un seul planner éligible alors que `planner_count=2` ⇒ fail-closed
+  explicite : `PlanningSessionFailedError`, session `FAILED` persistée,
+  aucune tentative de synthèse avec une seule proposition déguisée en
+  analyse multi-agent
+- Exécution **uniquement** via `RalphExecutionEngine` (jamais Claude/Codex
+  direct, jamais de subprocess Ralph direct), rôles dédiés
+  `planner`/`synthesizer`, événements métier dédiés
+  `planning.proposed`/`planning.failed`/`synthesis.proposed`/
+  `synthesis.failed` (jamais `task.start`/`task.resume`) ; instructions
+  interdisant explicitement toute modification de fichiers, commit, push
+  ou changement réel de roadmap
+- Contrat de sortie strict : payload JSON structuré et validé
+  (`_parse_planner_payload`/`_parse_synthesizer_payload`, fail-closed —
+  jamais de fallback texte libre comme `review.parse_findings`) ; absence
+  d'événement terminal fiable ou payload invalide ⇒ `PlannerProposal`
+  `INVALID` (jamais silencieusement ignorée, jamais traitée comme un
+  succès)
+- Échec du synthesizer : `PlannerProposal` existantes jamais modifiées,
+  aucune `RoadmapProposal`, session `FAILED` — aucun retry silencieux
+- Restart : session/snapshot/proposals/synthèse relisibles ;
+  `run_planners` ne relance jamais un worker qui a déjà une
+  `PlannerProposal` (VALID ou INVALID) pour la session — resumable par
+  construction, sans nouvelle boucle WAITING/RECOVERY dédiée (scope
+  volontairement restreint, cf. tâche Slice 12)
+- `render_markdown()` : rendu Markdown déterministe pur du diff de
+  roadmap proposé (KEEP/ADD/MOVE/DROP + MVP proposé + risques +
+  agreements/disagreements), aucun appel LLM
+- Aucune mutation de `ROADMAP.md`, aucune création de MVP réel dans
+  `ProjectStateStore`, aucune notification, aucune fenêtre d'approbation
+  — tout cela reste Slice 13
+- Tests : `tests/test_planning.py` (100% offline, fake WorkerSelector/
+  RalphExecutionEngine)
 - Dépend de : Slice 10 (il faut un rapport d'activité et un release gate
   pour avoir une release « réussie » à analyser)
 
@@ -954,9 +1007,13 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     `RECOVERY_REQUIRED` dans `src/orchestrator/project_state.py`,
     intégration minimale/opt-in (`wait_store`/`execution_store`) dans
     `src/orchestrator/mvp_manager.py`, et les tests associés.
-- **Next** : Slice 12 — Multi-agent release planning + roadmap synthesis —
-  voir « Découpage incrémental » ci-dessus pour la suite complète
-  (Slice 12 à 14).
+  - **Slice 12 (Multi-agent release planning + roadmap synthesis) — DONE** :
+    voir `src/orchestrator/planning.py` (nouveau : `PlanningStore`,
+    `PlanningCoordinator`, `PlanningSnapshot`/`PlannerProposal`/
+    `RoadmapProposal`), et les tests associés.
+- **Next** : Slice 13 — Notification + optimistic approval window (20 min)
+  — voir « Découpage incrémental » ci-dessus pour la suite complète
+  (Slice 13 à 14).
 
 ## Comment reprendre ce projet à froid
 
