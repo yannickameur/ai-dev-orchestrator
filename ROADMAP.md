@@ -173,9 +173,18 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
   RalphExecutionEngine (étape 9)
 - Tests : `tests/providers/test_adapter.py`
 
-**3. ClaudeCodeAdapter**
-- Parse stream-json des quotas natifs
-- Retourne ProviderState normalisé
+**3. ClaudeCodeAdapter — ✅ DONE**
+- Parse stream-json des quotas natifs (`src/orchestrator/providers/claude_code_adapter.py`)
+- Retourne ProviderState normalisé (fenêtres `five_hour`/`seven_day`, jamais
+  de `reset_at` unique)
+- Sous-processus borné : timeout, exit code non-zéro, JSONL invalide/
+  incomplet → erreurs normalisées (`ClaudeProbeTimeout`, `ClaudeProcessError`,
+  `ClaudeStreamParseError`), jamais silencieux
+- Règle documentée pour plusieurs `rate_limit_event` dans un même flux : le
+  dernier observé fait autorité
+- Fixture réelle capturée une seule fois (`tests/providers/fixtures/
+  claude_stream_allowed.jsonl`, nettoyée), tests 100% offline sinon
+- Tests : `tests/providers/test_claude_code_adapter.py`
 
 **4. CodexAdapter**
 - Requête app-server `account/rateLimits/read`
@@ -393,9 +402,12 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
   - **Étape 1 (Contrats normalisés) — DONE** : `ProviderState`, `ProviderAvailability`,
     `QuotaWindow`, `ResetCredit`, interface `ProviderAdapter.probe()` — voir
     `src/orchestrator/providers/`. Purs, sans dépendance à Claude/Codex/Ralph.
-  - **Étape 2 (ClaudeCodeAdapter/CodexAdapter) — NOT STARTED**
-- **Next** : Implémenter `ClaudeCodeAdapter` et `CodexAdapter` contre les contrats
-  déjà en place (étapes 3-4).
+  - **Étape 2a (ClaudeCodeAdapter) — DONE** : voir `src/orchestrator/
+    providers/claude_code_adapter.py` et `tests/providers/
+    test_claude_code_adapter.py`.
+  - **Étape 2b (CodexAdapter) — NOT STARTED**
+- **Next** : Implémenter `CodexAdapter` (app-server `account/rateLimits/read`)
+  contre les mêmes contrats (étape 4).
 
 ## Comment reprendre ce projet à froid
 

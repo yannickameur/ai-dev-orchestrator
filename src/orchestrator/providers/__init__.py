@@ -7,6 +7,7 @@ lives here.
 """
 
 from orchestrator.providers.adapter import ProviderAdapter
+from orchestrator.providers.claude_code_adapter import ClaudeCodeAdapter
 from orchestrator.providers.contracts import (
     ProviderAvailability,
     ProviderState,
@@ -17,6 +18,7 @@ from orchestrator.providers.contracts import (
 )
 
 __all__ = [
+    "ClaudeCodeAdapter",
     "ProviderAdapter",
     "ProviderAvailability",
     "ProviderState",
