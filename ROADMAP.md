@@ -186,9 +186,24 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
   claude_stream_allowed.jsonl`, nettoyée), tests 100% offline sinon
 - Tests : `tests/providers/test_claude_code_adapter.py`
 
-**4. CodexAdapter**
-- Requête app-server `account/rateLimits/read`
-- Retourne ProviderState normalisé
+**4. CodexAdapter — ✅ DONE**
+- Échange JSON-RPC borné sur `codex app-server` (`src/orchestrator/
+  providers/codex_adapter.py`) : `initialize` → `initialized` →
+  `account/rateLimits/read` uniquement, jamais `account/usage/read` ni
+  `account/rateLimitResetCredit/consume` — probe strictement read-only
+- Retourne ProviderState normalisé (fenêtres `primary_5h`/`secondary_7d`,
+  jamais de `reset_at` unique) ; `ordinaryUsageAllowed` est le signal
+  canonique d'availability (`true`→AVAILABLE, `false`→QUOTA_EXHAUSTED,
+  absent/incohérent→UNKNOWN)
+- Reset credits normalisés descriptivement, `auto_consume` toujours `False`,
+  aucune méthode de consommation exposée par l'adapter
+- Échange borné par un timeout global unique ; sous-processus terminé
+  proprement dans tous les cas (succès, erreur, timeout) ; erreurs
+  normalisées (`CodexProbeTimeout`, `CodexProcessError`, `CodexProtocolError`)
+- Fixture réelle capturée une seule fois via une lecture strictement
+  read-only (`tests/providers/fixtures/codex_rate_limits_allowed.json`,
+  nettoyée), tests 100% offline sinon
+- Tests : `tests/providers/test_codex_adapter.py`
 
 **5. Fixtures capturées + tests offline**
 - Fixtures issues des captures du spike (stream-json Claude, app-server Codex)
@@ -405,9 +420,11 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
   - **Étape 2a (ClaudeCodeAdapter) — DONE** : voir `src/orchestrator/
     providers/claude_code_adapter.py` et `tests/providers/
     test_claude_code_adapter.py`.
-  - **Étape 2b (CodexAdapter) — NOT STARTED**
-- **Next** : Implémenter `CodexAdapter` (app-server `account/rateLimits/read`)
-  contre les mêmes contrats (étape 4).
+  - **Étape 2b (CodexAdapter) — DONE** : voir `src/orchestrator/
+    providers/codex_adapter.py` et `tests/providers/
+    test_codex_adapter.py`.
+- **Next** : les deux Provider Adapters MVP 0.1 sont en place — passer à
+  QuotaManager (étape 6, multi-fenêtres/politique de fraîcheur).
 
 ## Comment reprendre ce projet à froid
 

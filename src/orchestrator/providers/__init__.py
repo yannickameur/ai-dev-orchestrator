@@ -8,6 +8,7 @@ lives here.
 
 from orchestrator.providers.adapter import ProviderAdapter
 from orchestrator.providers.claude_code_adapter import ClaudeCodeAdapter
+from orchestrator.providers.codex_adapter import CodexAdapter
 from orchestrator.providers.contracts import (
     ProviderAvailability,
     ProviderState,
@@ -19,6 +20,7 @@ from orchestrator.providers.contracts import (
 
 __all__ = [
     "ClaudeCodeAdapter",
+    "CodexAdapter",
     "ProviderAdapter",
     "ProviderAvailability",
     "ProviderState",
