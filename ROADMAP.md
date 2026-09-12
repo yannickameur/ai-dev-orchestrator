@@ -567,15 +567,47 @@ testable offline, et documenter explicitement ses dépendances.
 - Dépend de : Slice 7, Slice 8 (verdict de review = une validation parmi
   d'autres)
 
-**Slice 10 — Release gate + activity report**
-- Une release/MVP a une validation globale : WorkItems attendus terminés,
-  critères d'acceptation satisfaits, tests verts, review validée,
-  éventuellement smoke/E2E, aucun blocker critique — le succès d'une somme
-  d'exécutions individuelles ne suffit pas
-- Rapport d'activité durable et interrogeable (MVP/WorkItem, workers,
-  provider/model/reasoning, executions, durée, commits/SHA, tests,
-  reviews, failures, interruptions, reprises, décisions, changements de
-  roadmap, quota connu) — aucun secret stocké
+**Slice 10 — Release gate + activity report — ✅ DONE**
+- `ReleaseGateStatus`/`ReleaseCheck`/`ReleaseGateResult`/`ReleaseRecord`/
+  `ReleaseStore` (`src/orchestrator/release.py`, sqlite3 stdlib, store
+  dédié) — fail-closed strict : `PASSED` uniquement si chaque check
+  confirme positivement sa condition ; `ERROR` (évaluation non fiable,
+  ex. données corrompues) jamais confondu avec `FAILED` (checks évalués,
+  au moins un non satisfait), ni l'un ni l'autre jamais traité comme
+  `PASSED`
+- 4 checks explicites et non dupliqués : `all-work-items-completed`
+  (couvre PLANNED/READY/RUNNING/REVIEWING/NEEDS_REWORK/FAILED/BLOCKED en
+  un seul check — tous doivent être `COMPLETED`), `quality-gates-satisfied`
+  (dérivé de la config `ValidationStore` réellement persistée — pas
+  d'heuristique), `reviews-approved` (actif seulement si le paramètre
+  explicite `review_required=True` est passé — jamais déduit
+  arbitrairement d'une présence/absence de données, cf. note "reviews
+  requises" de la tâche Slice 10), `no-dangling-running-executions`
+- `ReleaseManager` (`src/orchestrator/release_manager.py`) : service
+  séparé de `MVPManager` (évite le god object), lit uniquement
+  `ProjectStateStore`/`ExecutionStore`/`ValidationStore`/`ReviewStore`/
+  `HandoffStore` — ne lance et ne sélectionne jamais de worker
+- Cycle MVP étendu : `RUNNING → VALIDATING → RELEASED` ; un gate échoué
+  laisse le MVP en `VALIDATING` (état correctable, jamais un cul-de-sac) ;
+  `mark_mvp_validating`/`mark_mvp_released` ajoutés à `ProjectStateStore`
+- `ActivityReport`/`ActivityReportStore` (`src/orchestrator/
+  activity_report.py`) : snapshot factuel durable généré **uniquement**
+  après un gate `PASSED`, agrégé depuis les stores existants (jamais de
+  scraping stdout/logs, jamais rédigé par un LLM) — WorkItems, executions
+  (worker/provider/model/reasoning_effort/SHA/session ids), validations,
+  reviews (+ findings), handoffs, incidents, synthèse factuelle
+  (compteurs, workers/providers utilisés, durée)
+- `render_markdown()` : rendu Markdown déterministe pur, aucun appel LLM
+- Petites extensions minimales et justifiées des stores existants (pas de
+  god object) : `ExecutionStore.list_for_task()`,
+  `ValidationStore.list_results_for_work_item()` +  `git_sha` exposé sur
+  `ValidationResult`
+- Git : lecture seule (`git rev-parse HEAD` une fois par tentative de
+  release) ; aucune mutation
+- Plusieurs tentatives de release conservées par MVP (jamais écrasées),
+  restart supporté (release/report relisibles)
+- Tests : `tests/test_release.py`, `tests/test_activity_report.py`,
+  `tests/test_release_manager.py` (100% offline)
 - Dépend de : Slice 7, Slice 8, Slice 9
 
 **Slice 11 — Quota waiting / interruption / durable resume**
@@ -804,8 +836,14 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     `src/orchestrator/review.py`, statuts `REVIEWING`/`NEEDS_REWORK` dans
     `src/orchestrator/project_state.py`, intégration minimale/opt-in dans
     `src/orchestrator/mvp_manager.py`, et les tests associés.
-- **Next** : Slice 10 — Release gate + activity report — voir
-  « Découpage incrémental » ci-dessus pour la suite complète (Slice 10 à 14).
+  - **Slice 10 (Release gate + activity report) — DONE** : voir
+    `src/orchestrator/release.py`, `src/orchestrator/activity_report.py`,
+    `src/orchestrator/release_manager.py`, cycle MVP étendu
+    (`VALIDATING`/`RELEASED`) dans `src/orchestrator/project_state.py`, et
+    les tests associés.
+- **Next** : Slice 11 — Quota waiting / interruption / durable resume —
+  voir « Découpage incrémental » ci-dessus pour la suite complète
+  (Slice 11 à 14).
 
 ## Comment reprendre ce projet à froid
 

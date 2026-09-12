@@ -114,8 +114,12 @@ _WORK_ITEM_TRANSITIONS: dict[WorkItemStatus, frozenset[WorkItemStatus]] = {
 
 _MVP_TRANSITIONS: dict[MVPStatus, frozenset[MVPStatus]] = {
     MVPStatus.PLANNED: frozenset({MVPStatus.RUNNING}),
-    MVPStatus.RUNNING: frozenset(),
-    MVPStatus.VALIDATING: frozenset(),
+    MVPStatus.RUNNING: frozenset({MVPStatus.VALIDATING}),
+    # A failed release gate is correctable (more rework, a later retry):
+    # VALIDATING only ever moves forward to RELEASED, it is never itself a
+    # dead end — re-attempting release evaluation simply re-enters
+    # VALIDATING (idempotent, see mark_mvp_validating).
+    MVPStatus.VALIDATING: frozenset({MVPStatus.RELEASED}),
     MVPStatus.RELEASED: frozenset(),
     MVPStatus.FAILED: frozenset(),
     MVPStatus.BLOCKED: frozenset(),
@@ -457,6 +461,36 @@ class ProjectStateStore:
                 "UPDATE mvps SET status = ? WHERE mvp_id = ?", (MVPStatus.RUNNING.value, mvp_id)
             )
         return replace(current, status=MVPStatus.RUNNING)
+
+    def mark_mvp_validating(self, mvp_id: str) -> MVP:
+        """Enters (or re-enters) the release-evaluation state.
+
+        Idempotent: a failed release gate leaves the MVP in VALIDATING
+        (correctable, never a dead end), so re-attempting release
+        evaluation later must not fail just because it is already there.
+        """
+        current = self.get_mvp(mvp_id)
+        if current.status is MVPStatus.VALIDATING:
+            return current
+        allowed = _MVP_TRANSITIONS.get(current.status, frozenset())
+        if MVPStatus.VALIDATING not in allowed:
+            raise InvalidMVPTransitionError(mvp_id, current.status, MVPStatus.VALIDATING)
+        with self._conn:
+            self._conn.execute(
+                "UPDATE mvps SET status = ? WHERE mvp_id = ?", (MVPStatus.VALIDATING.value, mvp_id)
+            )
+        return replace(current, status=MVPStatus.VALIDATING)
+
+    def mark_mvp_released(self, mvp_id: str) -> MVP:
+        current = self.get_mvp(mvp_id)
+        allowed = _MVP_TRANSITIONS.get(current.status, frozenset())
+        if MVPStatus.RELEASED not in allowed:
+            raise InvalidMVPTransitionError(mvp_id, current.status, MVPStatus.RELEASED)
+        with self._conn:
+            self._conn.execute(
+                "UPDATE mvps SET status = ? WHERE mvp_id = ?", (MVPStatus.RELEASED.value, mvp_id)
+            )
+        return replace(current, status=MVPStatus.RELEASED)
 
     # --- WorkItem --------------------------------------------------------
 

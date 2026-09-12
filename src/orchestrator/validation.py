@@ -135,6 +135,7 @@ class ValidationResult:
     exit_code: int | None = None
     stdout: str = ""
     stderr: str = ""
+    git_sha: str | None = None
 
     def __post_init__(self) -> None:
         _require_non_empty_str(self.validation_run_id, field_name="ValidationResult.validation_run_id")
@@ -148,6 +149,8 @@ class ValidationResult:
         object.__setattr__(self, "argv", tuple(self.argv))
         if self.exit_code is not None and (not isinstance(self.exit_code, int) or isinstance(self.exit_code, bool)):
             raise TypeError(f"ValidationResult.exit_code must be an int or None, got {type(self.exit_code)!r}")
+        if self.git_sha is not None:
+            _require_non_empty_str(self.git_sha, field_name="ValidationResult.git_sha")
 
     @property
     def duration_ms(self) -> int:
@@ -198,6 +201,26 @@ def _compute_passed(
         if result is None or result.status is not ValidationStatus.PASSED:
             return False
     return True
+
+
+def _decode_result_row(row: sqlite3.Row) -> ValidationResult:
+    try:
+        return ValidationResult(
+            validation_run_id=row["validation_run_id"],
+            validation_id=row["validation_id"],
+            kind=ValidationKind(row["kind"]),
+            required=bool(row["required"]),
+            argv=tuple(json.loads(row["argv"])),
+            status=ValidationStatus(row["status"]),
+            started_at=datetime.fromisoformat(row["started_at"]),
+            finished_at=datetime.fromisoformat(row["finished_at"]),
+            exit_code=row["exit_code"],
+            stdout=row["stdout"],
+            stderr=row["stderr"],
+            git_sha=row["git_sha"],
+        )
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise CorruptValidationResultError(str(exc)) from exc
 
 
 def _git_head_sha(cwd: Path) -> str | None:
@@ -322,25 +345,7 @@ class ValidationStore:
         if not rows:
             raise UnknownValidationRunError(validation_run_id)
 
-        try:
-            results = tuple(
-                ValidationResult(
-                    validation_run_id=row["validation_run_id"],
-                    validation_id=row["validation_id"],
-                    kind=ValidationKind(row["kind"]),
-                    required=bool(row["required"]),
-                    argv=tuple(json.loads(row["argv"])),
-                    status=ValidationStatus(row["status"]),
-                    started_at=datetime.fromisoformat(row["started_at"]),
-                    finished_at=datetime.fromisoformat(row["finished_at"]),
-                    exit_code=row["exit_code"],
-                    stdout=row["stdout"],
-                    stderr=row["stderr"],
-                )
-                for row in rows
-            )
-        except (ValueError, TypeError, json.JSONDecodeError) as exc:
-            raise CorruptValidationResultError(str(exc)) from exc
+        results = tuple(_decode_result_row(row) for row in rows)
 
         first = rows[0]
         project_id = first["project_id"]
@@ -364,6 +369,19 @@ class ValidationStore:
         if row is None:
             return None
         return self.get_gate_result(row["validation_run_id"])
+
+    def list_results_for_work_item(self, work_item_id: str) -> list[ValidationResult]:
+        """All validation results ever recorded for a WorkItem, oldest first.
+
+        Spans every quality-gate run (including rework re-runs) — the read
+        primitive an activity report (Slice 10) needs for full validation
+        history, never log scraping.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM validation_results WHERE work_item_id = ? ORDER BY row_id ASC",
+            (work_item_id,),
+        ).fetchall()
+        return [_decode_result_row(row) for row in rows]
 
 
 SubprocessRunner = Callable[[Sequence[str], Path, float], Awaitable[tuple[int, bytes, bytes]]]
