@@ -1,0 +1,219 @@
+# Spécification du MVP 0.1 — AI Dev Orchestrator
+#
+# Ce fichier est la source de vérité pour savoir si le MVP 0.1 est "fini".
+# Chaque critère d'acceptation doit être vérifiable mécaniquement (test,
+# commande, sortie de commande) — pas seulement "ça semble marcher".
+#
+# v2 : révisé après revue indépendante de l'architecture (voir ROADMAP.md,
+# principes directeurs 7 et 8, et section "Modèle conceptuel").
+
+mvp:
+  id: mvp-0.1
+  name: "Boucle cœur locale, mono-projet, sans GitHub"
+  status: not_started
+  goal: >
+    Fournir une boucle Task -> Worker -> Exécution -> Résultat fonctionnelle
+    de bout en bout, en local, sur un seul projet, avec un routage de worker
+    qui priorise la capacité requise et le rôle avant le coût, un suivi de
+    quota extensible à plusieurs fenêtres, une identité d'exécution complète,
+    une abstraction Git découplée du moteur, et une détection explicite des
+    interruptions qui interdit tout retry aveugle.
+
+  non_goals:
+    - Intégration GitHub (branches distantes, Pull Requests, CI) — seule
+      l'abstraction Workspace doit déjà permettre de l'ajouter sans réécrire
+      le moteur
+    - Séparation stricte Developer/Reviewer (prévue en phase 3) — mais les
+      champs d'identité d'Execution nécessaires doivent déjà exister
+    - Réconciliation automatique complexe après interruption — une
+      réconciliation manuelle/explicite suffit pour ce MVP, à condition que
+      rien n'empêche de l'automatiser plus tard
+    - Usage réel de plusieurs fenêtres de quota simultanées — le schéma doit
+      le permettre, le comportement du MVP peut se limiter à une fenêtre par
+      worker
+    - Orchestration parallèle ou multi-projets
+    - Interface utilisateur graphique
+    - "Dépendances lourdes : LangGraph, LiteLLM, OpenHands, Temporal, PR-Agent"
+
+  acceptance_criteria:
+    - id: AC-1
+      title: Installation et CLI exécutable
+      description: >
+        Le paquet s'installe en environnement virtuel et expose une CLI.
+      measurable_check: >
+        `pip install -e .` termine avec un exit code 0, puis
+        `python -m orchestrator --help` retourne un exit code 0 et liste au
+        moins les commandes `mvp` et `task`.
+
+    - id: AC-2
+      title: Registre des workers chargé depuis YAML, avec capacités
+      description: >
+        Le registre des workers est entièrement déclaratif ; chaque worker
+        déclare à la fois ses rôles et les capacités de tâches qu'il sait
+        traiter, aucun worker n'est codé en dur dans le code Python.
+      measurable_check: >
+        Un test unitaire charge `config/workers.yaml` contenant au moins 3
+        entrées (claude_code, codex_cli, ollama_qwen) et vérifie que
+        `WorkerRegistry.load(...)` retourne 3 objets `Worker` avec les
+        champs `name`, `adapter`, `model`, `provider`, `roles`,
+        `capabilities`, `priority_tier`, `cost_tier` correctement renseignés.
+
+    - id: AC-3
+      title: Modèle de données MVP persistant
+      description: >
+        Un MVP créé via la CLI est retrouvable après redémarrage du process.
+      measurable_check: >
+        `orchestrator mvp create --name "X" --criteria "Y"` puis, dans un
+        nouveau process, `orchestrator mvp show <id>` retourne les mêmes
+        `name` et `criteria`, lus depuis SQLite (pas de cache mémoire).
+
+    - id: AC-4
+      title: Modèle de données Task persistant, avec exigences de routage
+      description: >
+        Une tâche créée sous un MVP est listée avec le statut `PENDING` et
+        porte les informations nécessaires au routage (rôle requis,
+        capacités requises).
+      measurable_check: >
+        `orchestrator task create --mvp <id> --title "T" --role developer
+        --capability <cap>` puis `orchestrator task list --mvp <id>` affiche
+        la tâche avec `status=PENDING`, `required_role=developer`, et la
+        capacité demandée dans `required_capabilities`.
+
+    - id: AC-5
+      title: QuotaManager — schéma multi-fenêtres
+      description: >
+        Le quota d'un worker est modélisé comme une ou plusieurs fenêtres
+        (`quota_windows`), jamais comme un état unique attaché au worker.
+      measurable_check: >
+        Un test unitaire insère, pour un même `worker_id`, deux lignes
+        `quota_windows` avec des `window_type` différents (ex. `daily` et
+        `concurrent`), chacune avec ses propres `remaining`/`reset_at`/
+        `observed_at`/`source`, et vérifie que les deux sont lues
+        indépendamment sans collision ni écrasement.
+
+    - id: AC-6
+      title: QuotaManager — états par fenêtre et transition après reset
+      description: >
+        Chaque fenêtre de quota expose un état dérivé parmi `AVAILABLE`,
+        `EXHAUSTED`, `WAITING_RESET`, `ERROR`, et repasse automatiquement à
+        `AVAILABLE` une fois son `reset_at` dépassé.
+      measurable_check: >
+        Test unitaire avec horloge simulée : une fenêtre est mise en
+        `WAITING_RESET` avec `reset_at = now + 1s` ; après avance de
+        l'horloge de 2s et appel de `QuotaManager.refresh()`, l'état de
+        cette fenêtre devient `AVAILABLE` sans affecter les autres fenêtres
+        du même worker.
+
+    - id: AC-7
+      title: ModelRouter — ordre capacité > rôle > disponibilité > coût
+      description: >
+        Le routeur sélectionne d'abord sur la capacité requise par la tâche,
+        puis sur le rôle, puis sur la disponibilité/quota, et n'utilise la
+        classe de coût que pour départager des candidats déjà éligibles.
+      measurable_check: >
+        Test unitaire avec 3 workers : (a) un worker local/gratuit,
+        `AVAILABLE`, qui ne déclare PAS la capacité requise par la tâche ;
+        (b) un worker en abonnement, `AVAILABLE`, qui déclare la capacité et
+        le rôle requis ; (c) un worker payant, `AVAILABLE`, qui déclare
+        aussi la capacité et le rôle. Le routeur doit choisir (b), jamais
+        (a) malgré son coût nul, car (a) ne satisfait pas la capacité
+        requise. Un second cas vérifie qu'entre (b) et (c) tous deux
+        éligibles, le routeur choisit (b) par priorité de coût.
+
+    - id: AC-8
+      title: Interface adaptateur commune et identité d'exécution complète
+      description: >
+        Les 3 adaptateurs (Claude Code, Codex CLI, Ollama/Qwen) exposent la
+        même interface `run(prompt) -> ExecutionResult`, et `ExecutionResult`
+        porte tous les champs d'identité requis.
+      measurable_check: >
+        Un test par adaptateur, exécuté contre un script exécutable factice
+        (stub) simulant le binaire réel, vérifie que `ExecutionResult`
+        contient `task_id`, `worker_id`, `provider`, `model`, `role`,
+        `started_at`, `finished_at`, `status`, `exit_code`, `stdout`,
+        `stderr`, `duration_ms`, avec `session_id`,
+        `git_sha_before`/`git_sha_after` présents mais nullables quand
+        l'information n'est pas disponible dans le contexte du test.
+
+    - id: AC-9
+      title: Exécution de tâche bout en bout avec statut RUNNING intermédiaire
+      description: >
+        Lancer une tâche crée une `Execution` en `RUNNING` avant de lancer le
+        worker, exécute réellement un worker (via subprocess), enregistre le
+        résultat, et met à jour le statut de la tâche.
+      measurable_check: >
+        `orchestrator task run <task_id>` avec un adaptateur stub configuré
+        renvoyant exit_code 0 : la table `executions` contient une ligne
+        liée à `task_id`, passée par `RUNNING` puis `DONE`, et
+        `orchestrator task list` montre `status=DONE`. Avec un stub renvoyant
+        exit_code != 0, l'exécution finit `FAILED` et la tâche `FAILED`.
+
+    - id: AC-10
+      title: Détection des exécutions interrompues au démarrage
+      description: >
+        Au démarrage, le moteur détecte les `Execution` restées `RUNNING`
+        (process précédent tué) et les marque `INTERRUPTED`, en faisant
+        passer la `Task` associée en `RECOVERY_REQUIRED`.
+      measurable_check: >
+        Test d'intégration : insérer directement en base une `Execution`
+        `RUNNING` rattachée à une `Task` `IN_PROGRESS` (simulant un kill -9
+        précédent), démarrer le moteur/CLI dans un nouveau process, puis
+        vérifier via `orchestrator task list` que l'exécution est
+        `INTERRUPTED` et la tâche `RECOVERY_REQUIRED` — sans qu'aucun worker
+        n'ait été relancé automatiquement.
+
+    - id: AC-11
+      title: Interdiction de retry aveugle et réconciliation explicite
+      description: >
+        Une tâche `RECOVERY_REQUIRED` refuse un `run` direct ; une action de
+        réconciliation explicite est nécessaire pour la faire repasser dans
+        un état exécutable.
+      measurable_check: >
+        Sur une tâche en `RECOVERY_REQUIRED` : `orchestrator task run
+        <task_id>` échoue avec un exit code non nul et un message explicite,
+        sans créer de nouvelle `Execution`. `orchestrator task reconcile
+        <task_id> --retry` (ou équivalent) fait repasser la tâche en
+        `PENDING`, après quoi `task run` fonctionne normalement.
+
+    - id: AC-12
+      title: Moteur découplé de Git via une abstraction Workspace
+      description: >
+        Le moteur pilote un dépôt de code uniquement via une interface
+        Workspace abstraite, jamais via des appels Git directs.
+      measurable_check: >
+        Un test d'exécution de tâche est lancé deux fois avec la même
+        logique de moteur : une fois avec l'implémentation
+        `LocalGitWorkspace`, une fois avec un faux Workspace de test
+        (in-memory, sans aucun appel `git`). Les deux passent sans
+        modification du code du moteur, prouvant l'absence de dépendance
+        directe à Git.
+
+    - id: AC-13
+      title: Workspace Git local par tâche
+      description: >
+        L'implémentation `LocalGitWorkspace` crée/bascule une branche locale
+        par tâche, sans opération réseau (pas de push, pas de GitHub).
+      measurable_check: >
+        Test contre un dépôt Git temporaire : après
+        `orchestrator task run <task_id>`, une branche nommée
+        `task/<task_id>-<slug>` existe dans le dépôt cible et est la branche
+        courante au moment de l'exécution ; `git_sha_before` et
+        `git_sha_after` sont renseignés sur l'`Execution` correspondante.
+
+    - id: AC-14
+      title: Suite de tests verte
+      description: >
+        L'ensemble du MVP 0.1 est couvert par des tests automatisés.
+      measurable_check: >
+        `pytest` depuis la racine du dépôt se termine avec exit code 0,
+        0 échec, et couvre au minimum : modèles de données (y compris les
+        états `RECOVERY_REQUIRED`/`INTERRUPTED`), WorkerRegistry, ModelRouter
+        (ordre capacité/rôle/disponibilité/coût), QuotaManager (schéma
+        multi-fenêtres), au moins un adaptateur, la détection de reprise
+        après interruption, l'abstraction Workspace et son implémentation
+        Git locale.
+
+  definition_of_done: >
+    Le MVP 0.1 est considéré terminé quand les 14 critères d'acceptation
+    ci-dessus sont vérifiés mécaniquement (tests automatisés passants), et
+    que `ROADMAP.md` a été mis à jour pour refléter le passage à la Phase 2.
