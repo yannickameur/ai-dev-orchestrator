@@ -294,19 +294,51 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
   démarrage (actuellement : primitives disponibles, pas de logique de
   démarrage qui les invoque)
 
-**9. RalphExecutionEngine (wrapper)**
-- Classe encapsulant Ralph 2.10.1
-- Lance un processus Ralph avec un preset (code-assist ou review)
-- Mappe les task_id / role / required_capabilities → hats Ralph
-- Collecte les événements Ralph + résultats
-- NE FAIT PAS d'appels Git directs : utilise Workspace
-- Événements custom applicatifs (`work.start`, `review.ready`,
-  `review.approved`, `review.rejected`) — jamais `task.*` (réservé au
-  coordinateur Ralph)
-- Ne se fie pas au `reason` de fin de boucle Ralph seul (peu fiable) ; lit
-  les événements métier explicites publiés par les hats
-- Retourne un `ExecutionResult` exploitable
-- L'exécution appartient exclusivement à ce composant, jamais à ProviderAdapter
+**9. RalphExecutionEngine (wrapper) — ✅ DONE**
+- `RalphExecutionEngine(execution_store, ralph_binary="ralph", clock=...)`
+  (`src/orchestrator/ralph_execution_engine.py`) : `async execute(request:
+  ExecutionRequest) -> ExecutionResult`
+- Génère un `ralph.yml`/`hats.yml`/`PROMPT.md` temporaires, propres à
+  l'exécution (jamais la config Ralph permanente de l'utilisateur), un seul
+  hat déclaratif traduit depuis `Worker.backend`/`model`/`reasoning_effort`
+  (jamais `provider=="anthropic"`/`"openai"` — traduction par table
+  explicite `backend -> type Ralph` + args CLI)
+- Lance `ralph run -a -q -c ... -H ... -P ...` en subprocess borné
+  (timeout global, cwd=workspace, args en liste, jamais `shell=True`) ;
+  n'appelle jamais `claude`/`codex` directement
+- `ExecutionRecord` créé `RUNNING` avant le lancement du subprocess ;
+  finalisé dans tous les cas (succès, échec métier, JSONL invalide, backend
+  non supporté, binaire introuvable) — jamais laissé `RUNNING` dans le
+  store
+- **EXIT CODE != VERDICT MÉTIER** (validé par le spike : `LOOP_COMPLETE` +
+  `reason=max_iterations` + exit_code=2) : le verdict vient exclusivement
+  des `success_topics`/`failure_topics` observés dans les events Ralph ;
+  `exit_code` reste une donnée d'audit, jamais transformée en verdict —
+  aucun événement métier fiable ⇒ `FAILED` (fail-closed, jamais
+  `SUCCEEDED`)
+- `task.start`/`task.resume` rejetés explicitement comme events custom
+  (réservés au coordinateur Ralph) via `ReservedEventTopicError`
+- `ralph_loop_id` récupéré depuis `.ralph/current-loop-id`/
+  `current-events` du workspace (source déterministe), jamais par parsing
+  fragile de stdout
+- Git : lecture seule (`git rev-parse HEAD` avant/après), aucune mutation
+  (pas de checkout/branch/commit/merge) ; non-Git ⇒ `None`
+- Aucun retry/fallback ; timeout ⇒ `INTERRUPTED` (retour normal, pas
+  d'exception) ; recovery d'anciennes exécutions `RUNNING` reste une passe
+  de réconciliation future au-dessus de `ExecutionStore.list_running()`
+  (non construite ici)
+- `ExecutionStore` (Slice 5) étendu a minima : `ralph_loop_id`/
+  `provider_session_id` désormais réglables aux transitions (connus
+  seulement après coup), même pattern que `git_sha_after`
+- Fixtures réelles réutilisées depuis le spike Ralph (`ralph-spike`,
+  jamais une dépendance runtime) : `tests/fixtures/ralph_events/` — aucune
+  invocation Claude/Codex répétée pour ces cas
+- Un seul smoke test réel exécuté (Claude Haiku, `work.completed`) pour
+  valider l'intégration bout en bout ; a révélé et corrigé deux bugs réels
+  (`--no-tui` incompatible avec `--autonomous` ; `description` de hat
+  requise par Ralph)
+- Tests : `tests/test_ralph_execution_engine.py` (offline, sauf `git`
+  local pour le test de capture de SHA)
 
 **10. MVPManager**
 - Crée/valide/archive les MVPs
@@ -477,9 +509,15 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     seulement)** : voir `src/orchestrator/execution_store.py` et
     `tests/test_execution_store.py`. `MVP`/`Task`/`Worker`/`QuotaWindow`
     persistants et réconciliation au démarrage restent à faire.
-- **Next** : `RalphExecutionEngine` (étape 9) — mais il aura besoin, avant
-  ou en parallèle, du volet `Task` persistant (étape 8 restante) pour
-  savoir quoi exécuter.
+  - **Étape 6 (RalphExecutionEngine) — DONE** : voir `src/orchestrator/
+    ralph_execution_engine.py` et `tests/test_ralph_execution_engine.py`.
+    Un seul smoke test réel exécuté (Claude Haiku) pour valider
+    l'intégration bout en bout.
+- **Next** : les 6 briques de gouvernance/exécution MVP 0.1 sont en place
+  bout en bout (Provider Adapters → QuotaManager → WorkerSelector →
+  ExecutionStore → RalphExecutionEngine). Reste : `MVP`/`Task`/`Worker`
+  persistants (étape 8 restante) pour piloter tout cela depuis une CLI, et
+  la réconciliation au démarrage des `Execution` orphelines `RUNNING`.
 
 ## Comment reprendre ce projet à froid
 
