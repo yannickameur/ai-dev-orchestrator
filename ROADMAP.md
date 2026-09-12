@@ -231,18 +231,34 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
   de l'orchestrateur/exécution, hors périmètre de cette couche)
 - Tests : `tests/test_quota_manager.py` (100% offline, fake adapters)
 
-**7. WorkerSelector**
-- Ordre conceptuel strict :
-  1. Capability match (peut-il faire le job ?)
-  2. Governance rules (politique acceptée ?)
-  3. Availability / Quota (ressource disponible ?)
-  4. Cost tier (free > subscription > paid)
-- Gouvernance :
-  - Author != Reviewer : policy-driven and configurable
-    - Preference : reviewer.provider != author.provider
-    - Fallback allowed per policy : reviewer.model != author.model
-  - Fallback must be explicit and policy-driven (peut être automatique si policy l'autorise)
-- Retourne un `SelectedWorker` ou erreur (WAITING_RESET, NO_AVAILABLE, etc.)
+**7. WorkerSelector — ✅ DONE**
+- `Worker` typé (`src/orchestrator/worker_selector.py`) : `worker_id`
+  (identité technique stable), `display_name` (jamais utilisé pour une
+  décision de gouvernance), `provider`, `backend`, `model`,
+  `reasoning_effort` optionnel, `capabilities: frozenset[str]` (rôle =
+  capability, ex. `"developer"`/`"reviewer"`), `priority: int`
+- Aucun provider n'est intrinsèquement author-only/reviewer-only ; Claude
+  et Codex ne sont jamais nommés dans la logique du sélecteur (vérifié par
+  test) — seule la config des workers les nomme
+- Ordre de filtrage : capabilities requises → exclusions de gouvernance
+  (author != reviewer + exclusions explicites) → provider `AVAILABLE` via
+  `QuotaManager.get()` (fail-closed : tout sauf `available=True` exclut,
+  y compris une erreur de probe) → priorité (tie-break lexical sur
+  `worker_id`, documenté et déterministe)
+- `WorkerSelectionPolicy` : `require_distinct_worker_for_review` figé à
+  `True` (invariant, jamais désactivable) ; `prefer_distinct_provider_for_review`
+  (soft, repli same-provider si nécessaire) ; `require_distinct_provider_for_review`
+  (hard, lève `ReviewIndependenceError` plutôt que de replier)
+- Ne lit jamais `quota_windows`/`utilization`/reset credits pour classer ou
+  départager des workers ; ne consomme jamais de reset credit
+- Un seul probe `QuotaManager.get()` par provider distinct réellement
+  nécessaire à la sélection (déduplication en amont, pas de duplication de
+  la logique single-flight du `QuotaManager`)
+- Erreurs domaine : `UnknownWorkerError`, `NoEligibleWorkerError`,
+  `ReviewIndependenceError`
+- Hors périmètre (volontairement) : exécution, retry/fallback post-échec,
+  WAITING_RESET/RECOVERY_REQUIRED — appartiennent à RalphExecutionEngine
+- Tests : `tests/test_worker_selector.py` (100% offline, fake adapters)
 
 **8. Persistence / execution audit** (SQLite)
 - `MVP` : périmètre, critères d'acceptation
@@ -438,8 +454,10 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     test_codex_adapter.py`.
   - **Étape 3 (QuotaManager) — DONE** : voir `src/orchestrator/
     quota_manager.py` et `tests/test_quota_manager.py`.
-- **Next** : WorkerSelector (étape 7, ordre capacité > gouvernance > quota
-  > coût) au-dessus du `QuotaManager`.
+  - **Étape 4 (WorkerSelector) — DONE** : voir `src/orchestrator/
+    worker_selector.py` et `tests/test_worker_selector.py`.
+- **Next** : Persistence / execution audit SQLite (étape 8), puis
+  `RalphExecutionEngine` (étape 9) au-dessus du `WorkerSelector`.
 
 ## Comment reprendre ce projet à froid
 
