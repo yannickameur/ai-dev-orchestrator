@@ -13,63 +13,53 @@ Objectifs principaux :
 
 ## État du projet
 
-Phase actuelle :
-- **Phase 0.5 — Reuse Spike : DONE**
-- **Phase 1 / Slice 0 — Contrats providers : DONE** (`src/orchestrator/providers/`)
-- **Phase 1 / Slice 1+ : READY TO START**
+Voir [`docs/status.md`](docs/status.md) pour l'état factuel courant (dernière
+slice publiée, prochaine étape) et [ROADMAP.md](ROADMAP.md) pour le détail
+complet (phases, slices terminées, vision cible, découpage incrémental).
 
-Phases complétées :
-- **Phase 0** — Spécification et architecture
-- **Phase 0.5** — Reuse Spike validant Ralph Orchestrator 2.10.1 comme moteur d'exécution
+Résumé : Phase 0/0.5 terminées ; Phase 1 (MVP 0.1) en cours, Slices 0 à 7
+terminées (contrats providers, ClaudeCodeAdapter, CodexAdapter,
+QuotaManager, WorkerSelector, execution audit persistence,
+RalphExecutionEngine, Project/MVP orchestration core + durable handoff).
 
 ### Architecture décidée
 
 AI Dev Orchestrator = couche mince de gouvernance et sélection au-dessus de Ralph.
 
 ```
-Task → AI Dev Orchestrator (quotas, gouvernance, sélection)
-        ↓
-    Provider Adapters (probe() → ProviderState)
+Project (workspace, roadmap, MVP courant)
+  ↓
+MVPManager (WorkItems, dépendances, handoff durable)
+  ↓
+WorkerSelector (capability > governance > quota > cost)
+  ↓
+RalphExecutionEngine (execution, hats, TDD, review Ralph)
+  ↓
+ExecutionRecord + HandoffRecord (audit + reprise durable)
+```
+
+En dessous de `WorkerSelector`, la sélection s'appuie sur :
+
+```
+Provider Adapters (probe() → ProviderState)
         ↓
     QuotaManager (multi-fenêtres, fraîcheur)
-        ↓
-    WorkerSelector (capability > governance > quota > cost)
-        ↓
-    Ralph Orchestrator (execution, hats, TDD, review)
-        ↓
-    Result → Execution record
 ```
+
+Voir « Vision cible du produit » dans `ROADMAP.md` pour le cycle complet
+(roadmap → MVP → WorkItems → exécution → review → release → synthèse
+multi-agent → approbation optimiste 20 min → MVP suivant), dont seule une
+partie est construite à ce stade.
 
 ### Documentation
 
-- [ROADMAP.md](ROADMAP.md) — phases, architecture, source de vérité
+- [ROADMAP.md](ROADMAP.md) — phases, architecture, vision cible, source de vérité
+- [docs/status.md](docs/status.md) — état factuel courant, court
 - [MVP_SPEC.yaml](MVP_SPEC.yaml) — critères d'acceptation mesurables du MVP 0.1
 - [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md) — étude des projets comparables
 - [docs/SPIKE_RALPH.md](docs/SPIKE_RALPH.md) — **résultats du spike Phase 0.5**
 
-### Démarrage Phase 1
-
-Construire (dans cet ordre) :
-
-**Slice 0 — Contrats normalisés (pré-requis)**
-1. **ProviderState, ProviderAvailability, QuotaWindow, ResetCredit** — contrats de sérialisation ✅ DONE
-2. **Interface ProviderAdapter** — `probe() → ProviderState` ✅ DONE
-3. **ClaudeCodeAdapter** — implémentation Claude stream-json
-4. **CodexAdapter** — implémentation Codex app-server
-5. **Tests avec fixtures spike** — valider contrats avant intégration
-
-**Slice 1+ — Après validation contrat**
-6. **QuotaManager** — multi-fenêtres, politique de fraîcheur
-7. **WorkerSelector** — sélection par capacité, gouvernance (Author ≠ Reviewer), quota, coût
-8. **Persistence / execution audit** (MVP, Task, Worker, Execution, QuotaWindow) → SQLite
-9. **RalphExecutionEngine** — wrapper léger autour de Ralph 2.10.1
-10. **MVPManager** et **Task orchestration** complète
-
-**Compléments MVP 0.1** (pas de rang fixe imposé par le spike) :
-- **Abstraction Workspace** — LocalGitWorkspace
-- **CLI** et **tests complets**
-
 Prérequis :
 - Ralph CLI installé (`npm install -g @ralph-orchestrator/ralph-cli`)
 - Claude Code CLI et Codex CLI authentifiés
-- Python 3.9+ avec pytest
+- Python 3.10+ avec pytest
