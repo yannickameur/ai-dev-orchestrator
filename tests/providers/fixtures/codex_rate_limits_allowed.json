@@ -1,0 +1,30 @@
+{
+  "ordinaryUsageAllowed": true,
+  "rateLimits": {
+    "primary": {
+      "usedPercent": 50,
+      "windowDurationMins": 300,
+      "resetsAt": 1789236783
+    },
+    "secondary": {
+      "usedPercent": 23,
+      "windowDurationMins": 10080,
+      "resetsAt": 1789805369
+    },
+    "planType": "plus"
+  },
+  "rateLimitResetCredits": {
+    "availableCount": 1,
+    "credits": [
+      {
+        "id": "reset-credit-test-0001",
+        "resetType": "codexRateLimits",
+        "status": "available",
+        "grantedAt": 1788565745,
+        "expiresAt": 1791157745,
+        "title": "Full reset (Weekly + 5 hr)",
+        "description": "Thanks for using Codex! You've been granted one free rate limit reset."
+      }
+    ]
+  }
+}
