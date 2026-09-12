@@ -10,16 +10,17 @@ from __future__ import annotations
 import asyncio
 import inspect
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from orchestrator.execution_store import ExecutionRecord, ExecutionStatus
+from orchestrator.execution_store import ExecutionRecord, ExecutionStatus, ExecutionStore
 from orchestrator.handoff import HandoffStore
 from orchestrator.mvp_manager import REVIEW_CAPABILITY, MVPManager
 from orchestrator.project_state import ProjectStateStore, WorkItemStatus
 from orchestrator.ralph_execution_engine import ExecutionResult, RalphEvent, RalphLaunchError
+from orchestrator.recovery import RECOVERY_NEXT_ACTION, RECOVERY_OPEN_ISSUE
 from orchestrator.review import ReviewPolicy, ReviewStatus, ReviewStore
 from orchestrator.validation import (
     QualityGateRunner,
@@ -27,7 +28,13 @@ from orchestrator.validation import (
     ValidationKind,
     ValidationStore,
 )
-from orchestrator.worker_selector import NoEligibleWorkerError, Worker
+from orchestrator.wait import WaitPhase, WaitStatus, WaitStore
+from orchestrator.worker_selector import (
+    NoEligibleWorkerError,
+    ProviderSelectionDiagnostic,
+    Worker,
+    WorkerSelectionRequest,
+)
 
 UTC_NOW = datetime(2026, 9, 12, 15, 0, tzinfo=timezone.utc)
 PY = sys.executable
@@ -895,3 +902,774 @@ class TestIndependentReview:
 
         assert result.work_item.status is WorkItemStatus.COMPLETED
         assert result.review_result is None
+
+
+def _quota_diag(*, provider: str = "anthropic", reset_at: datetime | None = None) -> ProviderSelectionDiagnostic:
+    return ProviderSelectionDiagnostic(
+        provider=provider, available=False, reason="quota_exhausted",
+        reset_at=(reset_at,) if reset_at is not None else (),
+    )
+
+
+def _probe_error_diag(*, provider: str = "anthropic") -> ProviderSelectionDiagnostic:
+    return ProviderSelectionDiagnostic(provider=provider, available=False, reason="probe_error")
+
+
+class ScriptedWorkerSelector:
+    """Replays a fixed sequence of results (Worker or Exception), in order.
+
+    Used to script "quota exhausted now, recovered (maybe with a
+    different worker) later" scenarios — this codebase only ever awaits
+    ``select()`` sequentially, never concurrently, so a single queue is
+    enough and stays simple.
+    """
+
+    def __init__(self, script: list) -> None:
+        self._script = list(script)
+        self.requests: list = []
+
+    async def select(self, request):
+        self.requests.append(request)
+        outcome = self._script.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+class ScriptedReviewWorkerSelector:
+    """Fixed developer, scripted sequence of reviewer outcomes."""
+
+    def __init__(self, dev_worker: Worker, reviewer_script: list) -> None:
+        self._dev_worker = dev_worker
+        self._reviewer_script = list(reviewer_script)
+        self.requests: list = []
+
+    async def select(self, request):
+        self.requests.append(request)
+        if REVIEW_CAPABILITY in request.required_capabilities:
+            outcome = self._reviewer_script.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return self._dev_worker
+
+
+def _wait_manager(
+    project_store, handoff_store, selector, engine, *, wait_store, review_store=None, clock,
+) -> MVPManager:
+    return MVPManager(
+        project_store, handoff_store, selector, engine,
+        review_store=review_store, wait_store=wait_store,
+        clock=clock, id_factory=_counting_id_factory(),
+    )
+
+
+class TestQuotaWaitingOnDeveloperSelection:
+    def test_quota_exhausted_moves_work_item_to_waiting_with_eligible_at(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: UTC_NOW)
+        reset_at = UTC_NOW + timedelta(hours=3)
+        error = NoEligibleWorkerError(
+            WorkerSelectionRequest(required_capabilities=frozenset()),
+            diagnostics=(_quota_diag(reset_at=reset_at),),
+        )
+        selector = FakeWorkerSelector(error=error)
+        engine = FakeExecutionEngine()
+        manager = _wait_manager(project_store, handoff_store, selector, engine, wait_store=wait_store, clock=lambda: UTC_NOW)
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result is not None
+        assert result.work_item.status is WorkItemStatus.WAITING
+        assert result.handoff is None  # nothing executed — no attempt to record
+        assert result.wait is not None
+        assert result.wait.eligible_at == reset_at
+        assert result.wait.phase is WaitPhase.DEVELOPMENT
+        assert project_store.get_work_item("wi-a").status is WorkItemStatus.WAITING
+        assert engine.requests == []
+
+    def test_probe_error_still_propagates_even_with_wait_store_configured(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: UTC_NOW)
+        error = NoEligibleWorkerError(
+            WorkerSelectionRequest(required_capabilities=frozenset()),
+            diagnostics=(_probe_error_diag(),),
+        )
+        selector = FakeWorkerSelector(error=error)
+        engine = FakeExecutionEngine()
+        manager = _wait_manager(project_store, handoff_store, selector, engine, wait_store=wait_store, clock=lambda: UTC_NOW)
+
+        with pytest.raises(NoEligibleWorkerError):
+            asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert project_store.get_work_item("wi-a").status is WorkItemStatus.READY
+        assert wait_store.list_pending() == []
+
+    def test_unrelated_exception_still_propagates_with_wait_store_configured(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: UTC_NOW)
+        selector = FakeWorkerSelector(error=RuntimeError("programming error, not a provider failure"))
+        engine = FakeExecutionEngine()
+        manager = _wait_manager(project_store, handoff_store, selector, engine, wait_store=wait_store, clock=lambda: UTC_NOW)
+
+        with pytest.raises(RuntimeError):
+            asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert wait_store.list_pending() == []
+
+    def test_dependent_of_waiting_work_item_never_launched(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(
+            project_store, tmp_path,
+            **{"wi-a": {"title": "A"}, "wi-b": {"title": "B", "dependencies": ["wi-a"]}},
+        )
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: UTC_NOW)
+        reset_at = UTC_NOW + timedelta(hours=3)
+        error = NoEligibleWorkerError(
+            WorkerSelectionRequest(required_capabilities=frozenset()),
+            diagnostics=(_quota_diag(reset_at=reset_at),),
+        )
+        selector = FakeWorkerSelector(error=error)
+        engine = FakeExecutionEngine()
+        manager = _wait_manager(project_store, handoff_store, selector, engine, wait_store=wait_store, clock=lambda: UTC_NOW)
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))  # wi-a -> WAITING
+        outcome = asyncio.run(manager.run_next_work_item("mvp-1"))  # not due yet
+
+        assert outcome is None
+        assert project_store.get_work_item("wi-b").status is WorkItemStatus.PLANNED
+        assert all(req.task_id != "wi-b" for req in engine.requests)
+
+
+class TestQuotaWaitResumeOnDeveloperSelection:
+    def test_resume_after_deadline_uses_fresh_execution_id_and_may_pick_a_different_worker(
+        self, tmp_path: Path
+    ) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        clock_box = {"now": UTC_NOW}
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: clock_box["now"])
+        reset_at = UTC_NOW + timedelta(hours=3)
+        error = NoEligibleWorkerError(
+            WorkerSelectionRequest(required_capabilities=frozenset()),
+            diagnostics=(_quota_diag(reset_at=reset_at),),
+        )
+        victor_dev = Worker(
+            worker_id="codex_dev_09", display_name="Victor", provider="openai",
+            backend="codex", model="terra", capabilities=frozenset({"developer"}),
+        )
+        selector = ScriptedWorkerSelector([error, victor_dev])
+        engine = FakeExecutionEngine(
+            result=_execution_result(
+                execution_id="whatever-the-fake-returns", task_id="wi-a",
+                worker_id=victor_dev.worker_id, status=ExecutionStatus.SUCCEEDED,
+            )
+        )
+        manager = _wait_manager(
+            project_store, handoff_store, selector, engine, wait_store=wait_store, clock=lambda: clock_box["now"]
+        )
+
+        first = asyncio.run(manager.run_next_work_item("mvp-1"))
+        assert first.work_item.status is WorkItemStatus.WAITING
+
+        clock_box["now"] = reset_at + timedelta(minutes=5)
+        second = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert second.work_item.status is WorkItemStatus.COMPLETED
+        assert engine.requests[0].worker.worker_id == victor_dev.worker_id
+        # A brand new execution_id was generated for the resumed attempt —
+        # never a reused/blind-retried one.
+        assert engine.requests[0].execution_id not in (None, "")
+        assert len(engine.requests) == 1
+        resolved_wait = wait_store.get(first.wait.wait_id)
+        assert resolved_wait.status is WaitStatus.RESOLVED
+
+    def test_resume_before_deadline_does_nothing(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        clock_box = {"now": UTC_NOW}
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: clock_box["now"])
+        reset_at = UTC_NOW + timedelta(hours=3)
+        error = NoEligibleWorkerError(
+            WorkerSelectionRequest(required_capabilities=frozenset()),
+            diagnostics=(_quota_diag(reset_at=reset_at),),
+        )
+        selector = ScriptedWorkerSelector([error])
+        engine = FakeExecutionEngine()
+        manager = _wait_manager(
+            project_store, handoff_store, selector, engine, wait_store=wait_store, clock=lambda: clock_box["now"]
+        )
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+        clock_box["now"] = reset_at - timedelta(minutes=1)
+        outcome = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert outcome is None
+        assert len(selector.requests) == 1  # never re-probed before the deadline
+        assert wait_store.list_pending()[0].status is WaitStatus.PENDING
+
+    def test_resume_still_unavailable_requeues_with_a_new_reset(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        clock_box = {"now": UTC_NOW}
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: clock_box["now"])
+        reset_at_1 = UTC_NOW + timedelta(hours=3)
+        reset_at_2 = UTC_NOW + timedelta(hours=6)
+        error1 = NoEligibleWorkerError(
+            WorkerSelectionRequest(required_capabilities=frozenset()),
+            diagnostics=(_quota_diag(reset_at=reset_at_1),),
+        )
+        error2 = NoEligibleWorkerError(
+            WorkerSelectionRequest(required_capabilities=frozenset()),
+            diagnostics=(_quota_diag(reset_at=reset_at_2),),
+        )
+        selector = ScriptedWorkerSelector([error1, error2])
+        engine = FakeExecutionEngine()
+        manager = _wait_manager(
+            project_store, handoff_store, selector, engine, wait_store=wait_store, clock=lambda: clock_box["now"]
+        )
+
+        first = asyncio.run(manager.run_next_work_item("mvp-1"))
+        clock_box["now"] = reset_at_1 + timedelta(minutes=1)
+        second = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert second.work_item.status is WorkItemStatus.WAITING
+        assert second.wait.eligible_at == reset_at_2
+        assert wait_store.get(first.wait.wait_id).status is WaitStatus.RESOLVED
+        assert engine.requests == []  # never executed anything blindly
+
+    def test_resume_gives_up_to_blocked_when_no_reliable_reset_remains(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        clock_box = {"now": UTC_NOW}
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: clock_box["now"])
+        reset_at = UTC_NOW + timedelta(hours=3)
+        error1 = NoEligibleWorkerError(
+            WorkerSelectionRequest(required_capabilities=frozenset()),
+            diagnostics=(_quota_diag(reset_at=reset_at),),
+        )
+        error2 = NoEligibleWorkerError(
+            WorkerSelectionRequest(required_capabilities=frozenset()),
+            diagnostics=(_probe_error_diag(),),
+        )
+        selector = ScriptedWorkerSelector([error1, error2])
+        engine = FakeExecutionEngine()
+        manager = _wait_manager(
+            project_store, handoff_store, selector, engine, wait_store=wait_store, clock=lambda: clock_box["now"]
+        )
+
+        first = asyncio.run(manager.run_next_work_item("mvp-1"))
+        clock_box["now"] = reset_at + timedelta(minutes=1)
+        second = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert second.work_item.status is WorkItemStatus.BLOCKED
+        assert "no reliable reset" in second.work_item.blocked_reason
+        assert wait_store.get(first.wait.wait_id).status is WaitStatus.RESOLVED
+        assert wait_store.list_pending() == []
+
+
+class TestQuotaWaitingOnReviewerSelection:
+    def test_reviewer_quota_exhausted_moves_to_waiting_review_phase_without_completing(
+        self, tmp_path: Path
+    ) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        alice = _alice()
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: UTC_NOW)
+        reset_at = UTC_NOW + timedelta(hours=2)
+        reviewer_error = NoEligibleWorkerError(
+            WorkerSelectionRequest(required_capabilities=frozenset({REVIEW_CAPABILITY})),
+            diagnostics=(_quota_diag(provider="openai", reset_at=reset_at),),
+        )
+        selector = FakeReviewAwareWorkerSelector(dev_workers=[alice], reviewer_error=reviewer_error)
+        engine = FakeReviewAwareExecutionEngine(
+            dev_results=[
+                _execution_result(
+                    execution_id="exec-1", task_id="wi-a", worker_id=alice.worker_id,
+                    status=ExecutionStatus.SUCCEEDED, git_sha_after="sha-dev",
+                )
+            ],
+        )
+        review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
+        manager = _wait_manager(
+            project_store, handoff_store, selector, engine, wait_store=wait_store,
+            review_store=review_store, clock=lambda: UTC_NOW,
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.WAITING
+        assert result.work_item.status is not WorkItemStatus.COMPLETED
+        assert result.review_result is None
+        assert result.handoff is not None  # the development attempt itself is still recorded
+        assert result.handoff.git_sha_after == "sha-dev"
+        # no spurious review recorded — must never consume a bounded rework cycle.
+        assert review_store.count_for_work_item("wi-a") == 0
+        pending = wait_store.list_pending()
+        assert len(pending) == 1
+        assert pending[0].phase is WaitPhase.REVIEW
+        assert pending[0].eligible_at == reset_at
+
+    def test_review_wait_resume_uses_last_handoff_with_fresh_execution_and_may_change_reviewer(
+        self, tmp_path: Path
+    ) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        alice = _alice()
+        victor = _victor()
+        clock_box = {"now": UTC_NOW}
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: clock_box["now"])
+        reset_at = UTC_NOW + timedelta(hours=2)
+        reviewer_error = NoEligibleWorkerError(
+            WorkerSelectionRequest(required_capabilities=frozenset({REVIEW_CAPABILITY})),
+            diagnostics=(_quota_diag(provider="openai", reset_at=reset_at),),
+        )
+        selector = ScriptedReviewWorkerSelector(dev_worker=alice, reviewer_script=[reviewer_error, victor])
+        engine = FakeReviewAwareExecutionEngine(
+            dev_results=[
+                _execution_result(
+                    execution_id="exec-1", task_id="wi-a", worker_id=alice.worker_id,
+                    status=ExecutionStatus.SUCCEEDED, git_sha_after="sha-dev",
+                )
+            ],
+            review_results=[
+                _review_result(
+                    execution_id="whatever-the-fake-returns", worker_id=victor.worker_id,
+                    provider="openai", model="gpt-5.6-terra", status=ExecutionStatus.SUCCEEDED,
+                )
+            ],
+        )
+        review_store = ReviewStore(":memory:", clock=lambda: clock_box["now"])
+        manager = _wait_manager(
+            project_store, handoff_store, selector, engine, wait_store=wait_store,
+            review_store=review_store, clock=lambda: clock_box["now"],
+        )
+
+        first = asyncio.run(manager.run_next_work_item("mvp-1"))
+        assert first.work_item.status is WorkItemStatus.WAITING
+
+        clock_box["now"] = reset_at + timedelta(minutes=1)
+        second = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert second.work_item.status is WorkItemStatus.COMPLETED
+        assert second.review_result.status is ReviewStatus.APPROVED
+        assert second.review_result.reviewer_worker_id == victor.worker_id
+        assert second.review_result.author_worker_id == alice.worker_id
+        assert second.review_result.reviewer_worker_id != second.review_result.author_worker_id
+        review_requests = [r for r in engine.requests if r.role == "reviewer"]
+        assert len(review_requests) == 1
+        assert review_requests[0].execution_id  # freshly generated, never the old dev execution_id
+        assert review_requests[0].execution_id != "exec-1"
+        # the review used the dev git SHA carried over from the last handoff.
+        assert "sha-dev" in review_requests[0].instructions
+
+
+class TestNoForbiddenWaitBehavior:
+    def test_wait_module_never_polls_shells_out_or_touches_reset_credit(self) -> None:
+        from orchestrator import wait as wait_module
+
+        source = inspect.getsource(wait_module)
+        for forbidden in (
+            "import subprocess", "asyncio.create_subprocess", "Popen",
+            "ResetCredit", ".consume(", "time.sleep", "while True",
+            "ClaudeCodeAdapter", "CodexAdapter",
+        ):
+            assert forbidden not in source
+
+    def test_mvp_manager_wait_integration_never_polls_or_touches_reset_credit(self) -> None:
+        from orchestrator import mvp_manager as module
+
+        source = inspect.getsource(module)
+        for forbidden in (
+            "ResetCredit", ".consume(", "time.sleep", "while True",
+            "import subprocess", "asyncio.create_subprocess", "Popen",
+        ):
+            assert forbidden not in source
+
+    def test_recovery_module_never_shells_out_or_touches_reset_credit(self) -> None:
+        from orchestrator import recovery as module
+
+        source = inspect.getsource(module)
+        for forbidden in (
+            "import subprocess", "asyncio.create_subprocess", "Popen",
+            "ResetCredit", ".consume(", "time.sleep", "while True",
+            "ClaudeCodeAdapter", "CodexAdapter", "QuotaManager(", "WorkerSelector(",
+        ):
+            assert forbidden not in source
+
+
+def _execution_store(tmp_path: Path) -> ExecutionStore:
+    return ExecutionStore(tmp_path / "execution.sqlite3", clock=lambda: UTC_NOW)
+
+
+class TestExecutionRecoveryDevPhase:
+    """Slice 11b: an orphaned/interrupted RUNNING development execution is
+    reconciled explicitly and resumed with a brand-new execution — never
+    relaunched, never silently treated as success or plain FAILED."""
+
+    def test_orphaned_running_dev_resumes_with_fresh_execution_and_may_change_worker(
+        self, tmp_path: Path
+    ) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")  # simulate a prior crash mid-run
+        execution_store = _execution_store(tmp_path)
+        execution_store.create(
+            execution_id="exec-old", task_id="wi-a", worker_id="claude_dev_01",
+            provider="anthropic", backend="claude_code", model="sonnet", role="developer",
+        )  # never finalized — orphaned by the crash
+
+        chloe = _chloe()
+        selector = FakeWorkerSelector(worker=chloe)
+        engine = FakeExecutionEngine(
+            result=_execution_result(
+                execution_id="whatever-the-fake-returns", task_id="wi-a",
+                worker_id=chloe.worker_id, status=ExecutionStatus.SUCCEEDED,
+            )
+        )
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine, execution_store=execution_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert execution_store.get("exec-old").status is ExecutionStatus.RECOVERY_REQUIRED
+        assert engine.requests[0].worker.worker_id == chloe.worker_id
+        assert engine.requests[0].execution_id != "exec-old"
+        # Two handoffs: the recovery one (created during reconciliation)
+        # plus the fresh completion handoff — never overwriting history.
+        assert len(handoff_store.list_for_work_item("wi-a")) == 2
+
+    def test_resumed_dev_execution_replays_the_quality_gate(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        execution_store = _execution_store(tmp_path)
+        execution_store.create(
+            execution_id="exec-old", task_id="wi-a", worker_id="claude_dev_01",
+            provider="anthropic", backend="claude_code", model="sonnet", role="developer",
+        )
+        alice = _alice()
+        selector = FakeWorkerSelector(worker=alice)
+        engine = FakeExecutionEngine(
+            result=_execution_result(
+                execution_id="whatever", task_id="wi-a", worker_id=alice.worker_id,
+                status=ExecutionStatus.SUCCEEDED,
+            )
+        )
+        gate_runner = _gate_runner(
+            tmp_path, [ValidationCommand(validation_id="unit-tests", kind=ValidationKind.UNIT_TEST, argv=(PY, "-c", "pass"))]
+        )
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine, execution_store=execution_store,
+            quality_gate_runner=gate_runner, clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        # A brand-new development execution always means new code could
+        # have been produced — the gate must be re-evaluated before review.
+        assert result.gate_result is not None
+        assert result.gate_result.passed is True
+
+    def test_orphaned_dev_execution_never_relaunched_and_stays_historical(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        execution_store = _execution_store(tmp_path)
+        execution_store.create(
+            execution_id="exec-old", task_id="wi-a", worker_id="claude_dev_01",
+            provider="anthropic", backend="claude_code", model="sonnet", role="developer",
+        )
+        alice = _alice()
+        selector = FakeWorkerSelector(worker=alice)
+        engine = FakeExecutionEngine(
+            result=_execution_result(
+                execution_id="whatever", task_id="wi-a", worker_id=alice.worker_id,
+                status=ExecutionStatus.SUCCEEDED,
+            )
+        )
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine, execution_store=execution_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        # exec-old is never reused as a request target, and its terminal
+        # status is never flipped back toward RUNNING.
+        assert all(req.execution_id != "exec-old" for req in engine.requests)
+        assert execution_store.get("exec-old").status is ExecutionStatus.RECOVERY_REQUIRED
+
+    def test_interrupted_dev_execution_within_same_call_becomes_recovery_required_not_failed(
+        self, tmp_path: Path
+    ) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        execution_store = _execution_store(tmp_path)
+        alice = _alice()
+        selector = FakeWorkerSelector(worker=alice)
+        engine = FakeExecutionEngine(
+            result=_execution_result(
+                execution_id="exec-timeout", task_id="wi-a", worker_id=alice.worker_id,
+                status=ExecutionStatus.INTERRUPTED,
+            )
+        )
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine, execution_store=execution_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.RECOVERY_REQUIRED
+        assert result.work_item.status is not WorkItemStatus.FAILED
+        assert result.work_item.status is not WorkItemStatus.COMPLETED
+        assert result.handoff is not None
+        assert result.handoff.open_issues == RECOVERY_OPEN_ISSUE
+        assert result.handoff.next_action == RECOVERY_NEXT_ACTION
+
+    def test_interrupted_dev_execution_without_execution_store_preserves_old_failed_behavior(
+        self, tmp_path: Path
+    ) -> None:
+        # Opt-in: no execution_store configured -> exact pre-Slice-11b
+        # behavior (INTERRUPTED treated like any other non-success).
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        alice = _alice()
+        selector = FakeWorkerSelector(worker=alice)
+        engine = FakeExecutionEngine(
+            result=_execution_result(
+                execution_id="exec-timeout", task_id="wi-a", worker_id=alice.worker_id,
+                status=ExecutionStatus.INTERRUPTED,
+            )
+        )
+        manager = _manager(project_store, handoff_store, selector, engine)  # no execution_store
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.FAILED
+
+    def test_restart_after_interruption_resumes_with_new_execution(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        execution_store = _execution_store(tmp_path)
+        execution_store.create(
+            execution_id="exec-interrupted", task_id="wi-a", worker_id="claude_dev_01",
+            provider="anthropic", backend="claude_code", model="sonnet", role="developer",
+        )
+        execution_store.mark_interrupted("exec-interrupted")  # handled pre-restart, then the process crashed
+
+        alice = _alice()
+        selector = FakeWorkerSelector(worker=alice)
+        engine = FakeExecutionEngine(
+            result=_execution_result(
+                execution_id="whatever", task_id="wi-a", worker_id=alice.worker_id,
+                status=ExecutionStatus.SUCCEEDED,
+            )
+        )
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine, execution_store=execution_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert execution_store.get("exec-interrupted").status is ExecutionStatus.INTERRUPTED
+        assert all(req.execution_id != "exec-interrupted" for req in engine.requests)
+
+    def test_recovery_required_dependent_never_executed(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(
+            project_store, tmp_path,
+            **{"wi-a": {"title": "A"}, "wi-b": {"title": "B", "dependencies": ["wi-a"]}},
+        )
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        execution_store = _execution_store(tmp_path)
+        execution_store.create(
+            execution_id="exec-old", task_id="wi-a", worker_id="claude_dev_01",
+            provider="anthropic", backend="claude_code", model="sonnet", role="developer",
+        )
+        # No eligible developer at resume time — an ordinary, non-quota
+        # exception, propagates exactly like the pre-Slice-11 top-level
+        # dev selection path (no wait_store configured here).
+        selector = FakeWorkerSelector(
+            error=NoEligibleWorkerError(WorkerSelectionRequest(required_capabilities=frozenset()))
+        )
+        engine = FakeExecutionEngine()
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine, execution_store=execution_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        with pytest.raises(NoEligibleWorkerError):
+            asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert project_store.get_work_item("wi-a").status is WorkItemStatus.RECOVERY_REQUIRED
+        assert project_store.get_work_item("wi-b").status is WorkItemStatus.PLANNED
+        assert engine.requests == []
+
+
+class TestExecutionRecoveryReviewPhase:
+    """Slice 11b applied symmetrically to a review execution."""
+
+    def test_orphaned_review_resumes_with_fresh_execution_and_independent_reviewer(
+        self, tmp_path: Path
+    ) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        execution_store = _execution_store(tmp_path)
+        execution_store.create(
+            execution_id="exec-dev", task_id="wi-a", worker_id="claude_dev_01",
+            provider="anthropic", backend="claude_code", model="sonnet", role="developer",
+        )
+        execution_store.mark_succeeded("exec-dev")
+        handoff_store.create(
+            handoff_id="handoff-dev", project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
+            objective="A", execution_id="exec-dev", worker_id="claude_dev_01",
+            test_results="quality_gate=PASSED (unit-tests=passed)", next_action="proceed to review",
+            created_at=UTC_NOW,
+        )
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        project_store.mark_work_item_reviewing("wi-a")
+        execution_store.create(
+            execution_id="exec-review-old", task_id="wi-a", worker_id="codex_dev_01",
+            provider="openai", backend="codex", model="terra", role="reviewer",
+        )  # orphaned mid-review
+
+        victor = _victor()
+        selector = ScriptedReviewWorkerSelector(dev_worker=_alice(), reviewer_script=[victor])
+        engine = FakeReviewAwareExecutionEngine(
+            dev_results=[],
+            review_results=[
+                _review_result(
+                    execution_id="whatever", worker_id=victor.worker_id,
+                    provider="openai", model="gpt-5.6-terra", status=ExecutionStatus.SUCCEEDED,
+                )
+            ],
+        )
+        review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine, review_store=review_store,
+            execution_store=execution_store, clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert result.review_result.status is ReviewStatus.APPROVED
+        assert result.review_result.reviewer_worker_id == victor.worker_id
+        assert result.review_result.author_worker_id == "claude_dev_01"
+        assert result.review_result.reviewer_worker_id != result.review_result.author_worker_id
+        assert execution_store.get("exec-review-old").status is ExecutionStatus.RECOVERY_REQUIRED
+        review_requests = [r for r in engine.requests if r.role == "reviewer"]
+        assert len(review_requests) == 1
+        assert review_requests[0].execution_id != "exec-review-old"
+        # No fantom review ever recorded for the orphaned attempt itself.
+        assert review_store.count_for_work_item("wi-a") == 1
+
+    def test_review_interrupted_within_same_call_becomes_recovery_required_no_fantom_verdict(
+        self, tmp_path: Path
+    ) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        execution_store = _execution_store(tmp_path)
+        alice = _alice()
+        victor = _victor()
+        selector = FakeReviewAwareWorkerSelector(dev_workers=[alice], reviewer=victor)
+        engine = FakeReviewAwareExecutionEngine(
+            dev_results=[
+                _execution_result(
+                    execution_id="exec-1", task_id="wi-a", worker_id=alice.worker_id,
+                    status=ExecutionStatus.SUCCEEDED,
+                )
+            ],
+            review_results=[
+                _review_result(
+                    execution_id="exec-2", worker_id=victor.worker_id, provider="openai",
+                    model="gpt-5.6-terra", status=ExecutionStatus.INTERRUPTED,
+                )
+            ],
+        )
+        review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine, review_store=review_store,
+            execution_store=execution_store, clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.RECOVERY_REQUIRED
+        assert result.work_item.status is not WorkItemStatus.COMPLETED
+        # An honest INTERRUPTED record is kept (not a fantom verdict: never
+        # APPROVED/REJECTED for an attempt that never reached one), but it
+        # never burns a bounded rework cycle either.
+        assert result.review_result.status is ReviewStatus.INTERRUPTED
+        assert review_store.count_for_work_item("wi-a") == 1
+
+    def test_review_phase_recovery_never_replays_the_quality_gate(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        execution_store = _execution_store(tmp_path)
+        execution_store.create(
+            execution_id="exec-dev", task_id="wi-a", worker_id="claude_dev_01",
+            provider="anthropic", backend="claude_code", model="sonnet", role="developer",
+        )
+        execution_store.mark_succeeded("exec-dev")
+        handoff_store.create(
+            handoff_id="handoff-dev", project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
+            objective="A", execution_id="exec-dev", worker_id="claude_dev_01",
+            test_results="quality_gate=PASSED (unit-tests=passed)", next_action="proceed to review",
+            created_at=UTC_NOW,
+        )
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        project_store.mark_work_item_reviewing("wi-a")
+        execution_store.create(
+            execution_id="exec-review-old", task_id="wi-a", worker_id="codex_dev_01",
+            provider="openai", backend="codex", model="terra", role="reviewer",
+        )
+
+        victor = _victor()
+        selector = ScriptedReviewWorkerSelector(dev_worker=_alice(), reviewer_script=[victor])
+        engine = FakeReviewAwareExecutionEngine(
+            dev_results=[],
+            review_results=[
+                _review_result(
+                    execution_id="whatever", worker_id=victor.worker_id,
+                    provider="openai", model="gpt-5.6-terra", status=ExecutionStatus.SUCCEEDED,
+                )
+            ],
+        )
+        review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
+        # A gate that would FAIL if it were ever invoked here — proves it
+        # never is: no new development code was produced, so the already
+        # PASSED gate result is carried forward from the handoff as-is.
+        gate_runner = _gate_runner(
+            tmp_path,
+            [ValidationCommand(validation_id="t", kind=ValidationKind.UNIT_TEST, argv=(PY, "-c", "import sys; sys.exit(1)"))],
+        )
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine, review_store=review_store,
+            quality_gate_runner=gate_runner, execution_store=execution_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert result.gate_result is None  # never re-evaluated during a review-only resume
+        assert result.handoff.test_results == "quality_gate=PASSED (unit-tests=passed)"

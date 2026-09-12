@@ -610,15 +610,120 @@ testable offline, et documenter explicitement ses dépendances.
   `tests/test_release_manager.py` (100% offline)
 - Dépend de : Slice 7, Slice 8, Slice 9
 
-**Slice 11 — Quota waiting / interruption / durable resume**
-- `WAITING_RESET` introduit comme état d'**orchestration** (jamais dans
-  `ProviderAvailability`/`ExecutionStatus` existants, qui restent des
-  contrats provider/exécution purs)
-- Reconnaissance et reprise explicite (jamais automatique/aveugle) des
-  `Execution` `RUNNING` orphelines détectées via `ExecutionStore.
-  list_running()` au redémarrage
+**Slice 11 — Quota waiting / interruption / durable resume — ✅ DONE**
+- `WorkItemStatus.WAITING` introduit comme état d'**orchestration**
+  générique (jamais dans `ProviderAvailability`/`ExecutionStatus`
+  existants, qui restent des contrats provider/exécution purs) — la
+  raison précise (phase interrompue : `development`/`rework`/`review`,
+  deadline, providers concernés) vit dans un `WaitRecord` séparé, jamais
+  dans le WorkItem lui-même
+- `orchestrator/wait.py` (nouveau, sqlite3 stdlib, store dédié) :
+  `WaitPhase`/`WaitReason`/`WaitStatus`/`WaitRecord`/`WaitStore`
+  (`create`/`get`/`list_pending`/`list_due(now)`/`next_due_at`/`resolve`,
+  historique jamais supprimé) + `WaitCoordinator` (bookkeeping pur :
+  n'appelle jamais WorkerSelector/QuotaManager lui-même, ne fait
+  qu'interpréter les diagnostics qu'on lui passe)
+- `WorkerSelector` enrichi *a minima* : `ProviderSelectionDiagnostic`
+  (provider/available/reason/reset_at) attaché à `NoEligibleWorkerError`/
+  `ReviewIndependenceError` sur échec de sélection uniquement — jamais
+  utilisé par WorkerSelector pour classer/sélectionner, jamais de logique
+  de scheduler ajoutée là ; 100% rétro-compatible (paramètre keyword-only
+  par défaut `()`)
+- `eligible_at` calculé strictement depuis les `QuotaWindow.reset_at`
+  réels des candidats diagnostiqués `quota_exhausted` (le plus proche) —
+  jamais inventé ; une `ProviderProbeError` ou une raison `unknown` ne
+  produit jamais de `WaitRecord` (l'exception propage, ou le
+  comportement Slice 9 (`BLOCKED`) est préservé tel quel)
+- `MVPManager` (opt-in via nouveau paramètre optionnel `wait_store`,
+  comportement Slice 7/8/9/10 inchangé si absent) : sélection dev/reviewer
+  échouée + reset fiable connu ⇒ `WorkItem` → `WAITING` + `WaitRecord`
+  persisté ; sinon comportement préexistant strictement préservé
+- Reprise pull-based, jamais de polling : `run_next_work_item` interroge
+  `WaitCoordinator.find_due` en tout premier ; re-probe WorkerSelector
+  au moment de la reprise (un reset théorique n'est jamais une preuve de
+  disponibilité) ; toujours une **nouvelle** `execution_id` (jamais de
+  relance aveugle d'une exécution/interruption passée) ; le worker
+  repris peut différer du précédent (provider différent inclus)
+- Contexte de reprise reconstruit depuis les faits durables
+  (`HandoffStore`, jamais depuis le worker interrompu) : reprise
+  développement/rework réinjecte le dernier handoff dans les
+  instructions ; reprise review reconstruit un `ExecutionResult` minimal
+  (execution_id/worker_id/git_sha) à partir du dernier `HandoffRecord`
+  pour relancer `_run_review` sans dépendre du worker précédent
+- Toujours re-probe avant de reprendre : si le reset échoit mais qu'aucun
+  worker n'est encore éligible, le wait est **requeue** avec un nouveau
+  `eligible_at` fiable si connu, sinon abandon explicite vers `BLOCKED`
+  (jamais de reprise aveugle sur un simple reset théorique)
+- Dépendants d'un WorkItem `WAITING` jamais lancés (`refresh_readiness`
+  ne les promeut que sur dépendance `COMPLETED`, inchangé)
+- S'applique symétriquement à la review : un reviewer indisponible par
+  quota fait aussi passer le WorkItem en `WAITING` (phase `review`) — le
+  WorkItem n'est jamais `COMPLETED` faute de reviewer disponible ; aucune
+  entrée `ReviewRecord` fantôme n'est créée (ne consomme jamais un cycle
+  de rework borné pour une tentative qui n'a pas eu lieu)
+- Garanties invariantes vérifiées par les tests : aucune consommation de
+  reset credit Codex (`ResetCredit.auto_consume` toujours `False`, aucune
+  méthode `consume()` nulle part), aucun polling agressif, aucun sleep
+  réel, aucun appel direct Claude/Codex/Ralph (uniquement via
+  WorkerSelector/RalphExecutionEngine existants)
+- **Recovery execution-level (RUNNING/INTERRUPTED orphelines) — fermé
+  dans cette même slice** : `WorkItemStatus.RECOVERY_REQUIRED` introduit,
+  distinct de `WAITING` (aucune deadline à attendre, immédiatement
+  re-orchestrable — voir docstring de `WorkItemStatus`). Nouveau
+  `orchestrator/recovery.py` : `RecoveryCoordinator`, pur bookkeeping
+  (aucune sélection de worker, aucun lancement d'exécution, aucune
+  logique WorkerSelector/QuotaManager dupliquée) :
+  - `reconcile_mvp`/`reconcile_work_item` : au tout début de chaque
+    `run_next_work_item`, détecte un WorkItem `RUNNING`/`REVIEWING` dont
+    la dernière exécution correspondante (rôle developer/reviewer) est
+    soit encore `RUNNING` (orpheline — le process qui la tenait a disparu,
+    son sort réel est inconnu ⇒ `ExecutionStore.mark_recovery_required`,
+    jamais réutilisée ni remise `RUNNING`), soit déjà `INTERRUPTED` (déjà
+    un état terminal légitime, laissé strictement inchangé — seul le
+    WorkItem est reconcilié) ; toute autre exécution (déjà `SUCCEEDED`/
+    `FAILED`/`RECOVERY_REQUIRED`) est un no-op
+  - `ensure_recovery_handoff` : garantit un `HandoffRecord` durable pour
+    l'exécution interrompue (idempotent par `execution_id`) — construit
+    uniquement depuis les faits persistants (`ExecutionRecord`, dernier
+    handoff pour le quality gate déjà connu, dernières findings de review
+    si pertinent) ; jamais d'appel au worker interrompu, jamais de résumé
+    LLM ; `open_issues="execution interrupted / recovery required"`,
+    `next_action="continue work from persisted state"`
+  - Une exécution `INTERRUPTED` détectée **dans le même appel** (timeout
+    géré par `RalphExecutionEngine` lui-même, dev ou review) est traitée
+    identiquement : `RECOVERY_REQUIRED` (jamais `FAILED`, qui interdirait
+    toute continuation normale ; jamais de retry silencieux) — côté
+    review, l'honnête `ReviewRecord(status=INTERRUPTED)` reste enregistré
+    (ce n'est pas un verdict fantôme), mais ne consomme plus à tort un
+    cycle de rework borné
+  - Reprise immédiate (pas de deadline, contrairement à `WAITING`) :
+    `MVPManager._try_resume_recovery_required` relit le rôle de la
+    dernière exécution reconciliée (jamais deviné) pour savoir si la
+    reprise est développement/rework (nouvelle sélection `WorkerSelector`
+    + nouvelle `execution_id`, worker potentiellement différent — ex.
+    Claude → Codex) ou review (reconstruction minimale d'un
+    `ExecutionResult` depuis le dernier handoff **de l'auteur**
+    spécifiquement — jamais le handoff de reprise le plus récent, qui
+    porterait l'identité du reviewer interrompu et pourrait sinon rendre
+    reviewer == author) via `_run_review`, reviewer toujours indépendant
+    du dernier auteur
+  - Quality gate jamais rejoué inutilement : une reprise review réutilise
+    le résultat de gate déjà connu (`gate_summary_override`, aucun
+    nouveau code produit) ; une reprise développement le fait rejouer
+    normalement (nouvelle exécution potentiellement porteuse de nouveau
+    code), sans système de cache dédié
+  - Dépendants d'un WorkItem `RECOVERY_REQUIRED` jamais lancés (même
+    mécanisme `refresh_readiness` que `WAITING`)
+  - Opt-in via nouveau paramètre optionnel `execution_store` sur
+    `MVPManager` — comportement Slice 7-11 (wait) strictement inchangé si
+    absent
 - Recoupe et précise l'ancienne Phase 4 (« Suivi des quotas et resets »)
-- Dépend de : Slice 7 (état projet dans lequel s'inscrit une attente)
+- Tests : `tests/test_wait.py`, `tests/test_recovery.py` (nouveaux),
+  extensions de `tests/test_project_state.py`,
+  `tests/test_worker_selector.py`, `tests/test_mvp_manager.py` (100%
+  offline, horloges injectées, aucun sleep réel)
+- Dépend de : Slice 7 (état projet dans lequel s'inscrit une attente),
+  Slice 9 (sélection reviewer)
 
 **Slice 12 — Multi-agent release planning + roadmap synthesis**
 - Après une release réussie, plusieurs agents IA analysent
@@ -841,9 +946,17 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     `src/orchestrator/release_manager.py`, cycle MVP étendu
     (`VALIDATING`/`RELEASED`) dans `src/orchestrator/project_state.py`, et
     les tests associés.
-- **Next** : Slice 11 — Quota waiting / interruption / durable resume —
+  - **Slice 11 (Quota waiting / interruption / durable resume) — DONE**
+    (volet quota **et** volet recovery execution-level, tous deux fermés) :
+    voir `src/orchestrator/wait.py` et `src/orchestrator/recovery.py`
+    (nouveaux), enrichissement diagnostics dans
+    `src/orchestrator/worker_selector.py`, statuts `WAITING`/
+    `RECOVERY_REQUIRED` dans `src/orchestrator/project_state.py`,
+    intégration minimale/opt-in (`wait_store`/`execution_store`) dans
+    `src/orchestrator/mvp_manager.py`, et les tests associés.
+- **Next** : Slice 12 — Multi-agent release planning + roadmap synthesis —
   voir « Découpage incrémental » ci-dessus pour la suite complète
-  (Slice 11 à 14).
+  (Slice 12 à 14).
 
 ## Comment reprendre ce projet à froid
 

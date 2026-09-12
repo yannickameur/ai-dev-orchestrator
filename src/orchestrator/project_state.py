@@ -65,13 +65,35 @@ def _as_tuple_of_str(values: Iterable[str], *, field_name: str) -> tuple[str, ..
 class WorkItemStatus(str, Enum):
     """Minimal WorkItem lifecycle.
 
-    PLANNED/READY/RUNNING/REVIEWING/NEEDS_REWORK are non-terminal.
+    PLANNED/READY/RUNNING/REVIEWING/NEEDS_REWORK/WAITING are non-terminal.
     REVIEWING and NEEDS_REWORK were added in Slice 9 for independent
     review + bounded rework: REVIEWING is the transient state while a
     review execution is in flight; NEEDS_REWORK means a review rejected
     the work and a bounded number of rework cycles remain — it is
     directly eligible for a new development execution (no dependency
     re-check needed, since the WorkItem was already READY once).
+
+    WAITING was added in Slice 11: an orchestration decision (never a
+    provider fact) meaning no eligible worker could be selected right now
+    but a plausible next retry moment is known (see
+    ``orchestrator.wait.WaitRecord``, which also records *which* phase —
+    development, rework, or review — was interrupted). A WAITING WorkItem
+    is neither COMPLETED nor FAILED: its dependents never become READY
+    (``refresh_readiness`` only promotes on COMPLETED dependencies).
+    Resuming always re-enters READY/NEEDS_REWORK/REVIEWING — the exact
+    state it was waiting to re-attempt — never resumes "in place".
+
+    RECOVERY_REQUIRED was also added in Slice 11, and is deliberately
+    distinct from WAITING: WAITING means "no eligible worker exists, but a
+    reset deadline is known" (an external, quota-driven wait);
+    RECOVERY_REQUIRED means "the *execution itself* never reached a
+    reliable terminal outcome" — a RUNNING execution found orphaned after
+    a restart, or one that came back INTERRUPTED — with no deadline
+    involved at all (see ``orchestrator.recovery.RecoveryCoordinator``,
+    which also ensures a durable recovery handoff exists before this
+    transition). It is immediately, unconditionally re-orchestrable (no
+    "eligible_at" to wait out): resuming re-enters RUNNING or REVIEWING —
+    always via a **new** execution, never the interrupted/orphaned one.
     """
 
     PLANNED = "planned"
@@ -79,6 +101,8 @@ class WorkItemStatus(str, Enum):
     RUNNING = "running"
     REVIEWING = "reviewing"
     NEEDS_REWORK = "needs_rework"
+    WAITING = "waiting"
+    RECOVERY_REQUIRED = "recovery_required"
     COMPLETED = "completed"
     FAILED = "failed"
     BLOCKED = "blocked"
@@ -99,14 +123,42 @@ class MVPStatus(str, Enum):
 
 _WORK_ITEM_TRANSITIONS: dict[WorkItemStatus, frozenset[WorkItemStatus]] = {
     WorkItemStatus.PLANNED: frozenset({WorkItemStatus.READY, WorkItemStatus.BLOCKED}),
-    WorkItemStatus.READY: frozenset({WorkItemStatus.RUNNING}),
+    WorkItemStatus.READY: frozenset({WorkItemStatus.RUNNING, WorkItemStatus.WAITING}),
     WorkItemStatus.RUNNING: frozenset(
-        {WorkItemStatus.COMPLETED, WorkItemStatus.FAILED, WorkItemStatus.REVIEWING}
+        {
+            WorkItemStatus.COMPLETED,
+            WorkItemStatus.FAILED,
+            WorkItemStatus.REVIEWING,
+            WorkItemStatus.RECOVERY_REQUIRED,
+        }
     ),
     WorkItemStatus.REVIEWING: frozenset(
-        {WorkItemStatus.COMPLETED, WorkItemStatus.NEEDS_REWORK, WorkItemStatus.BLOCKED}
+        {
+            WorkItemStatus.COMPLETED,
+            WorkItemStatus.NEEDS_REWORK,
+            WorkItemStatus.BLOCKED,
+            WorkItemStatus.WAITING,
+            WorkItemStatus.RECOVERY_REQUIRED,
+        }
     ),
-    WorkItemStatus.NEEDS_REWORK: frozenset({WorkItemStatus.RUNNING}),
+    WorkItemStatus.NEEDS_REWORK: frozenset({WorkItemStatus.RUNNING, WorkItemStatus.WAITING}),
+    # WAITING only ever resumes into the exact state it was waiting to
+    # re-attempt (READY/NEEDS_REWORK for a new development-side selection,
+    # REVIEWING for a new reviewer-side selection) or gives up to BLOCKED
+    # when no reliable retry moment remains — never "in place".
+    WorkItemStatus.WAITING: frozenset(
+        {WorkItemStatus.READY, WorkItemStatus.NEEDS_REWORK, WorkItemStatus.REVIEWING, WorkItemStatus.BLOCKED}
+    ),
+    # RECOVERY_REQUIRED has no deadline to wait out (unlike WAITING): it is
+    # immediately re-orchestrable, always via a *new* execution — resuming
+    # re-enters RUNNING (development/rework side) or REVIEWING (review
+    # side), whichever phase the orphaned/interrupted execution belonged
+    # to (see RecoveryCoordinator). BLOCKED is only a defensive escape
+    # hatch for an invariant violation (e.g. no recovery handoff found),
+    # never the expected path.
+    WorkItemStatus.RECOVERY_REQUIRED: frozenset(
+        {WorkItemStatus.RUNNING, WorkItemStatus.REVIEWING, WorkItemStatus.BLOCKED}
+    ),
     WorkItemStatus.COMPLETED: frozenset(),
     WorkItemStatus.FAILED: frozenset(),
     WorkItemStatus.BLOCKED: frozenset(),
@@ -614,6 +666,38 @@ class ProjectStateStore:
 
     def mark_work_item_needs_rework(self, work_item_id: str) -> WorkItem:
         return self._transition_work_item(work_item_id, WorkItemStatus.NEEDS_REWORK)
+
+    def mark_work_item_waiting(self, work_item_id: str) -> WorkItem:
+        """Enters WAITING from READY, NEEDS_REWORK, or REVIEWING.
+
+        Which of those it came from is exactly the phase a caller must
+        record in a ``orchestrator.wait.WaitRecord`` alongside this call —
+        this store deliberately does not duplicate that reason itself
+        (see ``WorkItemStatus.WAITING``'s docstring).
+        """
+        return self._transition_work_item(work_item_id, WorkItemStatus.WAITING)
+
+    def mark_work_item_ready(self, work_item_id: str) -> WorkItem:
+        """Resumes a WAITING WorkItem back into READY for a fresh development selection.
+
+        Never resumes "in place": the caller must still go through the
+        normal ``run_next_work_item`` candidate selection (a new worker may
+        be chosen) and will get a brand new execution — this only makes
+        the WorkItem eligible for that again.
+        """
+        return self._transition_work_item(work_item_id, WorkItemStatus.READY)
+
+    def mark_work_item_recovery_required(self, work_item_id: str) -> WorkItem:
+        """Enters RECOVERY_REQUIRED from RUNNING or REVIEWING.
+
+        Used when an execution never reached a reliable terminal outcome —
+        an orphaned RUNNING execution found after a restart, or one that
+        came back INTERRUPTED — never for a quota/availability wait (that
+        is ``mark_work_item_waiting``). The caller (``RecoveryCoordinator``)
+        must ensure a durable recovery handoff exists before calling this,
+        so the WorkItem is immediately re-orchestrable afterward.
+        """
+        return self._transition_work_item(work_item_id, WorkItemStatus.RECOVERY_REQUIRED)
 
     def mark_work_item_blocked(self, work_item_id: str, *, reason: str) -> WorkItem:
         """Blocks a WorkItem for a reason other than dependency resolution.

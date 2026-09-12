@@ -318,3 +318,185 @@ class TestReviewWorkflowTransitions:
 
         with pytest.raises(InvalidWorkItemTransitionError):
             store.mark_work_item_reviewing("wi-a")  # still READY, not RUNNING
+
+
+class TestWaitingTransitions:
+    """Slice 11: WAITING is an orchestration decision, always resumed into
+    the exact state it was waiting to re-attempt — never "in place"."""
+
+    def test_ready_to_waiting_to_ready_again(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _seed_project_and_mvp(store, tmp_path)
+        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        store.refresh_readiness("mvp-1")
+
+        waiting = store.mark_work_item_waiting("wi-a")
+        assert waiting.status is WorkItemStatus.WAITING
+
+        resumed = store.mark_work_item_ready("wi-a")
+        assert resumed.status is WorkItemStatus.READY
+
+    def test_needs_rework_to_waiting_to_needs_rework_again(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _seed_project_and_mvp(store, tmp_path)
+        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        store.refresh_readiness("mvp-1")
+        store.mark_work_item_running("wi-a")
+        store.mark_work_item_reviewing("wi-a")
+        store.mark_work_item_needs_rework("wi-a")
+
+        waiting = store.mark_work_item_waiting("wi-a")
+        assert waiting.status is WorkItemStatus.WAITING
+
+        resumed = store.mark_work_item_needs_rework("wi-a")
+        assert resumed.status is WorkItemStatus.NEEDS_REWORK
+
+    def test_reviewing_to_waiting_to_reviewing_again(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _seed_project_and_mvp(store, tmp_path)
+        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        store.refresh_readiness("mvp-1")
+        store.mark_work_item_running("wi-a")
+        store.mark_work_item_reviewing("wi-a")
+
+        waiting = store.mark_work_item_waiting("wi-a")
+        assert waiting.status is WorkItemStatus.WAITING
+
+        resumed = store.mark_work_item_reviewing("wi-a")
+        assert resumed.status is WorkItemStatus.REVIEWING
+
+    def test_waiting_can_give_up_to_blocked(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _seed_project_and_mvp(store, tmp_path)
+        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        store.refresh_readiness("mvp-1")
+        store.mark_work_item_waiting("wi-a")
+
+        blocked = store.mark_work_item_blocked("wi-a", reason="no reliable reset known anymore")
+        assert blocked.status is WorkItemStatus.BLOCKED
+
+    def test_waiting_dependent_never_becomes_ready(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _seed_project_and_mvp(store, tmp_path)
+        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        store.create_work_item(
+            work_item_id="wi-b", mvp_id="mvp-1", title="B", dependencies=frozenset({"wi-a"})
+        )
+        store.refresh_readiness("mvp-1")
+        store.mark_work_item_waiting("wi-a")
+
+        # wi-b's dependency (wi-a) is neither COMPLETED nor unresolvable —
+        # it must stay PLANNED, never become READY nor BLOCKED.
+        updated = store.refresh_readiness("mvp-1")
+        assert updated == []
+        assert store.get_work_item("wi-b").status is WorkItemStatus.PLANNED
+
+    def test_running_cannot_go_directly_to_waiting(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _seed_project_and_mvp(store, tmp_path)
+        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        store.refresh_readiness("mvp-1")
+        store.mark_work_item_running("wi-a")
+
+        with pytest.raises(InvalidWorkItemTransitionError):
+            store.mark_work_item_waiting("wi-a")  # RUNNING itself never waits, only READY/NEEDS_REWORK/REVIEWING
+
+    def test_terminal_work_item_cannot_move_to_waiting(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _seed_project_and_mvp(store, tmp_path)
+        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        store.refresh_readiness("mvp-1")
+        store.mark_work_item_running("wi-a")
+        store.mark_work_item_completed("wi-a")
+
+        with pytest.raises(InvalidWorkItemTransitionError):
+            store.mark_work_item_waiting("wi-a")
+
+
+class TestRecoveryRequiredTransitions:
+    """Slice 11b: RECOVERY_REQUIRED is distinct from WAITING — no deadline,
+    immediately re-orchestrable, always resumed via a new execution."""
+
+    def test_running_to_recovery_required_to_running_again(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _seed_project_and_mvp(store, tmp_path)
+        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        store.refresh_readiness("mvp-1")
+        store.mark_work_item_running("wi-a")
+
+        recovery = store.mark_work_item_recovery_required("wi-a")
+        assert recovery.status is WorkItemStatus.RECOVERY_REQUIRED
+
+        resumed = store.mark_work_item_running("wi-a")
+        assert resumed.status is WorkItemStatus.RUNNING
+
+    def test_reviewing_to_recovery_required_to_reviewing_again(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _seed_project_and_mvp(store, tmp_path)
+        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        store.refresh_readiness("mvp-1")
+        store.mark_work_item_running("wi-a")
+        store.mark_work_item_reviewing("wi-a")
+
+        recovery = store.mark_work_item_recovery_required("wi-a")
+        assert recovery.status is WorkItemStatus.RECOVERY_REQUIRED
+
+        resumed = store.mark_work_item_reviewing("wi-a")
+        assert resumed.status is WorkItemStatus.REVIEWING
+
+    def test_recovery_required_can_escape_to_blocked_defensively(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _seed_project_and_mvp(store, tmp_path)
+        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        store.refresh_readiness("mvp-1")
+        store.mark_work_item_running("wi-a")
+        store.mark_work_item_recovery_required("wi-a")
+
+        blocked = store.mark_work_item_blocked("wi-a", reason="no recovery handoff could be built")
+        assert blocked.status is WorkItemStatus.BLOCKED
+
+    def test_recovery_required_dependent_never_becomes_ready(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _seed_project_and_mvp(store, tmp_path)
+        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        store.create_work_item(
+            work_item_id="wi-b", mvp_id="mvp-1", title="B", dependencies=frozenset({"wi-a"})
+        )
+        store.refresh_readiness("mvp-1")
+        store.mark_work_item_running("wi-a")
+        store.mark_work_item_recovery_required("wi-a")
+
+        updated = store.refresh_readiness("mvp-1")
+        assert updated == []
+        assert store.get_work_item("wi-b").status is WorkItemStatus.PLANNED
+
+    def test_ready_cannot_go_directly_to_recovery_required(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _seed_project_and_mvp(store, tmp_path)
+        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        store.refresh_readiness("mvp-1")
+
+        with pytest.raises(InvalidWorkItemTransitionError):
+            store.mark_work_item_recovery_required("wi-a")  # still READY, never ran
+
+    def test_terminal_work_item_cannot_move_to_recovery_required(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _seed_project_and_mvp(store, tmp_path)
+        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        store.refresh_readiness("mvp-1")
+        store.mark_work_item_running("wi-a")
+        store.mark_work_item_completed("wi-a")
+
+        with pytest.raises(InvalidWorkItemTransitionError):
+            store.mark_work_item_recovery_required("wi-a")
+
+    def test_recovery_required_and_waiting_are_distinct_states(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _seed_project_and_mvp(store, tmp_path)
+        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        store.refresh_readiness("mvp-1")
+        store.mark_work_item_running("wi-a")
+
+        recovery = store.mark_work_item_recovery_required("wi-a")
+        assert recovery.status is not WorkItemStatus.WAITING
+        assert WorkItemStatus.RECOVERY_REQUIRED != WorkItemStatus.WAITING
