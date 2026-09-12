@@ -261,21 +261,38 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
 - Tests : `tests/test_worker_selector.py` (100% offline, fake adapters)
 
 **8. Persistence / execution audit** (SQLite)
-- `MVP` : périmètre, critères d'acceptation
-- `Task` : unité de travail de l'Orchestrateur (pas un Ralph runtime task)
-  - Rôles/capabilities requis, statut (PENDING, IN_PROGRESS, DONE, FAILED, RECOVERY_REQUIRED)
-- `Worker` : `worker_id` (stable, technique), `display_name` (lisible,
-  jamais utilisé pour une décision de gouvernance), provider, `model`,
-  `reasoning_effort` (si applicable), rôles, capabilities, coût tier
-- `Execution` : identité complète (task_id, worker_id, provider, model,
-  reasoning_effort, role, started_at, finished_at, status, exit_code,
-  session_id, git_sha_before/after) + lien vers QuotaWindow à l'exécution —
-  c'est l'audit trail permettant de vérifier post-facto author != reviewer
-- `QuotaWindow` : multiple par provider, window_type, utilisation,
-  reset_at, source (Claude stream-json, Codex API, local, etc.)
-- Réconciliation : détection au démarrage des `Execution` orphelines
-  `RUNNING` → `INTERRUPTED`, tâche en `RECOVERY_REQUIRED` ; réconciliation
-  explicite avant retry (pas de retry aveugle)
+- **Volet `Execution` (audit) — ✅ DONE** (`src/orchestrator/execution_store.py`)
+  - `ExecutionRecord` : identité complète et immuable une fois créée
+    (`execution_id` distinct de `task_id`/`worker_id`, snapshot
+    provider/backend/model/`reasoning_effort`/role/`started_at`) + champs
+    d'audit évolutifs (`finished_at`, `status`, `exit_code`,
+    `provider_session_id`, `ralph_loop_id`, `git_sha_before/after`)
+  - `ExecutionStatus` minimal : `RUNNING` (seul état non terminal),
+    `SUCCEEDED`, `FAILED`, `INTERRUPTED`, `RECOVERY_REQUIRED` — pas de
+    `WAITING_RESET` (état d'orchestration futur, hors périmètre)
+  - `exit_code` = donnée d'audit technique uniquement, jamais convertie
+    automatiquement en verdict métier (`SUCCEEDED`/`FAILED` toujours
+    explicite via `mark_succeeded()`/`mark_failed()`)
+  - Transitions validées, minimales : `RUNNING` → un des 4 états
+    terminaux ; tout état terminal est bloqué à toute transition
+    ultérieure (`InvalidTransitionError`)
+  - `ExecutionStore` (sqlite3 stdlib, synchrone) : `create()`, `get()`,
+    `list_running()`, `mark_succeeded/failed/interrupted/recovery_required()`
+    — écriture transactionnelle, persistance après redémarrage du process,
+    erreurs explicites sur données corrompues (`CorruptExecutionRecordError`)
+  - Ne lance aucun worker/Ralph/Git ; ne fait aucun retry/fallback ; fournit
+    uniquement les primitives de détection (`list_running()`) et de
+    marquage explicite (`mark_interrupted`/`mark_recovery_required`) qu'une
+    future réconciliation utilisera
+  - Tests : `tests/test_execution_store.py` (100% offline, sqlite réel sur
+    fichier temporaire)
+- **Volets restants (non traités par cette slice)** : `MVP` (périmètre,
+  critères d'acceptation), `Task` (statut PENDING/IN_PROGRESS/DONE/FAILED/
+  RECOVERY_REQUIRED), `Worker` persistant (le `Worker` de
+  `worker_selector.py` est actuellement déclaratif en mémoire, pas encore
+  stocké), `QuotaWindow` persistant, et la réconciliation automatique au
+  démarrage (actuellement : primitives disponibles, pas de logique de
+  démarrage qui les invoque)
 
 **9. RalphExecutionEngine (wrapper)**
 - Classe encapsulant Ralph 2.10.1
@@ -456,8 +473,13 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     quota_manager.py` et `tests/test_quota_manager.py`.
   - **Étape 4 (WorkerSelector) — DONE** : voir `src/orchestrator/
     worker_selector.py` et `tests/test_worker_selector.py`.
-- **Next** : Persistence / execution audit SQLite (étape 8), puis
-  `RalphExecutionEngine` (étape 9) au-dessus du `WorkerSelector`.
+  - **Étape 5 (Persistence execution audit) — DONE (volet Execution
+    seulement)** : voir `src/orchestrator/execution_store.py` et
+    `tests/test_execution_store.py`. `MVP`/`Task`/`Worker`/`QuotaWindow`
+    persistants et réconciliation au démarrage restent à faire.
+- **Next** : `RalphExecutionEngine` (étape 9) — mais il aura besoin, avant
+  ou en parallèle, du volet `Task` persistant (étape 8 restante) pour
+  savoir quoi exécuter.
 
 ## Comment reprendre ce projet à froid
 
