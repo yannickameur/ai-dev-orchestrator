@@ -477,12 +477,44 @@ testable offline, et documenter explicitement ses dépendances.
 - Dépend de : Slice 4 (WorkerSelector), Slice 5 (ExecutionStore), Slice 6
   (RalphExecutionEngine) — toutes DONE
 
-**Slice 8 — Project validation commands + tests / quality gates**
-- Chaque WorkItem/MVP peut définir ses validations (unit/integration/lint/
-  typecheck/smoke/E2E) via des commandes configurées/découvertes au niveau
-  projet — jamais inventées différemment à chaque exécution
-- Une release n'est jamais déclarée terminée uniquement parce que le
-  worker affirme avoir fini ; les commandes de validation font foi
+**Slice 8 — Project validation commands + tests / quality gates — ✅ DONE**
+- `ValidationCommand` (config persistée par projet, `argv` structuré,
+  jamais de chaîne shell libre, `shell=False`) : `validation_id`, `kind`
+  (`UNIT_TEST`/`INTEGRATION_TEST`/`LINT`/`TYPECHECK`/`BUILD`/`SMOKE`/
+  `CUSTOM`), `timeout_seconds`, `required` — voir `src/orchestrator/
+  validation.py`
+- Configuration explicite uniquement (pas de discovery `pyproject.toml`/
+  `package.json`/`Makefile` dans cette slice — délibérément différé)
+- `ValidationStatus` : `PASSED`/`FAILED`/`ERROR`/`TIMEOUT`/`SKIPPED` —
+  jamais confondus (`FAILED` = exit non-zéro, `ERROR` = binaire introuvable/
+  échec de lancement, `TIMEOUT` = dépassement borné)
+- `QualityGateRunner` : exécute uniquement les commandes configurées
+  (jamais inventées par un worker), persiste chaque `ValidationResult` via
+  `ValidationStore` (sqlite3, store dédié, `ExecutionStore`/
+  `ProjectStateStore` non transformés en god objects)
+- Fail-closed strict : une validation `required` sans résultat `PASSED`
+  enregistré échoue le gate — y compris l'**absence totale** de résultat
+  pour une validation `required` configurée (jamais interprétée comme
+  succès) ; une validation optionnelle peut échouer sans faire échouer le
+  gate global
+- `validation_run_id` distinct de `execution_id`/`work_item_id`/`mvp_id` ;
+  un même WorkItem peut être gaté plusieurs fois, dernier résultat
+  retrouvable (`latest_gate_result_for_work_item`)
+- Git : lecture seule (`git rev-parse HEAD`, une fois par run, capturé
+  comme fait d'audit) — aucune mutation
+- Intégration `MVPManager` minimale et opt-in : `quality_gate_runner`
+  optionnel au constructeur ; sans lui (ou sans commande configurée), le
+  comportement Slice 7 est inchangé (succès exécution ⇒ `COMPLETED`) ; avec
+  lui, `COMPLETED` exige exécution réussie **et** gate `passed` — un gate
+  échoué finalise en `FAILED` (jamais `BLOCKED`, réservé aux problèmes de
+  graphe de dépendances), aucun dépendant lancé, aucun retry
+- Handoff enrichi d'un résumé structuré et compact du gate
+  (`quality_gate=PASSED (id=status, ...)`), jamais de milliers de lignes de
+  stdout — le détail complet reste dans `ValidationStore`
+- Aucun code review IA (Slice 9), aucun release gate complet (plus tard)
+- Tests : `tests/test_validation.py` (offline, commandes locales
+  contrôlées type `python -c ...`) + tests d'intégration dans
+  `tests/test_mvp_manager.py`
 - Dépend de : Slice 7 (WorkItem/MVP existent déjà)
 
 **Slice 9 — Independent author/reviewer orchestration**
@@ -729,9 +761,11 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     voir `src/orchestrator/project_state.py`, `src/orchestrator/handoff.py`,
     `src/orchestrator/mvp_manager.py` et les tests associés. Détail dans la
     section « Découpage incrémental » ci-dessus.
-- **Next** : Slice 8 (Project validation commands + tests / quality gates)
-  — voir « Découpage incrémental » ci-dessus pour la suite complète
-  (Slice 8 à 14).
+  - **Slice 8 (Project validation commands + quality gates) — DONE** : voir
+    `src/orchestrator/validation.py`, intégration minimale/opt-in dans
+    `src/orchestrator/mvp_manager.py`, et les tests associés.
+- **Next** : Slice 9 — Independent author/reviewer orchestration — voir
+  « Découpage incrémental » ci-dessus pour la suite complète (Slice 9 à 14).
 
 ## Comment reprendre ce projet à froid
 

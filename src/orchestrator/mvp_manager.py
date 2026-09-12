@@ -1,12 +1,23 @@
 """MVPManager — orchestrates high-level WorkItems for the current MVP.
 
-This is the composition root for Slice 7's cycle:
+This is the composition root for the Slice 7/8 cycle:
 
     ROADMAP (functional intent, read by a human/future agent)
       -> MVP / WorkItem (this module's input, via ProjectStateStore)
       -> WorkerSelector (existing, Slice 4: chooses a worker)
       -> RalphExecutionEngine (existing, Slice 6: runs it)
-      -> HandoffStore (this slice: durable handoff)
+      -> QualityGateRunner (existing, Slice 8: validates it — optional)
+      -> HandoffStore (Slice 7: durable handoff, now gate-aware)
+
+Slice 8 integration is deliberately minimal and opt-in: a WorkItem whose
+execution SUCCEEDED is only gated if a ``QualityGateRunner`` was supplied
+AND the project has at least one configured validation command. When
+either is absent, behavior is identical to Slice 7 (execution success ->
+COMPLETED) — no existing caller is forced to adopt quality gates. This
+module never runs commands itself, never re-implements
+``ValidationStore``/``QualityGateRunner`` — it only calls
+``QualityGateRunner.run_gate()`` and reads the returned
+``QualityGateResult.passed``.
 
 MVPManager orchestrates WorkItems — high-level units of work — never a
 second, fine-grained task queue: once a WorkItem is delegated to Ralph (via
@@ -41,6 +52,7 @@ from orchestrator.execution_store import ExecutionStatus
 from orchestrator.project_state import ProjectStateStore, WorkItem, WorkItemStatus
 from orchestrator.handoff import HandoffRecord, HandoffStore
 from orchestrator.ralph_execution_engine import ExecutionRequest, RalphExecutionEngine
+from orchestrator.validation import QualityGateResult, QualityGateRunner
 from orchestrator.worker_selector import WorkerSelectionRequest, WorkerSelector
 
 Clock = Callable[[], datetime]
@@ -70,12 +82,19 @@ def _build_instructions(work_item: WorkItem) -> str:
     )
 
 
+def _summarize_gate(gate: QualityGateResult) -> str:
+    verdict = "PASSED" if gate.passed else "FAILED"
+    details = ", ".join(f"{r.validation_id}={r.status.value}" for r in gate.results)
+    return f"quality_gate={verdict} ({details})" if details else f"quality_gate={verdict}"
+
+
 @dataclass(frozen=True, slots=True)
 class WorkItemRunResult:
     """What happened when MVPManager ran one WorkItem."""
 
     work_item: WorkItem
     handoff: HandoffRecord
+    gate_result: QualityGateResult | None = None
 
 
 class MVPManagerError(Exception):
@@ -92,6 +111,7 @@ class MVPManager:
         worker_selector: WorkerSelector,
         execution_engine: RalphExecutionEngine,
         *,
+        quality_gate_runner: QualityGateRunner | None = None,
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
@@ -100,6 +120,7 @@ class MVPManager:
         self._handoff_store = handoff_store
         self._worker_selector = worker_selector
         self._execution_engine = execution_engine
+        self._quality_gate_runner = quality_gate_runner
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or _default_id_factory
         self._timeout_seconds = timeout_seconds
@@ -151,10 +172,30 @@ class MVPManager:
             timeout_seconds=self._timeout_seconds,
         )
         result = await self._execution_engine.execute(request)
+        execution_succeeded = result.record.status is ExecutionStatus.SUCCEEDED
 
-        if result.record.status is ExecutionStatus.SUCCEEDED:
+        # Quality gate integration (Slice 8): only attempted when the
+        # execution itself succeeded, and only when a runner was actually
+        # supplied — a project with no configured validation commands (or
+        # no runner at all) behaves exactly like Slice 7 (execution
+        # success -> COMPLETED).
+        gate_result: QualityGateResult | None = None
+        if execution_succeeded and self._quality_gate_runner is not None:
+            gate_result = await self._quality_gate_runner.run_gate(
+                project_id=project.project_id,
+                cwd=project.workspace,
+                mvp_id=mvp_id,
+                work_item_id=work_item.work_item_id,
+            )
+
+        gate_passed = gate_result is None or gate_result.passed
+
+        if execution_succeeded and gate_passed:
             work_item = self._project_state_store.mark_work_item_completed(work_item.work_item_id)
             next_action = "proceed to the next eligible WorkItem"
+        elif execution_succeeded:  # gate_result is not None and not gate_passed
+            work_item = self._project_state_store.mark_work_item_failed(work_item.work_item_id)
+            next_action = "quality gate failed — investigate before retrying, no automatic retry"
         else:
             work_item = self._project_state_store.mark_work_item_failed(work_item.work_item_id)
             next_action = "investigate the failure before retrying — no automatic retry"
@@ -167,9 +208,10 @@ class MVPManager:
             objective=work_item.title,
             execution_id=result.record.execution_id,
             worker_id=result.record.worker_id,
+            test_results=_summarize_gate(gate_result) if gate_result is not None else None,
             next_action=next_action,
             git_sha_after=result.record.git_sha_after,
             created_at=self._clock(),
         )
 
-        return WorkItemRunResult(work_item=work_item, handoff=handoff)
+        return WorkItemRunResult(work_item=work_item, handoff=handoff, gate_result=gate_result)
