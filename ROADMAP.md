@@ -157,17 +157,21 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
 
 **Composants à construire (REUSE FIRST appliqué), ordre imposé** :
 
-**1. Contrats normalisés**
-- **ProviderState, ProviderAvailability, QuotaWindow, ResetCredit** (data classes)
-  - Sérialisation JSON claire pour échanges inter-modules
-  - Champs : provider, account, availability, observed_at, quota_windows, reset_credits
-  - Validés par fixtures spike avant implémentation d'adapters
+**1. Contrats normalisés — ✅ DONE**
+- **ProviderState, ProviderAvailability, QuotaWindow, ResetCredit** (data classes
+  immuables, `src/orchestrator/providers/contracts.py`)
+  - `observed_at` timezone-aware obligatoire à chaque niveau pertinent
+  - `quota_windows` : collection, jamais un `reset_at` unique au niveau `ProviderState`
+  - `utilization` : `None` (inconnu) distinct de `0.0` (mesuré), jamais coercé
+  - `ResetCredit.auto_consume` figé à `False` (invariant de type, pas de `consume()`)
+  - Tests : `tests/providers/test_contracts.py` (offline, indépendants de tout provider)
 
-**2. Interface ProviderAdapter**
-- Signature minimale : `probe() → ProviderState`
+**2. Interface ProviderAdapter — ✅ DONE**
+- Signature minimale : `probe() → ProviderState` (`src/orchestrator/providers/adapter.py`)
 - Garanties : jamais d'exécution (pas `codex exec` dans probe) — ne doit
   **jamais** devenir un moteur d'exécution, l'exécution appartient à
   RalphExecutionEngine (étape 9)
+- Tests : `tests/providers/test_adapter.py`
 
 **3. ClaudeCodeAdapter**
 - Parse stream-json des quotas natifs
@@ -385,9 +389,13 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
 - **Phase 0 — DONE** : Spécification et architecture.
 - **Phase 0.5 — DONE** : Reuse Spike validant Ralph Orchestrator 2.10.1.
   Résultats détaillés dans `docs/SPIKE_RALPH.md`.
-- **Phase 1 — READY TO START** : MVP 0.1 (gouvernance + sélection + Ralph integration).
-  Aucun code Python du projet n'a encore été écrit.
-- **Next** : Démarrer Phase 1 avec le contrat Provider Adapters (ProviderState).
+- **Phase 1 — EN COURS** : MVP 0.1 (gouvernance + sélection + Ralph integration).
+  - **Étape 1 (Contrats normalisés) — DONE** : `ProviderState`, `ProviderAvailability`,
+    `QuotaWindow`, `ResetCredit`, interface `ProviderAdapter.probe()` — voir
+    `src/orchestrator/providers/`. Purs, sans dépendance à Claude/Codex/Ralph.
+  - **Étape 2 (ClaudeCodeAdapter/CodexAdapter) — NOT STARTED**
+- **Next** : Implémenter `ClaudeCodeAdapter` et `CodexAdapter` contre les contrats
+  déjà en place (étapes 3-4).
 
 ## Comment reprendre ce projet à froid
 
