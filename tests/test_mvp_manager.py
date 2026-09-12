@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,9 +20,16 @@ from orchestrator.handoff import HandoffStore
 from orchestrator.mvp_manager import MVPManager
 from orchestrator.project_state import ProjectStateStore, WorkItemStatus
 from orchestrator.ralph_execution_engine import ExecutionResult
+from orchestrator.validation import (
+    QualityGateRunner,
+    ValidationCommand,
+    ValidationKind,
+    ValidationStore,
+)
 from orchestrator.worker_selector import NoEligibleWorkerError, Worker
 
 UTC_NOW = datetime(2026, 9, 12, 15, 0, tzinfo=timezone.utc)
+PY = sys.executable
 
 
 def _alice() -> Worker:
@@ -352,3 +360,167 @@ class TestNoForbiddenBehavior:
             "ClaudeCodeAdapter", "CodexAdapter", "QuotaManager(",
         ):
             assert forbidden not in source
+
+
+def _gate_runner(tmp_path: Path, commands: list[ValidationCommand]) -> QualityGateRunner:
+    store = ValidationStore(tmp_path / "validation.sqlite3", clock=lambda: UTC_NOW)
+    store.set_project_commands("proj-1", commands)
+    return QualityGateRunner(store, clock=lambda: UTC_NOW, id_factory=lambda: "gate-run-1")
+
+
+class TestQualityGateIntegration:
+    def test_no_runner_behaves_like_slice_7(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        alice = _alice()
+        selector = FakeWorkerSelector(worker=alice)
+        engine = FakeExecutionEngine(
+            result=_execution_result(
+                execution_id="exec-1", task_id="wi-a", worker_id=alice.worker_id,
+                status=ExecutionStatus.SUCCEEDED,
+            )
+        )
+        manager = _manager(project_store, handoff_store, selector, engine)  # no quality_gate_runner
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert result.gate_result is None
+
+    def test_no_configured_commands_gate_trivially_passes(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        alice = _alice()
+        selector = FakeWorkerSelector(worker=alice)
+        engine = FakeExecutionEngine(
+            result=_execution_result(
+                execution_id="exec-1", task_id="wi-a", worker_id=alice.worker_id,
+                status=ExecutionStatus.SUCCEEDED,
+            )
+        )
+        gate_runner = _gate_runner(tmp_path, [])
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine,
+            quality_gate_runner=gate_runner, clock=lambda: UTC_NOW,
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert result.gate_result.passed is True
+
+    def test_passing_gate_completes_work_item(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        alice = _alice()
+        selector = FakeWorkerSelector(worker=alice)
+        engine = FakeExecutionEngine(
+            result=_execution_result(
+                execution_id="exec-1", task_id="wi-a", worker_id=alice.worker_id,
+                status=ExecutionStatus.SUCCEEDED,
+            )
+        )
+        gate_runner = _gate_runner(
+            tmp_path,
+            [ValidationCommand(validation_id="unit-tests", kind=ValidationKind.UNIT_TEST, argv=(PY, "-c", "pass"))],
+        )
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine,
+            quality_gate_runner=gate_runner, clock=lambda: UTC_NOW,
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert result.gate_result.passed is True
+        assert "quality_gate=PASSED" in result.handoff.test_results
+
+    def test_failing_required_gate_prevents_completion(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        alice = _alice()
+        selector = FakeWorkerSelector(worker=alice)
+        engine = FakeExecutionEngine(
+            result=_execution_result(
+                execution_id="exec-1", task_id="wi-a", worker_id=alice.worker_id,
+                status=ExecutionStatus.SUCCEEDED,
+            )
+        )
+        gate_runner = _gate_runner(
+            tmp_path,
+            [
+                ValidationCommand(
+                    validation_id="unit-tests", kind=ValidationKind.UNIT_TEST,
+                    argv=(PY, "-c", "import sys; sys.exit(1)"),
+                )
+            ],
+        )
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine,
+            quality_gate_runner=gate_runner, clock=lambda: UTC_NOW,
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is not WorkItemStatus.COMPLETED
+        assert result.work_item.status is WorkItemStatus.FAILED
+        assert result.gate_result.passed is False
+
+    def test_dependent_not_launched_after_gate_failure(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(
+            project_store, tmp_path,
+            **{"wi-a": {"title": "A"}, "wi-b": {"title": "B", "dependencies": ["wi-a"]}},
+        )
+        alice = _alice()
+        selector = FakeWorkerSelector(worker=alice)
+        engine = FakeExecutionEngine(
+            result=_execution_result(
+                execution_id="exec-1", task_id="wi-a", worker_id=alice.worker_id,
+                status=ExecutionStatus.SUCCEEDED,
+            )
+        )
+        gate_runner = _gate_runner(
+            tmp_path,
+            [
+                ValidationCommand(
+                    validation_id="unit-tests", kind=ValidationKind.UNIT_TEST,
+                    argv=(PY, "-c", "import sys; sys.exit(1)"),
+                )
+            ],
+        )
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine,
+            quality_gate_runner=gate_runner, clock=lambda: UTC_NOW,
+        )
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))  # wi-a: execution ok, gate fails
+        outcome = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert outcome is None
+        assert project_store.get_work_item("wi-b").status is WorkItemStatus.BLOCKED
+        assert all(req.task_id != "wi-b" for req in engine.requests)
+
+    def test_handoff_contains_quality_gate_result(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        alice = _alice()
+        selector = FakeWorkerSelector(worker=alice)
+        engine = FakeExecutionEngine(
+            result=_execution_result(
+                execution_id="exec-1", task_id="wi-a", worker_id=alice.worker_id,
+                status=ExecutionStatus.SUCCEEDED,
+            )
+        )
+        gate_runner = _gate_runner(
+            tmp_path,
+            [ValidationCommand(validation_id="lint", kind=ValidationKind.LINT, argv=(PY, "-c", "pass"))],
+        )
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine,
+            quality_gate_runner=gate_runner, clock=lambda: UTC_NOW,
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert "lint=passed" in result.handoff.test_results

@@ -1,0 +1,471 @@
+"""Project validation commands + quality gates — Slice 8.
+
+This module answers: "does this project's configured technical bar pass,
+as actually observed by running real commands?" A worker claiming "the
+tests pass" is never sufficient proof — the orchestrator runs the
+project's own configured validation commands itself and persists exactly
+what happened (command, cwd, exit code, duration, bounded stdout/stderr).
+
+This is not code review: it never judges code quality, only whether
+explicitly configured technical commands (unit tests, lint, typecheck,
+build, smoke, ...) pass. Independent AI review is Slice 9's job.
+
+Design invariants:
+
+- Commands come exclusively from a project's persisted configuration
+  (``ValidationStore.set_project_commands``), never invented by an LLM at
+  run time and never parsed out of free text. ``argv`` is always a
+  structured tuple, executed with ``shell=False`` — no shell string is
+  ever built or interpreted.
+- FAILED (command ran, exit code != 0) is never confused with ERROR
+  (could not run the command at all, e.g. missing binary) or TIMEOUT
+  (exceeded its bound) — three distinct, structured statuses.
+- Fail-closed: a ``required`` validation must have a recorded ``PASSED``
+  result for the gate to pass. Anything else — FAILED, ERROR, TIMEOUT, or
+  simply *no result at all* for a configured required validation — fails
+  the gate. "Not executed" is never interpreted as success.
+- An optional (``required=False``) validation can fail without failing the
+  overall gate; its result is still persisted.
+- Git access is read-only (``git rev-parse HEAD``, once per gate run, as
+  an audit fact) — no checkout/branch/commit/merge/reset/clean, ever.
+- A ``validation_run_id`` identifies one quality-gate run (which may
+  execute several configured commands); it is distinct from
+  ``execution_id``/``work_item_id``/``mvp_id``. The same WorkItem can be
+  gated multiple times, each with its own run id.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import sqlite3
+import subprocess
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
+from typing import Awaitable, Callable, Sequence
+
+Clock = Callable[[], datetime]
+IdFactory = Callable[[], str]
+
+_MAX_CAPTURED_OUTPUT_CHARS = 4000
+
+
+def _require_non_empty_str(value: object, *, field_name: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-empty string, got {value!r}")
+
+
+def _require_aware(moment: datetime, *, field_name: str) -> None:
+    if not isinstance(moment, datetime) or moment.tzinfo is None or moment.tzinfo.utcoffset(moment) is None:
+        raise ValueError(f"{field_name} must be a timezone-aware datetime, got {moment!r}")
+
+
+def _bounded(text: str) -> str:
+    if len(text) <= _MAX_CAPTURED_OUTPUT_CHARS:
+        return text
+    return text[:_MAX_CAPTURED_OUTPUT_CHARS] + "...<truncated>"
+
+
+class ValidationKind(str, Enum):
+    """A small, deliberately non-exhaustive taxonomy of technical checks."""
+
+    UNIT_TEST = "unit_test"
+    INTEGRATION_TEST = "integration_test"
+    LINT = "lint"
+    TYPECHECK = "typecheck"
+    BUILD = "build"
+    SMOKE = "smoke"
+    CUSTOM = "custom"
+
+
+class ValidationStatus(str, Enum):
+    """Never conflate these: FAILED != ERROR != TIMEOUT."""
+
+    PASSED = "passed"
+    FAILED = "failed"
+    ERROR = "error"
+    TIMEOUT = "timeout"
+    SKIPPED = "skipped"
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationCommand:
+    """A configured, structured validation command — never a shell string."""
+
+    validation_id: str
+    kind: ValidationKind
+    argv: tuple[str, ...]
+    timeout_seconds: float = 300.0
+    required: bool = True
+
+    def __post_init__(self) -> None:
+        _require_non_empty_str(self.validation_id, field_name="ValidationCommand.validation_id")
+        if not isinstance(self.kind, ValidationKind):
+            raise TypeError(f"ValidationCommand.kind must be a ValidationKind, got {type(self.kind)!r}")
+        argv = tuple(self.argv)
+        if not argv:
+            raise ValueError("ValidationCommand.argv must be a non-empty sequence")
+        for arg in argv:
+            if not isinstance(arg, str) or not arg:
+                raise ValueError(f"ValidationCommand.argv must only contain non-empty strings, got {arg!r}")
+        object.__setattr__(self, "argv", argv)
+        if not isinstance(self.timeout_seconds, (int, float)) or isinstance(self.timeout_seconds, bool) or self.timeout_seconds <= 0:
+            raise ValueError(
+                f"ValidationCommand.timeout_seconds must be a positive number, got {self.timeout_seconds!r}"
+            )
+        if not isinstance(self.required, bool):
+            raise TypeError(f"ValidationCommand.required must be a bool, got {type(self.required)!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationResult:
+    """The observed outcome of running one ValidationCommand once."""
+
+    validation_run_id: str
+    validation_id: str
+    kind: ValidationKind
+    required: bool
+    argv: tuple[str, ...]
+    status: ValidationStatus
+    started_at: datetime
+    finished_at: datetime
+    exit_code: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+
+    def __post_init__(self) -> None:
+        _require_non_empty_str(self.validation_run_id, field_name="ValidationResult.validation_run_id")
+        _require_non_empty_str(self.validation_id, field_name="ValidationResult.validation_id")
+        if not isinstance(self.kind, ValidationKind):
+            raise TypeError(f"ValidationResult.kind must be a ValidationKind, got {type(self.kind)!r}")
+        if not isinstance(self.status, ValidationStatus):
+            raise TypeError(f"ValidationResult.status must be a ValidationStatus, got {type(self.status)!r}")
+        _require_aware(self.started_at, field_name="ValidationResult.started_at")
+        _require_aware(self.finished_at, field_name="ValidationResult.finished_at")
+        object.__setattr__(self, "argv", tuple(self.argv))
+        if self.exit_code is not None and (not isinstance(self.exit_code, int) or isinstance(self.exit_code, bool)):
+            raise TypeError(f"ValidationResult.exit_code must be an int or None, got {type(self.exit_code)!r}")
+
+    @property
+    def duration_ms(self) -> int:
+        return int((self.finished_at - self.started_at).total_seconds() * 1000)
+
+
+@dataclass(frozen=True, slots=True)
+class QualityGateResult:
+    """The aggregated outcome of one quality-gate run."""
+
+    validation_run_id: str
+    project_id: str
+    passed: bool
+    results: tuple[ValidationResult, ...]
+    mvp_id: str | None = None
+    work_item_id: str | None = None
+    git_sha: str | None = None
+
+
+class ValidationError(Exception):
+    """Base for validation/quality-gate domain errors."""
+
+
+class UnknownValidationRunError(ValidationError):
+    def __init__(self, validation_run_id: str) -> None:
+        super().__init__(f"unknown validation run: {validation_run_id!r}")
+        self.validation_run_id = validation_run_id
+
+
+class CorruptValidationResultError(ValidationError):
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"corrupt validation result: {detail}")
+
+
+class ValidationTimeoutError(ValidationError):
+    """Internal: a validation command exceeded its bounded timeout."""
+
+
+def _compute_passed(
+    commands: Sequence[ValidationCommand], results: Sequence[ValidationResult]
+) -> bool:
+    by_id = {r.validation_id: r for r in results}
+    for command in commands:
+        if not command.required:
+            continue
+        result = by_id.get(command.validation_id)
+        # No result at all for a required validation is never "passed".
+        if result is None or result.status is not ValidationStatus.PASSED:
+            return False
+    return True
+
+
+def _git_head_sha(cwd: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(cwd), capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
+_CREATE_TABLES_SQL = """
+CREATE TABLE IF NOT EXISTS validation_commands (
+    project_id TEXT NOT NULL,
+    validation_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    argv TEXT NOT NULL,
+    timeout_seconds REAL NOT NULL,
+    required INTEGER NOT NULL,
+    PRIMARY KEY (project_id, validation_id)
+);
+CREATE TABLE IF NOT EXISTS validation_results (
+    row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    validation_run_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    mvp_id TEXT,
+    work_item_id TEXT,
+    validation_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    required INTEGER NOT NULL,
+    argv TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL,
+    exit_code INTEGER,
+    stdout TEXT NOT NULL,
+    stderr TEXT NOT NULL,
+    git_sha TEXT
+);
+"""
+
+
+class ValidationStore:
+    """Synchronous, sqlite3-backed store for validation config + results."""
+
+    def __init__(self, db_path: str | Path, *, clock: Clock | None = None) -> None:
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._conn = sqlite3.connect(str(db_path))
+        self._conn.row_factory = sqlite3.Row
+        with self._conn:
+            self._conn.executescript(_CREATE_TABLES_SQL)
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def set_project_commands(self, project_id: str, commands: Sequence[ValidationCommand]) -> None:
+        """Replaces the full configured validation set for a project."""
+        _require_non_empty_str(project_id, field_name="project_id")
+        with self._conn:
+            self._conn.execute("DELETE FROM validation_commands WHERE project_id = ?", (project_id,))
+            for sequence, command in enumerate(commands):
+                self._conn.execute(
+                    "INSERT INTO validation_commands "
+                    "(project_id, validation_id, sequence, kind, argv, timeout_seconds, required) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        project_id, command.validation_id, sequence, command.kind.value,
+                        json.dumps(command.argv), command.timeout_seconds, int(command.required),
+                    ),
+                )
+
+    def get_project_commands(self, project_id: str) -> tuple[ValidationCommand, ...]:
+        rows = self._conn.execute(
+            "SELECT * FROM validation_commands WHERE project_id = ? ORDER BY sequence ASC",
+            (project_id,),
+        ).fetchall()
+        return tuple(
+            ValidationCommand(
+                validation_id=row["validation_id"],
+                kind=ValidationKind(row["kind"]),
+                argv=tuple(json.loads(row["argv"])),
+                timeout_seconds=row["timeout_seconds"],
+                required=bool(row["required"]),
+            )
+            for row in rows
+        )
+
+    def record_result(
+        self,
+        validation_run_id: str,
+        project_id: str,
+        result: ValidationResult,
+        *,
+        mvp_id: str | None = None,
+        work_item_id: str | None = None,
+        git_sha: str | None = None,
+    ) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO validation_results "
+                "(validation_run_id, project_id, mvp_id, work_item_id, validation_id, kind, "
+                "required, argv, status, started_at, finished_at, exit_code, stdout, stderr, git_sha) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    validation_run_id, project_id, mvp_id, work_item_id, result.validation_id,
+                    result.kind.value, int(result.required), json.dumps(result.argv),
+                    result.status.value, result.started_at.isoformat(), result.finished_at.isoformat(),
+                    result.exit_code, result.stdout, result.stderr, git_sha,
+                ),
+            )
+
+    def get_gate_result(self, validation_run_id: str) -> QualityGateResult:
+        rows = self._conn.execute(
+            "SELECT * FROM validation_results WHERE validation_run_id = ? ORDER BY row_id ASC",
+            (validation_run_id,),
+        ).fetchall()
+        if not rows:
+            raise UnknownValidationRunError(validation_run_id)
+
+        try:
+            results = tuple(
+                ValidationResult(
+                    validation_run_id=row["validation_run_id"],
+                    validation_id=row["validation_id"],
+                    kind=ValidationKind(row["kind"]),
+                    required=bool(row["required"]),
+                    argv=tuple(json.loads(row["argv"])),
+                    status=ValidationStatus(row["status"]),
+                    started_at=datetime.fromisoformat(row["started_at"]),
+                    finished_at=datetime.fromisoformat(row["finished_at"]),
+                    exit_code=row["exit_code"],
+                    stdout=row["stdout"],
+                    stderr=row["stderr"],
+                )
+                for row in rows
+            )
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise CorruptValidationResultError(str(exc)) from exc
+
+        first = rows[0]
+        project_id = first["project_id"]
+        commands = self.get_project_commands(project_id)
+        return QualityGateResult(
+            validation_run_id=validation_run_id,
+            project_id=project_id,
+            passed=_compute_passed(commands, results),
+            results=results,
+            mvp_id=first["mvp_id"],
+            work_item_id=first["work_item_id"],
+            git_sha=first["git_sha"],
+        )
+
+    def latest_gate_result_for_work_item(self, work_item_id: str) -> QualityGateResult | None:
+        row = self._conn.execute(
+            "SELECT validation_run_id FROM validation_results WHERE work_item_id = ? "
+            "ORDER BY row_id DESC LIMIT 1",
+            (work_item_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self.get_gate_result(row["validation_run_id"])
+
+
+SubprocessRunner = Callable[[Sequence[str], Path, float], Awaitable[tuple[int, bytes, bytes]]]
+
+
+async def _default_subprocess_runner(
+    argv: Sequence[str], cwd: Path, timeout: float
+) -> tuple[int, bytes, bytes]:
+    process = await asyncio.create_subprocess_exec(
+        *argv, cwd=str(cwd), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        raise ValidationTimeoutError(f"validation command timed out after {timeout}s: {list(argv)!r}")
+    return process.returncode, stdout, stderr
+
+
+class QualityGateRunner:
+    """Executes a project's configured ValidationCommands and persists results.
+
+    Never invents a command: everything it runs comes from
+    ``ValidationStore.get_project_commands``. Never mutates git. Never
+    launches Claude/Codex/Ralph — only whatever ``argv`` the project
+    configured (typically ``pytest``, ``ruff``, ``mypy``, ``npm``, ...).
+    """
+
+    def __init__(
+        self,
+        store: ValidationStore,
+        *,
+        clock: Clock | None = None,
+        id_factory: IdFactory | None = None,
+        subprocess_runner: SubprocessRunner | None = None,
+    ) -> None:
+        self._store = store
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
+        self._run_subprocess = subprocess_runner or _default_subprocess_runner
+
+    async def run_gate(
+        self,
+        *,
+        project_id: str,
+        cwd: str | Path,
+        mvp_id: str | None = None,
+        work_item_id: str | None = None,
+        validation_run_id: str | None = None,
+    ) -> QualityGateResult:
+        cwd = Path(cwd)
+        run_id = validation_run_id or self._id_factory()
+        commands = self._store.get_project_commands(project_id)
+        git_sha = _git_head_sha(cwd)
+
+        results: list[ValidationResult] = []
+        for command in commands:
+            result = await self._run_one(run_id, command, cwd)
+            self._store.record_result(
+                run_id, project_id, result, mvp_id=mvp_id, work_item_id=work_item_id, git_sha=git_sha,
+            )
+            results.append(result)
+
+        return QualityGateResult(
+            validation_run_id=run_id,
+            project_id=project_id,
+            passed=_compute_passed(commands, results),
+            results=tuple(results),
+            mvp_id=mvp_id,
+            work_item_id=work_item_id,
+            git_sha=git_sha,
+        )
+
+    async def _run_one(
+        self, validation_run_id: str, command: ValidationCommand, cwd: Path
+    ) -> ValidationResult:
+        started_at = self._clock()
+        try:
+            exit_code, stdout, stderr = await self._run_subprocess(
+                command.argv, cwd, command.timeout_seconds
+            )
+        except ValidationTimeoutError:
+            return ValidationResult(
+                validation_run_id=validation_run_id, validation_id=command.validation_id,
+                kind=command.kind, required=command.required, argv=command.argv,
+                status=ValidationStatus.TIMEOUT, started_at=started_at, finished_at=self._clock(),
+            )
+        except FileNotFoundError as exc:
+            return ValidationResult(
+                validation_run_id=validation_run_id, validation_id=command.validation_id,
+                kind=command.kind, required=command.required, argv=command.argv,
+                status=ValidationStatus.ERROR, started_at=started_at, finished_at=self._clock(),
+                stderr=_bounded(str(exc)),
+            )
+
+        finished_at = self._clock()
+        status = ValidationStatus.PASSED if exit_code == 0 else ValidationStatus.FAILED
+        return ValidationResult(
+            validation_run_id=validation_run_id, validation_id=command.validation_id,
+            kind=command.kind, required=command.required, argv=command.argv,
+            status=status, started_at=started_at, finished_at=finished_at, exit_code=exit_code,
+            stdout=_bounded(stdout.decode("utf-8", errors="replace")),
+            stderr=_bounded(stderr.decode("utf-8", errors="replace")),
+        )
