@@ -331,6 +331,17 @@ class ExecutionStore:
         rows = self._conn.execute(_SELECT_RUNNING_SQL, (ExecutionStatus.RUNNING.value,)).fetchall()
         return [_decode_row(row) for row in rows]
 
+    def list_for_task(self, task_id: str) -> list[ExecutionRecord]:
+        """All executions recorded for a task (WorkItem), oldest first.
+
+        The read primitive an activity report (Slice 10) needs to see a
+        WorkItem's full execution history — never log scraping.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM executions WHERE task_id = ? ORDER BY started_at ASC", (task_id,)
+        ).fetchall()
+        return [_decode_row(row) for row in rows]
+
     def mark_succeeded(
         self,
         execution_id: str,
