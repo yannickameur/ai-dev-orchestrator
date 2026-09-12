@@ -209,14 +209,27 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
 - Fixtures issues des captures du spike (stream-json Claude, app-server Codex)
 - Valident les contrats et adapters sans appel réseau réel avant intégration
 
-**6. QuotaManager**
-- Consulte les ProviderAdapters pour découvrir l'état de chaque provider
-- Gère la politique de fraîcheur :
-  - Chaque observation porte `observed_at`
-  - TTL / freshness configurable
-  - Re-probe sur provider failure
-  - Claude ne doit jamais être appelée juste pour rafraîchir un quota
-- États par fenêtre : AVAILABLE, EXHAUSTED, WAITING_RESET, UNKNOWN/STALE, ERROR
+**6. QuotaManager — ✅ DONE**
+- Couche de cache/fraîcheur autour des `ProviderAdapter` existants
+  (`src/orchestrator/quota_manager.py`) — ne parle jamais directement à
+  Claude/Codex, uniquement à `ProviderAdapter.probe()`
+- `QuotaPolicy(state_ttl: timedelta)` injectable, validée (TTL positif
+  obligatoire) ; clock injectable et vérifiée timezone-aware à chaque appel
+- `get(provider)` : sert le cache si frais, probe sinon ; si le probe
+  échoue et qu'un ancien état existe, le retourne inchangé (jamais présenté
+  comme frais, `observed_at` jamais réécrit) plutôt que de fabriquer une
+  disponibilité ; sans ancien état, propage `ProviderProbeError`
+- `refresh(provider)` : probe toujours forcé, ne substitue jamais
+  silencieusement un ancien état — échoue explicitement si le probe échoue
+- `refresh_all()` : fan-out concurrent de `refresh()` sur tous les
+  providers connus, sans logique de sélection
+- Probes concurrents dédupliqués par provider (single-flight `asyncio.Task`)
+- `quota_windows`/`reset_credits` transmis tels quels (jamais réduits à un
+  `reset_at` unique, jamais consommés) ; erreurs domaine minimales
+  (`UnknownProviderError`, `ProviderProbeError`)
+- Ne classe pas WAITING_RESET/INTERRUPTED/RECOVERY_REQUIRED (états futurs
+  de l'orchestrateur/exécution, hors périmètre de cette couche)
+- Tests : `tests/test_quota_manager.py` (100% offline, fake adapters)
 
 **7. WorkerSelector**
 - Ordre conceptuel strict :
@@ -423,8 +436,10 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
   - **Étape 2b (CodexAdapter) — DONE** : voir `src/orchestrator/
     providers/codex_adapter.py` et `tests/providers/
     test_codex_adapter.py`.
-- **Next** : les deux Provider Adapters MVP 0.1 sont en place — passer à
-  QuotaManager (étape 6, multi-fenêtres/politique de fraîcheur).
+  - **Étape 3 (QuotaManager) — DONE** : voir `src/orchestrator/
+    quota_manager.py` et `tests/test_quota_manager.py`.
+- **Next** : WorkerSelector (étape 7, ordre capacité > gouvernance > quota
+  > coût) au-dessus du `QuotaManager`.
 
 ## Comment reprendre ce projet à froid
 
