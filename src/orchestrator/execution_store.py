@@ -222,8 +222,8 @@ _INSERT_SQL = (
 _SELECT_BY_ID_SQL = "SELECT * FROM executions WHERE execution_id = ?"
 _SELECT_RUNNING_SQL = "SELECT * FROM executions WHERE status = ? ORDER BY started_at ASC"
 _UPDATE_TRANSITION_SQL = (
-    "UPDATE executions SET status = ?, exit_code = ?, finished_at = ?, git_sha_after = ? "
-    "WHERE execution_id = ?"
+    "UPDATE executions SET status = ?, exit_code = ?, finished_at = ?, git_sha_after = ?, "
+    "provider_session_id = ?, ralph_loop_id = ? WHERE execution_id = ?"
 )
 
 
@@ -337,11 +337,15 @@ class ExecutionStore:
         *,
         exit_code: int | None = None,
         git_sha_after: str | None = None,
+        provider_session_id: str | None = None,
+        ralph_loop_id: str | None = None,
         finished_at: datetime | None = None,
     ) -> ExecutionRecord:
         return self._transition(
             execution_id, ExecutionStatus.SUCCEEDED,
-            exit_code=exit_code, git_sha_after=git_sha_after, finished_at=finished_at,
+            exit_code=exit_code, git_sha_after=git_sha_after,
+            provider_session_id=provider_session_id, ralph_loop_id=ralph_loop_id,
+            finished_at=finished_at,
         )
 
     def mark_failed(
@@ -350,17 +354,28 @@ class ExecutionStore:
         *,
         exit_code: int | None = None,
         git_sha_after: str | None = None,
+        provider_session_id: str | None = None,
+        ralph_loop_id: str | None = None,
         finished_at: datetime | None = None,
     ) -> ExecutionRecord:
         return self._transition(
             execution_id, ExecutionStatus.FAILED,
-            exit_code=exit_code, git_sha_after=git_sha_after, finished_at=finished_at,
+            exit_code=exit_code, git_sha_after=git_sha_after,
+            provider_session_id=provider_session_id, ralph_loop_id=ralph_loop_id,
+            finished_at=finished_at,
         )
 
     def mark_interrupted(
-        self, execution_id: str, *, finished_at: datetime | None = None
+        self,
+        execution_id: str,
+        *,
+        ralph_loop_id: str | None = None,
+        finished_at: datetime | None = None,
     ) -> ExecutionRecord:
-        return self._transition(execution_id, ExecutionStatus.INTERRUPTED, finished_at=finished_at)
+        return self._transition(
+            execution_id, ExecutionStatus.INTERRUPTED,
+            ralph_loop_id=ralph_loop_id, finished_at=finished_at,
+        )
 
     def mark_recovery_required(
         self, execution_id: str, *, finished_at: datetime | None = None
@@ -379,6 +394,8 @@ class ExecutionStore:
         *,
         exit_code: int | None = None,
         git_sha_after: str | None = None,
+        provider_session_id: str | None = None,
+        ralph_loop_id: str | None = None,
         finished_at: datetime | None = None,
     ) -> ExecutionRecord:
         current = self.get(execution_id)
@@ -391,6 +408,10 @@ class ExecutionStore:
             status=new_status,
             exit_code=exit_code if exit_code is not None else current.exit_code,
             git_sha_after=git_sha_after if git_sha_after is not None else current.git_sha_after,
+            provider_session_id=(
+                provider_session_id if provider_session_id is not None else current.provider_session_id
+            ),
+            ralph_loop_id=ralph_loop_id if ralph_loop_id is not None else current.ralph_loop_id,
             finished_at=finished_at if finished_at is not None else self._now(),
         )
         with self._conn:
@@ -401,6 +422,8 @@ class ExecutionStore:
                     updated.exit_code,
                     updated.finished_at.isoformat(),
                     updated.git_sha_after,
+                    updated.provider_session_id,
+                    updated.ralph_loop_id,
                     execution_id,
                 ),
             )

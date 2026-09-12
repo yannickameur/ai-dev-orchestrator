@@ -547,3 +547,22 @@ Phase 0.5 DONE:
 
 Prochaine phase : Phase 1 MVP 0.1 (Provider Adapters + Worker Selector +
 QuotaManager + Ralph integration).
+
+## Addendum — Slice 6 (RalphExecutionEngine), nouvelles observations réelles
+
+Ces deux points n'étaient pas apparus lors du spike initial (Phase 0.5) et
+ont été découverts en intégrant `ralph run` programmatiquement pour la
+première fois (smoke test réel unique, backend Claude Haiku) :
+
+- **`--no-tui` est incompatible avec `--autonomous`/`-a`** : `ralph run`
+  refuse la combinaison (`error: the argument '--no-tui' cannot be used
+  with '--autonomous'`). `-a` seul suffit à forcer le mode headless pour un
+  subprocess dont le stdout n'est pas un TTY (Ralph bascule déjà tout seul
+  en mode autonome dans ce cas, comme observé aussi dans les logs de
+  diagnostic du spike initial : "Interactive mode requested but stdout is
+  not a TTY, falling back to autonomous").
+- **Un hat custom sans `description` est rejeté** par la validation de
+  config Ralph (`Hat 'worker' is missing required 'description' field`).
+  Les fichiers hats du spike (`hats-author-review.yml`,
+  `hats-backend-spike.yml`) en avaient tous une ; ce champ doit être généré
+  systématiquement pour toute config hats produite programmatiquement.
