@@ -16,6 +16,110 @@ découpe un MVP en tâches, choisit le meilleur worker disponible pour chaque
 tâche (coût, quota, spécialisation), impose une revue indépendante du code,
 et persiste son état pour reprendre après interruption.
 
+## Vision cible du produit
+
+Principe central (ajouté après Slice 6, affiné à chaque itération) :
+
+```
+UN PROJET
++ UNE ROADMAP VERSIONNÉE
++ UN ÉTAT D'EXÉCUTION PERSISTANT
++ DES AGENTS IA INTERCHANGEABLES
+```
+
+L'orchestrateur doit être capable de prendre un projet logiciel et de
+piloter progressivement sa roadmap jusqu'aux releases successives, avec des
+agents IA (Claude, Codex, puis d'autres) traités comme des workers
+interchangeables — jamais comme des rôles figés.
+
+Cycle cible (vision long terme ; chaque étape correspond à une ou
+plusieurs slices ci-dessous, certaines encore non construites) :
+
+```
+ROADMAP
+  ↓
+MVP courant
+  ↓
+WorkItems
+  ↓
+sélection du worker IA (WorkerSelector)
+  ↓
+exécution via Ralph (RalphExecutionEngine)
+  ↓
+handoff durable
+  ↓
+tests
+  ↓
+code review indépendante (author != reviewer)
+  ↓
+corrections éventuelles
+  ↓
+quality/release gate
+  ↓
+release
+  ↓
+rapport d'activité
+  ↓
+analyse indépendante de plusieurs agents IA
+  ↓
+synthèse de la suite (diff de roadmap proposé)
+  ↓
+notification utilisateur
+  ↓
+fenêtre de veto de 20 minutes
+  ↓
+si aucune réponse : approbation automatique
+  ↓
+mise à jour roadmap
+  ↓
+MVP suivant
+  ↓
+cycle suivant
+```
+
+Ce cycle est la cible produit. Il ne décrit pas l'état actuel du code : voir
+« État actuel » plus bas pour ce qui est réellement construit, et le
+« Découpage incrémental » (sous Phase 1) pour l'ordre de construction retenu.
+
+**Important — politique d'approbation optimiste (20 minutes)** : cette
+politique de silence = approbation ne concerne QUE la gouvernance
+roadmap/MVP (passage automatique au MVP suivant si personne ne répond à une
+proposition de synthèse). Elle ne signifie EN AUCUN CAS que l'absence de
+réponse autorise une action destructive, financière ou sensible ailleurs
+dans le système. Elle devra rester configurable (délai, activation).
+Non implémentée avant Slice 13 — voir plus bas.
+
+## Responsabilités (ne pas confondre)
+
+Chaque composant a une responsabilité unique et ne doit jamais empiéter sur
+celle d'un autre :
+
+- **`ROADMAP.md`** = direction fonctionnelle du projet (MVPs, objectifs,
+  décisions structurantes). Jamais un journal d'exécution machine.
+- **Project/MVP persistent state** (Slice 7+) = état de l'orchestration
+  haut niveau (MVP courant, WorkItems, statuts). Jamais une seconde file de
+  tâches fine — Ralph garde sa propre orchestration interne une fois un
+  WorkItem délégué.
+- **`ExecutionStore`** (Slice 5) = vérité des exécutions machine
+  (identité, statut, exit_code, SHA git, timestamps). Ne devient jamais un
+  god object : un `HandoffStore`/`ProjectStateStore` séparé porte les
+  responsabilités qui ne sont pas de l'audit d'exécution brut.
+- **Handoff** (Slice 7) = contexte durable nécessaire pour reprendre le
+  travail sans dépendre de la mémoire conversationnelle d'un LLM
+  précédent. Construit à partir de faits persistants (ExecutionRecord,
+  events métier, SHA git), jamais seulement d'un résumé libre du LLM.
+- **Activity Report** (Slice 10) = historique intelligible de ce qu'a fait
+  l'orchestrateur (MVP/WorkItem, workers, executions, tests, reviews,
+  décisions, changements de roadmap). Aucun secret stocké.
+- **Ralph** (`RalphExecutionEngine`, Slice 6) = exécution fine des
+  workers/workflows. Jamais réimplémenté, jamais doublé par un second
+  scheduler.
+- **`WorkerSelector`** (Slice 4) = choix du worker (capability >
+  gouvernance > quota > coût). Jamais dupliqué ailleurs.
+- **`QuotaManager`** (Slice 3) = disponibilité provider (cache/fraîcheur
+  au-dessus des `ProviderAdapter`). Jamais interrogé directement par une
+  couche d'orchestration haut niveau — toujours via `WorkerSelector`.
+
 ## Principes directeurs (valables à toutes les phases)
 
 1. **Ne pas recréer** Codex, Claude Code, Ollama, Git ou GitHub : les piloter
@@ -157,7 +261,7 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
 
 **Composants à construire (REUSE FIRST appliqué), ordre imposé** :
 
-**1. Contrats normalisés — ✅ DONE**
+**1. Contrats normalisés — ✅ DONE (Slice 0)**
 - **ProviderState, ProviderAvailability, QuotaWindow, ResetCredit** (data classes
   immuables, `src/orchestrator/providers/contracts.py`)
   - `observed_at` timezone-aware obligatoire à chaque niveau pertinent
@@ -166,14 +270,14 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
   - `ResetCredit.auto_consume` figé à `False` (invariant de type, pas de `consume()`)
   - Tests : `tests/providers/test_contracts.py` (offline, indépendants de tout provider)
 
-**2. Interface ProviderAdapter — ✅ DONE**
+**2. Interface ProviderAdapter — ✅ DONE (Slice 0)**
 - Signature minimale : `probe() → ProviderState` (`src/orchestrator/providers/adapter.py`)
 - Garanties : jamais d'exécution (pas `codex exec` dans probe) — ne doit
   **jamais** devenir un moteur d'exécution, l'exécution appartient à
   RalphExecutionEngine (étape 9)
 - Tests : `tests/providers/test_adapter.py`
 
-**3. ClaudeCodeAdapter — ✅ DONE**
+**3. ClaudeCodeAdapter — ✅ DONE (Slice 1)**
 - Parse stream-json des quotas natifs (`src/orchestrator/providers/claude_code_adapter.py`)
 - Retourne ProviderState normalisé (fenêtres `five_hour`/`seven_day`, jamais
   de `reset_at` unique)
@@ -186,7 +290,7 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
   claude_stream_allowed.jsonl`, nettoyée), tests 100% offline sinon
 - Tests : `tests/providers/test_claude_code_adapter.py`
 
-**4. CodexAdapter — ✅ DONE**
+**4. CodexAdapter — ✅ DONE (Slice 2)**
 - Échange JSON-RPC borné sur `codex app-server` (`src/orchestrator/
   providers/codex_adapter.py`) : `initialize` → `initialized` →
   `account/rateLimits/read` uniquement, jamais `account/usage/read` ni
@@ -209,7 +313,7 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
 - Fixtures issues des captures du spike (stream-json Claude, app-server Codex)
 - Valident les contrats et adapters sans appel réseau réel avant intégration
 
-**6. QuotaManager — ✅ DONE**
+**6. QuotaManager — ✅ DONE (Slice 3)**
 - Couche de cache/fraîcheur autour des `ProviderAdapter` existants
   (`src/orchestrator/quota_manager.py`) — ne parle jamais directement à
   Claude/Codex, uniquement à `ProviderAdapter.probe()`
@@ -231,7 +335,7 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
   de l'orchestrateur/exécution, hors périmètre de cette couche)
 - Tests : `tests/test_quota_manager.py` (100% offline, fake adapters)
 
-**7. WorkerSelector — ✅ DONE**
+**7. WorkerSelector — ✅ DONE (Slice 4)**
 - `Worker` typé (`src/orchestrator/worker_selector.py`) : `worker_id`
   (identité technique stable), `display_name` (jamais utilisé pour une
   décision de gouvernance), `provider`, `backend`, `model`,
@@ -260,7 +364,7 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
   WAITING_RESET/RECOVERY_REQUIRED — appartiennent à RalphExecutionEngine
 - Tests : `tests/test_worker_selector.py` (100% offline, fake adapters)
 
-**8. Persistence / execution audit** (SQLite)
+**8. Persistence / execution audit** (SQLite) — volet Execution = Slice 5
 - **Volet `Execution` (audit) — ✅ DONE** (`src/orchestrator/execution_store.py`)
   - `ExecutionRecord` : identité complète et immuable une fois créée
     (`execution_id` distinct de `task_id`/`worker_id`, snapshot
@@ -294,7 +398,7 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
   démarrage (actuellement : primitives disponibles, pas de logique de
   démarrage qui les invoque)
 
-**9. RalphExecutionEngine (wrapper) — ✅ DONE**
+**9. RalphExecutionEngine (wrapper) — ✅ DONE (Slice 6)**
 - `RalphExecutionEngine(execution_store, ralph_binary="ralph", clock=...)`
   (`src/orchestrator/ralph_execution_engine.py`) : `async execute(request:
   ExecutionRequest) -> ExecutionResult`
@@ -340,40 +444,125 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
 - Tests : `tests/test_ralph_execution_engine.py` (offline, sauf `git`
   local pour le test de capture de SHA)
 
-**10. MVPManager**
-- Crée/valide/archive les MVPs
-- Stocke les critères d'acceptation
-- Lié aux tâches
+### Découpage incrémental (Slice 7 et suivantes)
 
-**Compléments MVP 0.1** (pas de rang fixe imposé par le spike, à intégrer
-autour des étapes ci-dessus) :
+Ce découpage remplace/précise l'ancien item générique « 10. MVPManager » et
+le fourre-tout « Compléments MVP 0.1 » ci-dessous à la lumière de la
+« Vision cible du produit » (voir plus haut). Il reste **indicatif** dans
+son ordre exact au-delà de Slice 7 — l'architecture existante peut justifier
+un léger réordonnancement — mais chaque slice doit rester petite,
+testable offline, et documenter explicitement ses dépendances.
 
-- **OllamaAdapter** (futur, hors 3 adapters MVP 0.1)
-  - Gestion état local / API native
+**Slice 7 — Project/MVP orchestration core + durable handoff**
+- `Project`, `MVP`, `WorkItem` : types haut niveau (voir section dédiée
+  ci-dessous pour le détail retenu)
+- `MVPManager` : sélectionne les `WorkItem` éligibles (dépendances
+  satisfaites), délègue au `WorkerSelector` existant pour le choix du
+  worker, délègue au `RalphExecutionEngine` existant pour l'exécution —
+  n'implémente ni quota, ni provider, ni priorité, ni capability matching
+  (déjà dans `WorkerSelector`), et ne crée pas de seconde file de tâches
+  fine (Ralph garde son orchestration interne une fois le WorkItem délégué)
+- Exécution séquentielle déterministe (pas de parallélisme dans cette
+  slice)
+- `HandoffRecord` durable, persistant, relisible après redémarrage,
+  indépendant du contexte conversationnel d'un worker — construit à partir
+  de faits (`ExecutionRecord`, events métier, SHA git), pas seulement d'un
+  résumé libre
+- Persistence dédiée (store(s) séparé(s) d'`ExecutionStore`, sqlite3
+  stdlib), reprise après redémarrage sans retry aveugle
+- **Reporté** (hors périmètre explicite de cette slice) : lancement de
+  tests projet, code review, release gate, activity report complet,
+  `WAITING_RESET`, reprise automatique après quota, multi-agent planning,
+  notification, fenêtre 20 min, GitHub PR/merge
+- Dépend de : Slice 4 (WorkerSelector), Slice 5 (ExecutionStore), Slice 6
+  (RalphExecutionEngine) — toutes DONE
 
-- **Abstraction Workspace (interface découplée du moteur)**
-  - Interface : `prepare(task)`, `finalize(task, result)`
-  - Le moteur Ralph **manipule Git via subprocess**, jamais via AI Dev Orchestrator
-  - Implémentation MVP 0.1 : `LocalGitWorkspace`
-    - Prépare un workspace Git local
-    - Pas de réseau, pas de GitHub
-    - Capture git_sha_before/after pour l'identité d'Execution
-    - Stratégie d'isolation (branche locale, worktree, etc.) configurable
-  - Workspace est une abstraction pour que le moteur ne dépende d'aucune stratégie Git
-    particulière (branche locale, GitHub, worktree, PR) — c'est un détail interchangeable
+**Slice 8 — Project validation commands + tests / quality gates**
+- Chaque WorkItem/MVP peut définir ses validations (unit/integration/lint/
+  typecheck/smoke/E2E) via des commandes configurées/découvertes au niveau
+  projet — jamais inventées différemment à chaque exécution
+- Une release n'est jamais déclarée terminée uniquement parce que le
+  worker affirme avoir fini ; les commandes de validation font foi
+- Dépend de : Slice 7 (WorkItem/MVP existent déjà)
 
-- **CLI minimal**
-  - `python -m orchestrator mvp create --name <name> --criteria <json>`
-  - `python -m orchestrator task create --mvp <id> --role developer --capability ...`
-  - `python -m orchestrator task run <task_id>`
-  - `python -m orchestrator task list --mvp <id>`
-  - `python -m orchestrator task reconcile <task_id> --action retry`
-  - `python -m orchestrator quota status`
+**Slice 9 — Independent author/reviewer orchestration**
+- Cycle : `author worker != reviewer worker`, préférence
+  `author provider != reviewer provider` (réutilise `WorkerSelector`/
+  `WorkerSelectionPolicy` existants, ne réimplémente rien)
+- Le reviewer produit un verdict structuré (`APPROVED` /
+  `REJECTED` + findings) ; un rejet repart en correction avec un handoff
+  structuré (Slice 7)
+- Cette logique n'appartient jamais à `RalphExecutionEngine` — elle vit
+  dans l'orchestration MVP/quality gates
+- Recoupe et précise l'ancienne Phase 3 (« Séparation Developer/Reviewer »
+  ci-dessous), dont le contenu reste valable comme contexte
+- Dépend de : Slice 7, Slice 8 (verdict de review = une validation parmi
+  d'autres)
 
-- **Suite de tests**
-  - Unitaires : adapters, WorkerSelector, QuotaManager
-  - Intégrés : orchestration complète task → Ralph → result
-  - Fixtures : faux workers, faux quotas, Ralph mock si nécessaire
+**Slice 10 — Release gate + activity report**
+- Une release/MVP a une validation globale : WorkItems attendus terminés,
+  critères d'acceptation satisfaits, tests verts, review validée,
+  éventuellement smoke/E2E, aucun blocker critique — le succès d'une somme
+  d'exécutions individuelles ne suffit pas
+- Rapport d'activité durable et interrogeable (MVP/WorkItem, workers,
+  provider/model/reasoning, executions, durée, commits/SHA, tests,
+  reviews, failures, interruptions, reprises, décisions, changements de
+  roadmap, quota connu) — aucun secret stocké
+- Dépend de : Slice 7, Slice 8, Slice 9
+
+**Slice 11 — Quota waiting / interruption / durable resume**
+- `WAITING_RESET` introduit comme état d'**orchestration** (jamais dans
+  `ProviderAvailability`/`ExecutionStatus` existants, qui restent des
+  contrats provider/exécution purs)
+- Reconnaissance et reprise explicite (jamais automatique/aveugle) des
+  `Execution` `RUNNING` orphelines détectées via `ExecutionStore.
+  list_running()` au redémarrage
+- Recoupe et précise l'ancienne Phase 4 (« Suivi des quotas et resets »)
+- Dépend de : Slice 7 (état projet dans lequel s'inscrit une attente)
+
+**Slice 12 — Multi-agent release planning + roadmap synthesis**
+- Après une release réussie, plusieurs agents IA analysent
+  **indépendamment** (sans s'influencer avant d'avoir produit leur
+  proposition) : roadmap actuelle, état réel du projet, release
+  précédente, résultats de tests, findings de review, dette/risques,
+  travail restant — chacun propose le prochain MVP
+- Un agent de synthèse construit un **diff de roadmap proposé** (KEEP/ADD/
+  MOVE/DROP, risques, dépendances, objectif du prochain MVP, WorkItems,
+  acceptance criteria) — jamais une réécriture opaque de `ROADMAP.md`
+- Dépend de : Slice 10 (il faut un rapport d'activité et un release gate
+  pour avoir une release « réussie » à analyser)
+
+**Slice 13 — Notification + optimistic approval window (20 min)**
+- Pas de human gate bloquant entre deux releases : proposition persistée
+  → notification envoyée → délai de 20 minutes → `APPROVE` (immédiat) /
+  `REJECT` (n'enchaîne pas le MVP suivant) / `MODIFY` (nouvelle
+  proposition) / silence → **approbation automatique à l'échéance**
+- Règle survit au redémarrage du process (deadline persistée, jamais en
+  mémoire seule)
+- Cette politique ne concerne QUE la gouvernance roadmap/MVP — silence ne
+  vaut jamais autorisation pour une action destructive, financière ou
+  sensible ailleurs. Policy configurable (délai, activation)
+- Dépend de : Slice 12 (il faut une proposition de synthèse à approuver)
+
+**Slice 14 — Git/PR/merge governance si toujours nécessaire**
+- Recoupe l'ancienne Phase 2 (« GitHub : branches et Pull Requests »)
+  ci-dessous — `GitHubWorkspace`, CLI `gh`, politique de merge
+- Positionnée en dernier dans ce découpage incrémental : à ré-évaluer une
+  fois Slices 7-13 en place (peut-être partiellement anticipée si un
+  besoin concret apparaît avant)
+
+**Éléments non re-séquencés explicitement** (restent valables, à intégrer
+quand le besoin se précise, sans rang fixe) :
+- `OllamaAdapter` (provider local/gratuit, hors 3 adapters MVP 0.1)
+- Abstraction `Workspace` (`prepare(task)`/`finalize(task, result)`) :
+  `RalphExecutionEngine` (Slice 6) fait aujourd'hui du `git rev-parse HEAD`
+  en lecture seule directement, sans cette abstraction — suffisant tant
+  que Slice 14 (Git/PR/merge) n'est pas requise ; l'abstraction complète
+  n'est réintroduite que si/quand ce besoin devient concret
+- CLI minimale (`python -m orchestrator ...`) : utile dès que Slice 7
+  expose des commandes stables (`mvp create`, `workitem run`, `handoff
+  show`, etc.) — pas de rang fixe imposé, à ajouter quand l'ergonomie le
+  justifie
 
 **Explicitement hors périmètre Phase 1 — Ralph fournit déjà (REUSE)** :
 - Event loop, runtime task queue
@@ -414,6 +603,10 @@ Ce résumé sert de repère rapide ; le détail vérifiable est dans
 
 ### Phase 2 — GitHub : branches et Pull Requests
 
+> Recoupée par **Slice 14** (« Git/PR/merge governance si toujours
+> nécessaire ») dans le découpage incrémental sous Phase 1 — le contenu
+> ci-dessous reste le détail de référence.
+
 Objectif : remplacer le Git purement local par un flux Git + GitHub complet.
 
 Livrables (esquisse, à détailler en phase 1 via un ADR dédié) :
@@ -434,6 +627,10 @@ Prérequis : Phase 1 terminée et validée.
 
 ### Phase 3 — Séparation Developer / Reviewer
 
+> Recoupée par **Slice 9** (« Independent author/reviewer orchestration »)
+> dans le découpage incrémental sous Phase 1 — le contenu ci-dessous reste
+> le détail de référence, notamment pour les rôles spécialisés futurs.
+
 Objectif : imposer qu'un agent ne valide jamais son propre code, et permettre
 `Developer.model != Reviewer.model` (puis `!= Reviewer.provider`).
 
@@ -452,6 +649,14 @@ Prérequis : Phase 2 (les PR donnent le SHA à rattacher).
 
 ### Phase 4 — Suivi des quotas et resets
 
+> Recoupée par **Slice 11** (« Quota waiting / interruption / durable
+> resume ») dans le découpage incrémental sous Phase 1 — `WAITING_RESET`
+> y est positionné comme état d'**orchestration**, jamais dans les
+> contrats provider/exécution existants (`ProviderAvailability`,
+> `ExecutionStatus`). Nuance retenue depuis Slice 11 : pas de bascule
+> automatique de `WorkerSelector` pendant l'attente sans décision
+> explicite — voir la note anti-retry-aveugle des principes directeurs.
+
 Objectif : suspendre un provider en quota épuisé, basculer sur un autre
 worker, reprendre automatiquement après le reset.
 
@@ -467,6 +672,13 @@ Prérequis : Phase 1 (le schéma `quota_windows` existe déjà, seul son usage
 se complexifie).
 
 ### Phase 5 — Multi-projets (dont HA-AI)
+
+> Note : l'entité `Project` fait sa première apparition dès **Slice 7**
+> (mono-projet : un `Project` possède un workspace, une roadmap, un MVP
+> courant, un état persistant). Cette Phase 5 reste le périmètre pour
+> **plusieurs** projets isolés dans une seule instance — Slice 7 ne
+> l'anticipe pas au-delà du strict nécessaire pour éviter un couplage
+> prématuré.
 
 Objectif : piloter plusieurs projets indépendants depuis une seule instance
 de l'orchestrateur.
@@ -492,32 +704,34 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
 - **Phase 0.5 — DONE** : Reuse Spike validant Ralph Orchestrator 2.10.1.
   Résultats détaillés dans `docs/SPIKE_RALPH.md`.
 - **Phase 1 — EN COURS** : MVP 0.1 (gouvernance + sélection + Ralph integration).
-  - **Étape 1 (Contrats normalisés) — DONE** : `ProviderState`, `ProviderAvailability`,
+  - **Slice 0 (Contrats normalisés) — DONE** : `ProviderState`, `ProviderAvailability`,
     `QuotaWindow`, `ResetCredit`, interface `ProviderAdapter.probe()` — voir
     `src/orchestrator/providers/`. Purs, sans dépendance à Claude/Codex/Ralph.
-  - **Étape 2a (ClaudeCodeAdapter) — DONE** : voir `src/orchestrator/
+  - **Slice 1 (ClaudeCodeAdapter) — DONE** : voir `src/orchestrator/
     providers/claude_code_adapter.py` et `tests/providers/
     test_claude_code_adapter.py`.
-  - **Étape 2b (CodexAdapter) — DONE** : voir `src/orchestrator/
+  - **Slice 2 (CodexAdapter) — DONE** : voir `src/orchestrator/
     providers/codex_adapter.py` et `tests/providers/
     test_codex_adapter.py`.
-  - **Étape 3 (QuotaManager) — DONE** : voir `src/orchestrator/
+  - **Slice 3 (QuotaManager) — DONE** : voir `src/orchestrator/
     quota_manager.py` et `tests/test_quota_manager.py`.
-  - **Étape 4 (WorkerSelector) — DONE** : voir `src/orchestrator/
+  - **Slice 4 (WorkerSelector) — DONE** : voir `src/orchestrator/
     worker_selector.py` et `tests/test_worker_selector.py`.
-  - **Étape 5 (Persistence execution audit) — DONE (volet Execution
+  - **Slice 5 (Persistence execution audit) — DONE (volet Execution
     seulement)** : voir `src/orchestrator/execution_store.py` et
     `tests/test_execution_store.py`. `MVP`/`Task`/`Worker`/`QuotaWindow`
     persistants et réconciliation au démarrage restent à faire.
-  - **Étape 6 (RalphExecutionEngine) — DONE** : voir `src/orchestrator/
+  - **Slice 6 (RalphExecutionEngine) — DONE** : voir `src/orchestrator/
     ralph_execution_engine.py` et `tests/test_ralph_execution_engine.py`.
     Un seul smoke test réel exécuté (Claude Haiku) pour valider
     l'intégration bout en bout.
-- **Next** : les 6 briques de gouvernance/exécution MVP 0.1 sont en place
-  bout en bout (Provider Adapters → QuotaManager → WorkerSelector →
-  ExecutionStore → RalphExecutionEngine). Reste : `MVP`/`Task`/`Worker`
-  persistants (étape 8 restante) pour piloter tout cela depuis une CLI, et
-  la réconciliation au démarrage des `Execution` orphelines `RUNNING`.
+  - **Slice 7 (Project/MVP orchestration core + durable handoff) — DONE** :
+    voir `src/orchestrator/project_state.py`, `src/orchestrator/handoff.py`,
+    `src/orchestrator/mvp_manager.py` et les tests associés. Détail dans la
+    section « Découpage incrémental » ci-dessus.
+- **Next** : Slice 8 (Project validation commands + tests / quality gates)
+  — voir « Découpage incrémental » ci-dessus pour la suite complète
+  (Slice 8 à 14).
 
 ## Comment reprendre ce projet à froid
 
