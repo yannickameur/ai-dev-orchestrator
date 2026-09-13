@@ -389,23 +389,36 @@ qui n'a réellement qu'une seule configuration possible.
 ## 18. Questions réellement ouvertes
 
 - Forme exacte de l'extension de `WorkerSelectionRequest` pour porter un
-  tier/profil minimum (nouveau champ ? requête séparée ?) — à trancher en
-  concevant Slice 17, pas avant (pas assez d'information tant que
-  `ExecutionProfile` n'existe pas encore, Slice 15).
+  tier/profil minimum (nouveau champ ? requête séparée ?) — reste à
+  trancher en concevant Slice 17 (toujours pas fait : Slice 16 ne
+  sélectionne qu'un estimator, jamais un worker final par tier).
 - Renommage des capabilities existantes (`"reviewer"` -> `code_review`,
-  convention `development`) : à décider explicitement en Slice 15 comme un
-  changement fonctionnel assumé, pas glissé implicitement.
-- Fingerprint (§13) : recommandé, mais l'ensemble exact des champs
-  d'entrée et la politique d'invalidation précise restent à finaliser au
-  moment de l'implémenter (Slice 16), une fois la forme réelle du
-  `HandoffRecord`/review findings consommés observée en pratique.
-- Persistence `ExecutionRecommendation`/`ExecutionProfileDecision` (deux
-  tables distinctes proposées dans le prompt) : probablement
-  sur-dimensionné pour Slice 16 — une seule table de recommandation
-  suffirait peut-être si la décision finale est déjà entièrement dérivable
-  de la recommandation + de l'`ExecutionRecord` qui en résulte (comme
-  `PlannerProposal`/`RoadmapProposal` le sont déjà) ; à confirmer en
-  concevant Slice 16, pas figé ici.
+  convention `development`) : toujours non fait, resté volontairement hors
+  scope de Slices 15/16 (changement fonctionnel assumé, jamais glissé
+  implicitement) — à traiter explicitement quand une slice le justifie.
+
+**Résolu par Slice 16** (déplacé hors des questions ouvertes) :
+- Fingerprint : implémenté (`compute_task_fingerprint`,
+  `src/orchestrator/complexity_estimation.py`) — sha256 canonique sur
+  `role`/`project_id`/`mvp_id`/`work_item_id`/`objective`/
+  `acceptance_criteria`/`git_sha`/le contenu pertinent du dernier
+  `HandoffRecord`/les `ReviewFinding` pertinents, plus un
+  `contract_version` explicite pour invalider tout fingerprint passé si ce
+  contrat change un jour.
+- Persistence : une seule table (`ExecutionRecommendationStore`/
+  `ExecutionRecommendation`) s'est avérée suffisante — pas
+  d'`ExecutionProfileDecision` séparée, exactement comme anticipé ; cette
+  seconde table reste pertinente pour Slice 17 (la décision finale
+  worker+profile, distincte de la recommandation).
+- Validation `estimator_profile_id` (Slice 15 avait délibérément laissé la
+  question ouverte) : tranchée en faveur d'un contrôle **au niveau du
+  service** (`EstimatorProfileNotConfiguredError` dans
+  `ExecutionRecommendationService.estimate`), jamais dans
+  `WorkerRegistry` — la sémantique du nom de capability
+  `complexity_estimation` appartient au module qui la consomme, jamais à
+  `WorkerRegistry`, qui reste entièrement générique (aucune capability
+  n'y est jamais nommée), symétriquement à `WorkerSelector` qui ne nomme
+  jamais un provider concret.
 - Sandbox/permissions Codex sous adaptive execution : héritage direct du
   `NOT VALIDATED` déjà noté dans `docs/SPIKE_RALPH.md` — toujours non
   bloquant, toujours à re-tester avant toute hypothèse de sécurité.
