@@ -963,21 +963,52 @@ testable offline, et documenter explicitement ses dépendances.
   changement de comportement testé)
 - Dépend de : Slice 4 (`WorkerSelector`/`Worker` existants)
 
-**Slice 16 — Complexity pre-flight + recommendations**
-- Un hat Ralph "estimator" (capability `complexity_estimation`), exécuté
-  via `RalphExecutionEngine` exactement comme un planner/synthesizer
-  (Slice 12) — jamais un nouveau mécanisme d'exécution
-- Émet un événement structuré unique (`execution.profile_recommended`) :
-  `complexity`, `minimum_quality_tier`, `recommended_reasoning`, `reasons`
-  — recommande un niveau, ne choisit jamais un modèle/provider concret
-- Estimation **role-specific** : development/review/planning/roadmap
+**Slice 16 — Complexity pre-flight + persistent execution recommendations — ✅ DONE**
+- Nouveau `src/orchestrator/complexity_estimation.py` :
+  `ComplexityEstimationRequest`, `ExecutionRecommendation`,
+  `ExecutionRecommendationStore` (sqlite3), `ExecutionRecommendationService`
+- Séquence Option C : `WorkerSelector.select(capability=
+  complexity_estimation)` choisit l'estimator (jamais un worker/provider
+  codé en dur) -> profil résolu via `Worker.estimator_profile_id` (jamais
+  `Worker.profile()`'s default, qui appartient au développeur final) ->
+  `RalphExecutionEngine` (exactement comme un planner/synthesizer, Slice
+  12 — jamais un nouveau mécanisme d'exécution) -> événement structuré
+  unique `execution.profile_recommended` (`minimum_quality_tier`,
+  `recommended_reasoning` optionnel, `reasons`) -> `ExecutionRecommendation`
+  persistée. Pas de champ `complexity` séparé : `QualityTier` (SIMPLE/
+  STANDARD/COMPLEX/CRITICAL) est déjà cette classification, en ajouter un
+  second aurait dupliqué la même information sous un autre nom
+- Contrat de sortie strict, fail-closed comme `planning.py` : aucun champ
+  `model`/`provider`/`worker_id` accepté dans le payload (même envoyé par
+  erreur par l'estimator, il est ignoré) — l'estimator recommande un
+  niveau, ne choisit jamais un worker/modèle ; tier inconnu, payload
+  invalide, ou absence d'événement métier fiable -> aucune
+  `ExecutionRecommendation` produite, jamais un repli silencieux sur
+  `STANDARD`
+- Estimation **role-specific** : `role` fait partie de la requête, du
+  fingerprint et de la persistence — development/review/planning/roadmap
   synthesis du même WorkItem peuvent recevoir des tiers différents,
   jamais un tier recopié automatiquement d'un rôle à l'autre
-- Étudie et documente (sans l'implémenter) le fingerprint déterministe
-  (SHA-256) permettant d'éviter un pre-flight redondant
-- N'intègre encore rien dans `WorkerSelector`/`MVPManager` — produit
-  seulement l'événement/la recommandation, fail-closed comme
-  `planning.py` (payload invalide -> jamais traité comme un succès)
+- Fingerprint déterministe **implémenté** (et non plus seulement étudié) :
+  sha256 canonique sur role/project/mvp/work_item/objective/acceptance
+  criteria/git_sha/dernier handoff pertinent/review findings pertinents,
+  plus un `contract_version` explicite. `estimate(request,
+  force_refresh=False)` réutilise la dernière recommandation pour un
+  fingerprint identique sans jamais relancer Ralph ;
+  `force_refresh=True` en persiste une nouvelle sans jamais écraser
+  l'ancienne (même posture que `PlanningSession`/`RoadmapApplication` :
+  chaque tentative est conservée)
+- `estimator_profile_id` manquant sur le worker sélectionné : détecté et
+  refusé (`EstimatorProfileNotConfiguredError`) **au niveau du service**,
+  jamais dans `WorkerRegistry` (qui reste générique, ne connaît aucun nom
+  de capability — voir `docs/ADAPTIVE_EXECUTION.md` §18)
+- N'intègre encore rien dans `WorkerSelector`/`MVPManager` : aucune
+  sélection finale de worker/profile de développement ou de review,
+  aucun changement du cycle `MVPManager` existant — service autonome,
+  testable isolément
+- Tests : `tests/test_complexity_estimation.py` (100% offline, fake
+  WorkerSelector/RalphExecutionEngine, aucun réseau/subprocess/LLM réel,
+  aucun reset credit)
 - Dépend de : Slice 15 (les tiers/profils doivent exister pour qu'une
   recommandation ait un sens)
 
@@ -1233,10 +1264,18 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     `QualityTier`), `config/workers.yaml` (exemple réel, sans secret),
     `PyYAML` en dépendance déclarée, et les tests associés. Aucun
     estimator, aucune sélection adaptative de profil (Slices 16/17).
-- **Next** : Slice 16 — Complexity pre-flight + recommendations (adaptive
-  execution, étudiée dans `docs/ADAPTIVE_EXECUTION.md` ; voir « Découpage
-  incrémental » ci-dessus pour Slices 16-18, Git/PR/merge governance
-  décalée en Slice 19).
+  - **Slice 16 (Complexity pre-flight + persistent execution
+    recommendations) — DONE** : voir `src/orchestrator/
+    complexity_estimation.py` (nouveau : `ExecutionRecommendationService`,
+    `ExecutionRecommendationStore`, `ExecutionRecommendation`,
+    `ComplexityEstimationRequest`), fingerprint sha256 déterministe
+    implémenté, cache par fingerprint, et les tests associés. Aucune
+    sélection finale de worker/profile, aucune intégration `MVPManager`
+    (Slice 17).
+- **Next** : Slice 17 — Adaptive Worker/Profile Selection integration
+  (development) (adaptive execution, étudiée dans
+  `docs/ADAPTIVE_EXECUTION.md` ; voir « Découpage incrémental » ci-dessus
+  pour Slice 18, Git/PR/merge governance décalée en Slice 19).
 
 ## Comment reprendre ce projet à froid
 
