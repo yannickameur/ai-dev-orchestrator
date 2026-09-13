@@ -1352,6 +1352,171 @@ testable offline, et documenter explicitement ses dépendances.
   branche gouvernée, éligibilité au merge, preuve liée au SHA,
   rationnel fast-forward-only, sémantique de reprise.
 
+---
+
+**Revue de roadmap post-Slice 20 (2026-09-13, avec l'utilisateur)** — les
+Slices 7-20 de Phase 1 sont DONE ; décision : ouvrir un nouveau cycle QA/
+Regression Testing Governance (Slices 21-25 ci-dessous) plutôt que d'y
+substituer une nouvelle Phase. Voir `docs/QA_STRATEGY.md` pour l'étude
+d'architecture complète (contrats, workflow deux-phases, protection des
+tests, classification des échecs, base de connaissance de régression) qui
+sous-tend ce découpage — **aucun code fonctionnel n'a été modifié pour
+cette revue**, uniquement `ROADMAP.md`/`docs/status.md`/
+`docs/QA_STRATEGY.md`.
+
+Principe directeur (même discipline que l'audit OmniRoute, § « Principe :
+aucun biais en faveur de notre code ») : ne pas présumer qu'un QA/Test
+Agent interne complet doit être construit. `docs/QA_STRATEGY.md` documente
+explicitement trois modes d'architecture à garder ouverts jusqu'à preuve
+contraire — **INTERNAL_QA** (agent QA interne, intégré au mécanisme
+adaptatif Slice 17/19), **EXTERNAL_QA** (une solution spécialisée —
+TestSprite, BrowserStack AI Agents, Momentic, Diffblue Cover, ou une
+future candidate — utilisée directement comme moteur QA principal, pas
+seulement comme un outil de plus), et **HYBRID_QA** (agent interne pour
+unit/integration/contract, moteur externe pour E2E/browser/visuel, ou
+l'inverse selon la technologie). `ai-dev-orchestrator` conserve dans tous
+les cas la gouvernance (WorkItem, Git SHA, quality policy, audit, decision
+release, persistence, retries/recovery, merge eligibility) — jamais
+déléguée à un fournisseur externe.
+
+Invariant central documenté (`docs/QA_STRATEGY.md` § « Test Protection »)
+: un test de référence existant est un actif protégé — ni l'agent QA
+interne ni une solution externe ne peut supprimer, affaiblir, skip ou
+« self-heal sémantiquement » un test uniquement parce que le nouveau code
+échoue, sans décision humaine versionnée traçable (acceptance criteria,
+spec, décision d'architecture). Un verdict PASS doit toujours être fondé
+sur des preuves exécutables (pytest/Playwright/mypy/Ruff/build/lint/API/
+contract/E2E) — un verdict LLM seul n'est jamais une preuve de PASS.
+
+**Slice 21 — QA Architecture + Build-vs-Adopt Study**
+- Définir formellement les contrats `QARequest`/`QAResult`/`QAEngine` (le
+  nom exact — `QAEngine` vs `TestAgent`/`QAProvider`/`VerificationEngine`
+  — est lui-même un livrable de l'étude, pas figé d'avance)
+- Comparer factuellement Internal QA Agent vs TestSprite vs BrowserStack
+  AI Agents vs Momentic vs Diffblue Cover sur les axes listés dans
+  `docs/QA_STRATEGY.md` (unit/integration/API/E2E navigateur/mobile/
+  visuel, génération de tests, maintenance de tests, analyse d'échecs,
+  diff-aware, full-codebase, MCP/API/CLI, headless/CI, langages, coût,
+  exécution locale/privée, données envoyées à l'extérieur, auditabilité,
+  vendor lock-in, adéquation à une orchestration autonome)
+- Étudier les intégrations possibles par MCP, API HTTP, CLI, ou
+  plugin/connector — le cœur ne doit dépendre d'aucun protocole
+  spécifique
+- Définir la policy conceptuelle `qa.mode` (internal/external/hybrid) et
+  `qa.preferred_engine`, avec fallback policy explicite (jamais un
+  fallback silencieux qui réduit le niveau de vérification requis)
+- Choisir le premier spike factuel (TestSprite semble le candidat le plus
+  général pour un premier spike d'après sa description publique
+  actuelle — diff/codebase scope, test plan, génération de tests, API/
+  E2E, exécution, MCP — mais cette Slice ne le sélectionne pas
+  définitivement sur cette seule base ; le spike doit confirmer ou
+  infirmer)
+- Aucune dépendance produit imposée avant décision : pas de nouveau
+  module `src/`, pas d'installation TestSprite/BrowserStack/Momentic/
+  Diffblue, pas d'appel MCP/SaaS réel
+- Critère de décision à la fin de la Slice : choisir explicitement parmi
+  `BUILD_INTERNAL`, `ADOPT_TESTSPRITE`, `ADOPT_BROWSERSTACK`,
+  `ADOPT_MOMENTIC`, `ADOPT_DIFFBLUE_FOR_JAVA`, `HYBRID`,
+  `MULTI_ENGINE_BY_STACK`, ou `DEFER_EXTERNAL_QA` — avec preuve à
+  l'appui, jamais par défaut
+
+**Slice 22 — QA Governance + Regression Knowledge Base**
+- `QARun`/`QAVerdict`/`QAFinding`/`FailureClassification`/`QAResultStore`
+  — chaque run QA lié à project/MVP/WorkItem/base_sha/head_sha/engine/
+  worker ou provider éventuel/commandes/tests/résultat/horodatages
+- `TestImpactAnalysis` : base_sha/head_sha/diff → fichiers changés →
+  symboles/modules/config changés → dépendances directes → capacités
+  potentiellement impactées → tests existants → tests manquants → portée
+  de régression recommandée — objectif : ne pas systématiquement exécuter
+  la suite maximale dès la première boucle (stratégie « fast feedback »
+  puis « regression confidence »)
+- Base de connaissance de régression versionnée dans le dépôt cible
+  (`.qa/regression-map.yaml`, `.qa/invariants.yaml`,
+  `.qa/critical-paths.yaml`, `.qa/known-flaky.yaml`, `.qa/qa-history/`) —
+  frontière étudiée avec les stores SQLite existants : Git porte la
+  connaissance durable qui doit voyager avec le projet cible, SQLite
+  porte l'état runtime/audit de l'orchestrateur
+- `known-flaky.yaml` ne sert jamais de liste de tests ignorés — documente
+  test/evidence/cause suspectée/date/owner/retry policy ; un flaky
+  critique reste visible, jamais masqué
+- Policy de protection des tests existants (voir ci-dessus) rendue
+  opérationnelle : toute modification d'un test existant doit être
+  justifiée par un changement attendu traçable
+- Distinction self-healing technique (ex. sélecteur UI changé sans
+  changement fonctionnel — acceptable) vs self-healing sémantique (ex.
+  attendu=100 → résultat=80 → le test est changé pour accepter 80 —
+  interdit)
+- Classes de classification d'échec : `REGRESSION`, `EXPECTED_CHANGE`,
+  `TEST_DEFECT`, `FLAKY_TEST`, `ENVIRONMENT_FAILURE`, `UNKNOWN` — aucun
+  test en échec n'est automatiquement « réparé »
+- Dépend de : Slice 21 (le contrat QARequest/QAResult doit exister avant
+  de persister des QARun/QAVerdict réels)
+
+**Slice 23 — QA Engine MVP**
+- Dépend entièrement de la décision Slice 21 — cette Slice garde
+  délibérément ouvertes les options `InternalQAEngine`,
+  `TestSpriteQAEngine`, un autre `*QAEngine` externe, ou une première
+  implémentation `HYBRID_QA` ; le choix concret n'est pas pris
+  maintenant
+- Si `InternalQAEngine` retenu : intégration au mécanisme adaptatif
+  existant (`role=qa_testing` → pre-flight complexité → minimum
+  `QualityTier` → `WorkerSelector` → profil → `AdaptiveExecutionDecision`
+  — réutilisation stricte de Slice 16/17/19, aucune seconde
+  implémentation) ; `qa_worker_id != author_worker_id` obligatoire à
+  étudier/confirmer, `qa_worker_id != reviewer_worker_id` préféré mais
+  pas nécessairement obligatoire (sujet à trancher avec preuve, pas figé
+  d'avance)
+- Si un moteur externe retenu : sa sélection est basée sur
+  capability/stack plutôt que sur `QualityTier` LLM — distinction
+  explicite entre « AI worker selection » (Slice 17/19) et « QA engine
+  selection » (cette Slice), jamais confondues
+- `INCONCLUSIVE` est un statut de premier ordre distinct de `PASS`/`FAIL`
+  (environnement indisponible, dépendance externe cassée, spec
+  contradictoire, test impossible à exécuter) — un `INCONCLUSIVE` n'est
+  jamais traité comme un `PASS`
+- Indisponibilité d'un moteur externe requis : jamais de remplacement
+  silencieux par une vérification plus faible — `WAITING`/
+  `INCONCLUSIVE`/`BLOCKED` selon policy explicite ; si le moteur externe
+  est seulement optionnel, le système peut continuer selon policy
+  explicite (jamais implicite)
+
+**Slice 24 — QA/Rework/Review/Merge Integration**
+- Workflow cible en deux phases (voir `docs/QA_STRATEGY.md` §
+  « Position dans le workflow ») : **QA Phase 1 — Test Design/Authoring**
+  (avant la review finale ; peut analyser l'impact, créer tests/fixtures,
+  compléter la couverture ; ne modifie jamais le code de production ; un
+  commit de tests change le HEAD, donc gates+review portent ensuite sur
+  ce nouveau HEAD) puis **QA Phase 2 — Final Verification** (après la
+  review finale ; read-only sur code/tests ; exécute tests sélectionnés +
+  régression pertinente + QA externe éventuel ; ne modifie jamais le HEAD
+  déjà reviewé — si un test supplémentaire s'avère nécessaire, renvoie le
+  WorkItem en boucle TEST_AUTHORING/REWORK plutôt que de modifier le SHA
+  silencieusement)
+- SHA-binding QA : un `QAVerdict.PASS` sur un ancien `head_sha` n'autorise
+  jamais le merge d'un nouveau `head_sha` — même mécanisme que
+  `compute_merge_eligibility` (Slice 20) pour les quality gates/reviews,
+  étendu au QA
+- `MergeEligibility`/`ReleaseManager` : exigent `QAVerdict.PASS` sur le
+  `head_sha` courant lorsque QA est `required` par la policy — jamais de
+  décision LLM dans l'éligibilité
+- QA FAIL → classification de l'échec → coding/rework agent → nouveau
+  HEAD → tests/gates/re-review/QA — cycles bornés (même principe que
+  `ReviewPolicy.max_review_cycles`, Slice 9/17) ; au-delà :
+  `BLOCKED`/`HUMAN_ESCALATION` selon policy, jamais de boucle autonome
+  infinie
+- Restart/recovery QA : mêmes garanties que Slice 11/17/19/20 (reconstruit
+  depuis les stores persistés, jamais depuis un état en mémoire)
+- Dépend de : Slice 22 (SHA-binding/knowledge base) et Slice 23 (un
+  moteur QA concret doit exister pour être intégré à la boucle)
+
+**Slice 25 — Advanced QA / External E2E (conditionnelle, non obligatoire)**
+- Seulement si un besoin concret est établi par les Slices 21-24 : matrice
+  navigateur/device, régression visuelle, capacités avancées TestSprite/
+  BrowserStack/Momentic, vérification spécialisée performance/sécurité
+- Cette Slice n'est **pas créée comme obligatoire** tant que le besoin
+  n'est pas établi par l'usage réel — contrairement aux Slices 21-24,
+  elle reste conditionnelle par principe
+
 **Éléments non re-séquencés explicitement** (restent valables, à intégrer
 quand le besoin se précise, sans rang fixe) :
 - `OllamaAdapter` (provider local/gratuit, hors 3 adapters MVP 0.1)
@@ -1625,16 +1790,27 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     `ReleaseManager`/`RealizationReport`, fast-forward-only par défaut,
     `auto_merge=False` par défaut (testé réellement à `True`), aucune
     PR/push distant réel cette session. 876 tests offline PASS.
-- **Next : revue de roadmap avec l'utilisateur.** Toutes les Slices 7-20
-  du découpage incrémental Phase 1 sont maintenant DONE — c'est le point
-  de contrôle prévu par le principe du projet (« entre deux grandes
-  versions stables, relire ROADMAP.md/docs/status.md avec l'utilisateur,
-  discuter des priorités, puis seulement modifier cette section »).
-  Aucune Slice 21 n'est décidée ni proposée unilatéralement ici — la
-  suite (nouvelle Slice, refonte, ou clôture de Phase 1) doit être
-  arbitrée avec l'utilisateur avant toute nouvelle implémentation.
-  OmniRoute reste une qualification future optionnelle, hors roadmap
-  principale — voir `docs/OMNIROUTE_ARBITRATION.md`.
+  - **Revue de roadmap post-Slice 20 (2026-09-13, avec l'utilisateur) —
+    DONE** : décision d'ouvrir un nouveau cycle **QA/Regression Testing
+    Governance** (Slices 21-25, voir l'entrée détaillée ci-dessus et
+    `docs/QA_STRATEGY.md`) plutôt que d'inventer unilatéralement la
+    suite. Trois modes d'architecture gardés explicitement ouverts —
+    `INTERNAL_QA`/`EXTERNAL_QA`/`HYBRID_QA` — sans biais en faveur d'un
+    agent QA interne construit maison (même discipline que l'audit
+    OmniRoute) ; aucun fournisseur externe (TestSprite/BrowserStack/
+    Momentic/Diffblue) sélectionné définitivement à ce stade — cette
+    décision reste un livrable de Slice 21. Session documentation
+    uniquement : aucun code fonctionnel modifié, aucun test ajouté/
+    modifié (876 tests offline PASS, inchangé).
+- **Next : Slice 21 — QA Architecture + Build-vs-Adopt Study.** Voir
+  l'entrée détaillée ci-dessus et `docs/QA_STRATEGY.md`. Slices 21-24 du
+  nouveau cycle QA sont considérées engagées par cette revue de roadmap ;
+  Slice 25 reste conditionnelle (non obligatoire tant que le besoin n'est
+  pas établi). Le prochain point de contrôle utilisateur explicite reste
+  celui prévu par le principe du projet (entre deux grandes versions
+  stables, avant toute Slice au-delà de ce cycle QA). OmniRoute reste une
+  qualification future optionnelle, hors roadmap principale — voir
+  `docs/OMNIROUTE_ARBITRATION.md`.
 
 ## Comment reprendre ce projet à froid
 
