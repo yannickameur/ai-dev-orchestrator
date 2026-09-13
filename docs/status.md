@@ -1,7 +1,19 @@
 # Status
 
-Dernière mise à jour : Slice 20 (2026-09-13).
+Dernière mise à jour : revue de roadmap post-Slice 20 (2026-09-13).
 
+- **Revue de roadmap post-Slice 20 (avec l'utilisateur) : DONE.** Toutes
+  les Slices 7-20 de Phase 1 sont DONE ; décision : ouvrir un nouveau
+  cycle **QA/Regression Testing Governance** (Slices 21-25). Étude
+  d'architecture complète dans `docs/QA_STRATEGY.md` — trois modes gardés
+  ouverts (`INTERNAL_QA`/`EXTERNAL_QA`/`HYBRID_QA`), aucun fournisseur
+  externe (TestSprite/BrowserStack/Momentic/Diffblue) sélectionné
+  définitivement, aucun agent interne présumé nécessaire (même principe
+  « pas de biais maison » que l'audit OmniRoute). Session documentation
+  uniquement : `ROADMAP.md`/`docs/status.md`/`docs/QA_STRATEGY.md`
+  modifiés, **aucun code fonctionnel/test modifié** (876 tests offline
+  PASS, inchangé depuis Slice 20). Voir `ROADMAP.md` pour le détail des
+  Slices 21-25.
 - **Slice 20 — Git/PR/merge governance : DONE.** Nouveau
   `src/orchestrator/git_governance.py` (`LocalGitWorkspace`,
   `GitGovernancePolicy`, `GitWorkItemRecord`/`GitWorkItemStore`,
@@ -86,10 +98,9 @@ Dernière mise à jour : Slice 20 (2026-09-13).
     aucun downgrade ; aucun bug Slice 17/18 découvert. Preuve versionnée
     (sanitizée) : `docs/reports/real-cross-worker-resume-2026-09-13.html`
   - `~/projects/ralph-spike` original : non modifié (vérifié avant/après)
-- **Next : revue de roadmap avec l'utilisateur.** Toutes les Slices 7-20
-  de la Phase 1 sont DONE — point de contrôle prévu par le projet avant
-  toute nouvelle Slice. Aucune Slice 21 n'est décidée ici. OmniRoute reste
-  une qualification future optionnelle, hors roadmap principale (voir
+- **Next : Slice 21 — QA Architecture + Build-vs-Adopt Study** (voir
+  `ROADMAP.md` et `docs/QA_STRATEGY.md`). OmniRoute reste une
+  qualification future optionnelle, hors roadmap principale (voir
   `docs/OMNIROUTE_ARBITRATION.md`).
 
 Détail complet des slices, de la vision cible et du découpage incrémental :
