@@ -80,6 +80,18 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from orchestrator.activity_report import ActivityReport, ActivityReportStore
+from orchestrator.adaptive_execution import (
+    AdaptiveExecutionDecision,
+    AdaptiveExecutionDecisionStore,
+    NoCapableProfileError,
+    resolve_profile,
+)
+from orchestrator.complexity_estimation import (
+    ComplexityEstimationRequest,
+    ExecutionRecommendation,
+    ExecutionRecommendationError,
+    ExecutionRecommendationService,
+)
 from orchestrator.execution_store import ExecutionStatus
 from orchestrator.project_state import ProjectStateStore
 from orchestrator.ralph_execution_engine import (
@@ -1017,6 +1029,33 @@ class PlanningCoordinator:
     (never a direct Claude/Codex/Ralph call), ``ActivityReportStore`` for
     the factual release snapshot (never re-generated), ``ProjectStateStore``
     only to resolve the project workspace path for reading ``ROADMAP.md``.
+
+    ADAPTIVE PLANNER/SYNTHESIZER SELECTION (Slice 19): supplying the two
+    optional ``execution_recommendation_service``/
+    ``adaptive_execution_decision_store`` dependencies together enables the
+    same no-downgrade, tier-aware selection already used for development/
+    review (``orchestrator.adaptive_execution``) — for both genuine LLM
+    executions this module runs (planner, synthesizer). Deliberately NOT
+    done by composing ``AdaptiveExecutionSelector`` wholesale here: that
+    class makes exactly one ``WorkerSelector.select()`` call per
+    invocation, which cannot express ``_select_planner``'s own
+    diversity-seeking loop (grow the exclusion set, prefer a distinct
+    provider, fall back to the first candidate found) — so this module
+    instead composes the same three underlying primitives
+    ``AdaptiveExecutionSelector`` itself is built from
+    (``ExecutionRecommendationService.estimate()``, ``WorkerSelector``'s
+    own ``minimum_quality_tier`` filter, ``resolve_profile()``) directly,
+    persisting exactly one ``AdaptiveExecutionDecision`` per planner/
+    synthesizer actually run via the small ``_resolve_and_persist_decision``
+    helper — never a second reimplementation of ``resolve_profile``'s own
+    algorithm. Two planners sharing an identical snapshot legitimately
+    share a cached ``ExecutionRecommendation`` (same fingerprint, by Slice
+    16 construction) — this is expected, not special-cased — but each
+    still gets its own persisted ``AdaptiveExecutionDecision``, since
+    ``_resolve_and_persist_decision`` is called once per actually-selected
+    worker, never once per session. Omitting either dependency preserves
+    this slice's exact prior behavior: ``worker.profile()``'s default,
+    unchanged.
     """
 
     def __init__(
@@ -1030,6 +1069,8 @@ class PlanningCoordinator:
         policy: PlanningPolicy | None = None,
         planning_capability: str = DEFAULT_PLANNING_CAPABILITY,
         synthesis_capability: str = DEFAULT_SYNTHESIS_CAPABILITY,
+        execution_recommendation_service: ExecutionRecommendationService | None = None,
+        adaptive_execution_decision_store: AdaptiveExecutionDecisionStore | None = None,
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
@@ -1042,9 +1083,61 @@ class PlanningCoordinator:
         self._policy = policy or PlanningPolicy()
         self._planning_capability = planning_capability
         self._synthesis_capability = synthesis_capability
+        self._execution_recommendation_service = execution_recommendation_service
+        self._adaptive_execution_decision_store = adaptive_execution_decision_store
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or _default_id_factory
         self._timeout_seconds = timeout_seconds
+
+    def _adaptive_configured(self) -> bool:
+        return (
+            self._execution_recommendation_service is not None
+            and self._adaptive_execution_decision_store is not None
+        )
+
+    def _build_planning_estimation_request(
+        self, *, session: PlanningSession, snapshot: PlanningSnapshot, role: str,
+        acceptance_criteria: tuple[str, ...] = (),
+    ) -> ComplexityEstimationRequest:
+        """Facts available for a planner/synthesizer pre-flight.
+
+        ``role`` (``PLANNER_ROLE``/``SYNTHESIZER_ROLE``) is part of the
+        Slice 16 fingerprint, so planning's pre-flight is independently
+        estimated/cached from both development's and review's — and from
+        each other. ``roadmap_hash``/``activity_report_id`` are embedded
+        in the objective so two planning sessions for the same MVP never
+        collide on fingerprint just because they share ``mvp_id``.
+        """
+        project = self._project_state_store.get_project(session.project_id)
+        objective = (
+            f"Release planning for release {session.release_id!r} (MVP {session.mvp_id!r}), "
+            f"roadmap_hash={snapshot.roadmap_hash!r}, activity_report_id={snapshot.activity_report_id!r}"
+        )
+        return ComplexityEstimationRequest(
+            project_id=session.project_id, role=role, workspace=project.workspace,
+            objective=objective, acceptance_criteria=acceptance_criteria,
+            mvp_id=session.mvp_id, git_sha=snapshot.git_sha,
+        )
+
+    async def _resolve_and_persist_decision(
+        self, *, worker: Worker, recommendation: ExecutionRecommendation, role: str,
+        project_id: str, mvp_id: str,
+    ) -> AdaptiveExecutionDecision:
+        """Reuses ``resolve_profile()`` verbatim, then persists exactly one
+        ``AdaptiveExecutionDecision`` for this specific, actually-selected
+        worker — never a second profile-resolution algorithm."""
+        profile, rationale = resolve_profile(
+            worker, minimum_quality_tier=recommendation.minimum_quality_tier,
+            recommended_reasoning=recommendation.recommended_reasoning,
+        )
+        decision = AdaptiveExecutionDecision(
+            decision_id=self._id_factory(), recommendation_id=recommendation.recommendation_id,
+            project_id=project_id, mvp_id=mvp_id, role=role,
+            worker_id=worker.worker_id, provider=worker.provider, backend=worker.backend,
+            profile_id=profile.profile_id, quality_tier=profile.quality_tier, model=profile.model,
+            reasoning_effort=profile.reasoning_effort, created_at=self._clock(), rationale=rationale,
+        )
+        return self._adaptive_execution_decision_store.record(decision)
 
     async def start_planning_session(self, *, project_id: str, mvp_id: str, release_id: str) -> PlanningSession:
         """Builds the durable PlanningSnapshot and creates a new COLLECTING session.
@@ -1096,20 +1189,38 @@ class PlanningCoordinator:
         if remaining <= 0:
             return existing
 
+        recommendation: ExecutionRecommendation | None = None
+        if self._adaptive_configured():
+            estimation_request = self._build_planning_estimation_request(
+                session=session, snapshot=snapshot, role=PLANNER_ROLE,
+            )
+            recommendation = await self._execution_recommendation_service.estimate(estimation_request)
+
         excluded_worker_ids = {p.worker_id for p in existing}
         used_providers = {p.provider for p in existing}
         new_proposals: list[PlannerProposal] = []
         try:
             for _ in range(remaining):
                 worker = await self._select_planner(
-                    excluded_worker_ids=excluded_worker_ids, used_providers=used_providers
+                    excluded_worker_ids=excluded_worker_ids, used_providers=used_providers,
+                    minimum_quality_tier=recommendation.minimum_quality_tier if recommendation else None,
                 )
                 excluded_worker_ids.add(worker.worker_id)
                 used_providers.add(worker.provider)
-                proposal = await self._run_one_planner(session=session, worker=worker, snapshot=snapshot)
+                model: str | None = None
+                reasoning_effort: str | None = None
+                if recommendation is not None:
+                    decision = await self._resolve_and_persist_decision(
+                        worker=worker, recommendation=recommendation, role=PLANNER_ROLE,
+                        project_id=session.project_id, mvp_id=session.mvp_id,
+                    )
+                    model, reasoning_effort = decision.model, decision.reasoning_effort
+                proposal = await self._run_one_planner(
+                    session=session, worker=worker, snapshot=snapshot, model=model, reasoning_effort=reasoning_effort,
+                )
                 self._planning_store.record_planner_proposal(proposal)
                 new_proposals.append(proposal)
-        except NoEligibleWorkerError as exc:
+        except (NoEligibleWorkerError, ExecutionRecommendationError, NoCapableProfileError) as exc:
             reason = (
                 f"could not select {session.policy_planner_count} distinct eligible planners "
                 f"(capability={self._planning_capability!r}): {exc}"
@@ -1121,7 +1232,10 @@ class PlanningCoordinator:
 
         return existing + new_proposals
 
-    async def _select_planner(self, *, excluded_worker_ids: set[str], used_providers: set[str]) -> Worker:
+    async def _select_planner(
+        self, *, excluded_worker_ids: set[str], used_providers: set[str],
+        minimum_quality_tier=None,
+    ) -> Worker:
         excluded = set(excluded_worker_ids)
         fallback_same_provider: Worker | None = None
         for _ in range(_MAX_PLANNER_SELECTION_ATTEMPTS):
@@ -1130,6 +1244,7 @@ class PlanningCoordinator:
                     WorkerSelectionRequest(
                         required_capabilities=frozenset({self._planning_capability}),
                         excluded_worker_ids=frozenset(excluded),
+                        minimum_quality_tier=minimum_quality_tier,
                     )
                 )
             except NoEligibleWorkerError:
@@ -1144,15 +1259,26 @@ class PlanningCoordinator:
         if fallback_same_provider is not None:
             return fallback_same_provider
         raise NoEligibleWorkerError(
-            WorkerSelectionRequest(required_capabilities=frozenset({self._planning_capability}))
+            WorkerSelectionRequest(
+                required_capabilities=frozenset({self._planning_capability}),
+                minimum_quality_tier=minimum_quality_tier,
+            )
         )
 
     async def _run_one_planner(
-        self, *, session: PlanningSession, worker: Worker, snapshot: PlanningSnapshot
+        self, *, session: PlanningSession, worker: Worker, snapshot: PlanningSnapshot,
+        model: str | None = None, reasoning_effort: str | None = None,
     ) -> PlannerProposal:
+        """``model``/``reasoning_effort``, when supplied (Slice 19 adaptive
+        selection), are the exact snapshot an ``AdaptiveExecutionDecision``
+        already resolved and persisted — used as-is. When omitted (adaptive
+        execution not configured), ``worker.profile()``'s default is used,
+        exactly as before Slice 19."""
         execution_id = self._id_factory()
         project = self._project_state_store.get_project(session.project_id)
-        profile = worker.profile()
+        if model is None:
+            profile = worker.profile()
+            model, reasoning_effort = profile.model, profile.reasoning_effort
         request = ExecutionRequest(
             execution_id=execution_id, task_id=f"planning:{session.planning_session_id}",
             worker=worker, role=PLANNER_ROLE, workspace=project.workspace,
@@ -1161,60 +1287,76 @@ class PlanningCoordinator:
             success_topics=frozenset({PLANNING_PROPOSED_TOPIC}),
             failure_topics=frozenset({PLANNING_FAILED_TOPIC}),
             timeout_seconds=self._timeout_seconds,
-            model=profile.model, reasoning_effort=profile.reasoning_effort,
+            model=model, reasoning_effort=reasoning_effort,
         )
         try:
             result = await self._execution_engine.execute(request)
         except RalphExecutionEngineError as exc:
-            return self._invalid_proposal(session, worker, execution_id, error_summary=f"planner execution failed to run: {exc}")
+            return self._invalid_proposal(
+                session, worker, execution_id, model=model, reasoning_effort=reasoning_effort,
+                error_summary=f"planner execution failed to run: {exc}",
+            )
 
         if result.record.status is not ExecutionStatus.SUCCEEDED:
             return self._invalid_proposal(
-                session, worker, execution_id,
+                session, worker, execution_id, model=model, reasoning_effort=reasoning_effort,
                 error_summary=f"no reliable {PLANNING_PROPOSED_TOPIC} event (status={result.record.status.value})",
             )
 
         proposed_event = next((e for e in result.events if e.topic == PLANNING_PROPOSED_TOPIC), None)
         if proposed_event is None or not proposed_event.payload:
-            return self._invalid_proposal(session, worker, execution_id, error_summary="missing planning.proposed payload")
+            return self._invalid_proposal(
+                session, worker, execution_id, model=model, reasoning_effort=reasoning_effort,
+                error_summary="missing planning.proposed payload",
+            )
 
         try:
             data = json.loads(proposed_event.payload)
             parsed = _parse_planner_payload(data)
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
-            return self._invalid_proposal(session, worker, execution_id, error_summary=f"invalid planning.proposed payload: {exc}")
+            return self._invalid_proposal(
+                session, worker, execution_id, model=model, reasoning_effort=reasoning_effort,
+                error_summary=f"invalid planning.proposed payload: {exc}",
+            )
 
         return PlannerProposal(
             proposal_id=self._id_factory(), planning_session_id=session.planning_session_id,
             snapshot_id=session.snapshot_id, worker_id=worker.worker_id, provider=worker.provider,
-            model=profile.model, reasoning_effort=profile.reasoning_effort, execution_id=execution_id,
+            model=model, reasoning_effort=reasoning_effort, execution_id=execution_id,
             created_at=self._clock(), status=PlannerProposalStatus.VALID, **parsed,
         )
 
     def _invalid_proposal(
-        self, session: PlanningSession, worker: Worker, execution_id: str, *, error_summary: str
+        self, session: PlanningSession, worker: Worker, execution_id: str, *,
+        model: str | None = None, reasoning_effort: str | None = None, error_summary: str,
     ) -> PlannerProposal:
-        profile = worker.profile()
+        if model is None:
+            profile = worker.profile()
+            model, reasoning_effort = profile.model, profile.reasoning_effort
         return PlannerProposal(
             proposal_id=self._id_factory(), planning_session_id=session.planning_session_id,
             snapshot_id=session.snapshot_id, worker_id=worker.worker_id, provider=worker.provider,
-            model=profile.model, reasoning_effort=profile.reasoning_effort, execution_id=execution_id,
+            model=model, reasoning_effort=reasoning_effort, execution_id=execution_id,
             created_at=self._clock(), status=PlannerProposalStatus.INVALID, error_summary=error_summary,
         )
 
-    async def _select_synthesizer(self, *, planner_worker_ids: set[str]) -> Worker:
+    async def _select_synthesizer(self, *, planner_worker_ids: set[str], minimum_quality_tier=None) -> Worker:
         if self._policy.prefer_distinct_synthesizer_worker:
             try:
                 return await self._worker_selector.select(
                     WorkerSelectionRequest(
                         required_capabilities=frozenset({self._synthesis_capability}),
                         excluded_worker_ids=frozenset(planner_worker_ids),
+                        minimum_quality_tier=minimum_quality_tier,
                     )
                 )
             except NoEligibleWorkerError:
                 pass  # fall through: reusing a planner worker is acceptable, never an absolute block
         return await self._worker_selector.select(
-            WorkerSelectionRequest(required_capabilities=frozenset({self._synthesis_capability}))
+            WorkerSelectionRequest(
+                required_capabilities=frozenset({self._synthesis_capability}),
+                minimum_quality_tier=minimum_quality_tier,
+            )
         )
 
     async def synthesize(self, planning_session_id: str) -> RoadmapProposal:
@@ -1239,11 +1381,47 @@ class PlanningCoordinator:
 
         self._planning_store.update_session_status(planning_session_id, PlanningSessionStatus.SYNTHESIZING)
         snapshot = self._planning_store.get_snapshot(session.snapshot_id)
-        synthesizer = await self._select_synthesizer(planner_worker_ids={p.worker_id for p in valid})
+
+        # Synthesis gets its OWN pre-flight (role=SYNTHESIZER_ROLE, never
+        # reusing a planner's recommendation) — the set of valid proposal
+        # ids being synthesized is embedded so a genuinely different set of
+        # inputs never shares a fingerprint with a previous synthesis
+        # attempt for the same session.
+        recommendation: ExecutionRecommendation | None = None
+        synthesis_model: str | None = None
+        synthesis_reasoning_effort: str | None = None
+        try:
+            if self._adaptive_configured():
+                estimation_request = self._build_planning_estimation_request(
+                    session=session, snapshot=snapshot, role=SYNTHESIZER_ROLE,
+                    acceptance_criteria=tuple(sorted(p.proposal_id for p in valid)),
+                )
+                recommendation = await self._execution_recommendation_service.estimate(estimation_request)
+
+            synthesizer = await self._select_synthesizer(
+                planner_worker_ids={p.worker_id for p in valid},
+                minimum_quality_tier=recommendation.minimum_quality_tier if recommendation else None,
+            )
+
+            if recommendation is not None:
+                decision = await self._resolve_and_persist_decision(
+                    worker=synthesizer, recommendation=recommendation, role=SYNTHESIZER_ROLE,
+                    project_id=session.project_id, mvp_id=session.mvp_id,
+                )
+                synthesis_model, synthesis_reasoning_effort = decision.model, decision.reasoning_effort
+        except (NoEligibleWorkerError, ExecutionRecommendationError, NoCapableProfileError) as exc:
+            reason = f"could not select an eligible synthesizer (capability={self._synthesis_capability!r}): {exc}"
+            self._planning_store.update_session_status(
+                planning_session_id, PlanningSessionStatus.FAILED, failure_reason=reason
+            )
+            raise PlanningSessionFailedError(planning_session_id, reason) from exc
 
         execution_id = self._id_factory()
         project = self._project_state_store.get_project(session.project_id)
-        synthesizer_profile = synthesizer.profile()
+        if synthesis_model is None:
+            synthesizer_profile = synthesizer.profile()
+            synthesis_model = synthesizer_profile.model
+            synthesis_reasoning_effort = synthesizer_profile.reasoning_effort
         request = ExecutionRequest(
             execution_id=execution_id, task_id=f"planning-synthesis:{planning_session_id}",
             worker=synthesizer, role=SYNTHESIZER_ROLE, workspace=project.workspace,
@@ -1252,7 +1430,7 @@ class PlanningCoordinator:
             success_topics=frozenset({SYNTHESIS_PROPOSED_TOPIC}),
             failure_topics=frozenset({SYNTHESIS_FAILED_TOPIC}),
             timeout_seconds=self._timeout_seconds,
-            model=synthesizer_profile.model, reasoning_effort=synthesizer_profile.reasoning_effort,
+            model=synthesis_model, reasoning_effort=synthesis_reasoning_effort,
         )
 
         try:

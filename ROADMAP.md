@@ -1053,16 +1053,16 @@ testable offline, et documenter explicitement ses dépendances.
   n'utilise **jamais** `Worker.profile()` par défaut "parce que c'est une
   reprise" (cela violerait l'invariant no-downgrade) ; le cache/fingerprint
   Slice 16 réutilise naturellement la recommandation existante si rien de
-  pertinent n'a changé, en recalcule une nouvelle sinon. Seule la reprise
-  **review** reste non adaptative (Slice 19, voir
-  `docs/ADAPTIVE_EXECUTION.md` §14/§18). Absent (défaut) : comportement
-  Slice 7-16 inchangé à l'identique
+  pertinent n'a changé, en recalcule une nouvelle sinon. À l'époque de
+  cette Slice 17, la reprise **review** restait non adaptative — étendue
+  depuis par la Slice 19 (voir son entrée ci-dessous). Absent (défaut) :
+  comportement Slice 7-16 inchangé à l'identique
 - Fail-closed de bout en bout : aucune exception de pre-flight/sélection
   n'est jamais capturée pour retomber sur un profil par défaut — seule
   `NoEligibleWorkerError` diagnosticable comme quota déclenche `WAITING`
   (mécanisme existant, jamais dupliqué)
-- Review, release planning, roadmap synthesis **non touchés** — restent
-  sur une sélection non adaptative (Slice 19)
+- Review, release planning, roadmap synthesis **non touchés par cette
+  Slice 17** — rendus adaptatifs depuis par la Slice 19
 - Tests : `tests/test_adaptive_execution.py` (26, unitaires) + nouvelles
   classes `TestAdaptiveDevelopmentSelection`/`TestReviewSelectionIsNotAdaptive`/
   `TestAdaptiveWaitResume`/`TestAdaptiveRecoveryResume`/
@@ -1155,14 +1155,99 @@ testable offline, et documenter explicitement ses dépendances.
   objectifs ni la portée de Slice 19/20.
 - 772 tests offline PASS (766 + 6 nouveaux).
 
-**Slice 19 — Adaptive review/planning integration**
-- Étend le pre-flight/l'sélection adaptative aux rôles review, release
-  planning et roadmap synthesis — chacun avec son propre tier (jamais le
-  tier development réutilisé tel quel)
+**Slice 19 — Adaptive review/planning integration — ✅ DONE**
+- Étend le pre-flight/la sélection adaptative aux rôles review, release
+  planning et roadmap synthesis — chacun avec son propre tier, jamais le
+  tier development réutilisé tel quel (fingerprint Slice 16 indépendant
+  par `role`)
+- **Review** : `MVPManager._run_review` (déjà l'unique méthode partagée
+  par le chemin frais, la reprise `WaitPhase.REVIEW` et la reprise
+  `RECOVERY_REQUIRED` côté review) passe par un nouveau
+  `_select_reviewer_worker`, symétrique de `_select_dev_worker` (Slice
+  17) : `ComplexityEstimationRequest(role=REVIEWER_ROLE, ...)` ->
+  `AdaptiveExecutionSelector.select(..., author_worker_id=...)` ->
+  `AdaptiveExecutionDecision` persistée avant tout `ExecutionRecord`
+  RUNNING. Aucune wiring séparée par chemin de reprise n'a été
+  nécessaire : les trois convergeaient déjà vers `_run_review`. Jamais
+  `Worker.profile()` par défaut quand l'adaptive execution est
+  configurée ; l'auteur original reste exclu même après une reprise
+  froide (relu depuis le dernier handoff **développeur**, jamais le
+  handoff de reprise du reviewer lui-même — `_find_last_developer_handoff`,
+  inchangé)
+- `AdaptiveExecutionSelector.select()` gagne un paramètre optionnel
+  `author_worker_id` (défaut `None`, rétrocompatible), forwardé tel quel
+  à `WorkerSelectionRequest.author_worker_id` — c'est ce champ, et lui
+  seul, qui déclenche la politique d'indépendance cross-provider
+  (`prefer_distinct_provider_for_review`/`require_distinct_provider_for_review`)
+  dans `WorkerSelector`. L'adaptive layer ne réimplémente ni n'affaiblit
+  cette politique ; `ReviewRecord.__post_init__` (reviewer≠author) reste
+  le filet de sécurité structurel final
+- Une incapacité structurelle côté review (recommandation CRITICAL sans
+  profil capable, etc.) n'est **jamais** attrapée par
+  `_REVIEWER_SELECTION_ERRORS` (qui reste limité aux exceptions
+  `WorkerSelector` : `NoEligibleWorkerError`/`ReviewIndependenceError`/
+  `UnknownWorkerError`) — elle se propage fail-closed, symétrique du
+  comportement development existant depuis Slice 17
+- **Release planning + roadmap synthesis** (`orchestrator.planning`) :
+  inspection réelle confirme que planner **et** synthesizer sont déjà de
+  vraies exécutions Ralph/LLM (capabilities `release_planning`/
+  `roadmap_synthesis`, déjà réelles depuis Slice 12) — **CAS B partout,
+  jamais de synthèse déterministe dans ce dépôt** ; aucune exécution LLM
+  n'a été inventée. `PlanningCoordinator` gagne deux dépendances
+  optionnelles (`execution_recommendation_service`,
+  `adaptive_execution_decision_store`, même patron opt-in que
+  `adaptive_execution_selector` sur `MVPManager`). Choix architectural
+  délibéré : ne PAS composer `AdaptiveExecutionSelector` telle quelle
+  pour le planner (elle ne fait qu'un seul appel `WorkerSelector.select()`,
+  incompatible avec la boucle de diversité existante de `_select_planner`
+  qui élargit l'exclusion et retente) — à la place, les trois primitives
+  dont `AdaptiveExecutionSelector` est elle-même composée
+  (`ExecutionRecommendationService.estimate()`, le filtre
+  `minimum_quality_tier` déjà supporté par `WorkerSelector`,
+  `resolve_profile()` réutilisée verbatim, jamais une seconde
+  implémentation) sont composées directement dans `planning.py` via un
+  petit helper privé `_resolve_and_persist_decision` — une seule
+  `AdaptiveExecutionDecision` persistée par planner/synthesizer
+  réellement lancé, jamais une par tentative de la boucle de diversité
+- Deux planners sur un snapshot identique partagent légitimement une
+  `ExecutionRecommendation` (même fingerprint, calculée une fois par
+  `run_planners`, jamais par planner) — explicitement acceptable — mais
+  chacun obtient sa propre `AdaptiveExecutionDecision` persistée
+- La synthèse obtient son propre pre-flight distinct (`role=SYNTHESIZER_ROLE`,
+  jamais celui d'un planner), avec les `proposal_id` retenus intégrés à
+  l'objectif du pre-flight pour que deux synthèses successives d'un même
+  MVP n'entrent jamais en collision de fingerprint
+- Diversité (`prefer_distinct_providers`, `prefer_distinct_synthesizer_worker`)
+  et indépendance des propositions inchangées à l'identique — l'adaptive
+  layer ne réduit jamais le multi-agent planning à un seul worker choisi
+  puis réutilisé partout
+- `ApprovalCoordinator`/`RoadmapApplicationService` **non touchés** —
+  restent entièrement déterministes, aucun LLM adaptatif
+- `RealizationReport` : **aucun changement de code nécessaire** — son
+  agrégation (`list_for_work_item`) est déjà role-agnostique (`WHERE
+  work_item_id = ?` seul) ; une recommandation/décision `role="reviewer"`
+  apparaît naturellement à côté d'une `role="developer"`, prouvé par un
+  nouveau test dédié (`test_reviewer_role_recommendations_and_decisions_surface_alongside_developer`)
 - `WorkerSelector`/`ReviewPolicy` (indépendance author≠reviewer) et
   `PlanningPolicy` (Slice 12) restent la seule source de vérité de leurs
   garanties respectives ; l'adaptive execution ne les contourne jamais
-- Dépend de : Slice 17 (le mécanisme d'intégration doit déjà exister côté
+- Aucun profil `CRITICAL` n'existe dans `config/workers.yaml` (toujours
+  pas un bug) — testé explicitement côté review et côté planning :
+  `NoCapableProfileError` se propage, jamais de profil fabriqué
+- `config/workers.yaml` **non modifié** — aucun besoin réel de profil
+  supplémentaire identifié
+- Tests : nouvelles classes `TestReviewSelectionIsAdaptive`/
+  `TestAdaptiveReviewResume` dans `tests/test_mvp_manager.py` (remplacent
+  les anciennes `TestReviewSelectionIsNotAdaptive`/
+  `TestAdaptiveReviewResumeUnaffected`, devenues incorrectes par
+  construction) ; nouvelles classes `TestAdaptivePlannerSelection`/
+  `TestAdaptiveSynthesizerSelection`/`TestRoadmapSynthesisIsRealLLM` dans
+  `tests/test_planning.py` ; un nouveau test dans
+  `tests/test_realization_report.py` — 790 tests offline PASS (772 + 18)
+- Smoke réel : non relancé (le smoke Slice 17/18 existant reste la
+  preuve réelle la plus récente) — cette Slice est validée entièrement
+  offline, comme demandé
+- Dépend de : Slice 17 (le mécanisme d'intégration existait déjà côté
   développement avant d'être étendu)
 
 **Slice 20 — Git/PR/merge governance si toujours nécessaire**
@@ -1406,8 +1491,9 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     `AdaptiveExecutionDecisionStore`, `AdaptiveExecutionDecision`,
     `resolve_profile`), extension `WorkerSelectionRequest.minimum_quality_tier`,
     `ExecutionProfile.cost_rank`, intégration opt-in dans `MVPManager`
-    (development + rework uniquement), et les tests associés. Review/
-    planning/release-planning non touchés (Slice 19).
+    (development + rework uniquement à cette étape), et les tests
+    associés. Review/planning/release-planning rendus adaptatifs depuis
+    par la Slice 19.
   - **Slice 18 (Realization reports + real cross-worker cold-resume
     acceptance) — DONE** : voir `src/orchestrator/realization_report.py`
     (nouveau : `RealizationReport`, `RealizationReportStore`,
@@ -1415,9 +1501,24 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     (smoke manuel, jamais lancé par `pytest`), et les tests associés.
     Smoke réel exécuté et **PASS** (voir détail ci-dessus dans le
     découpage) ; preuve versionnée dans `docs/reports/`.
-- **Next** : Slice 19 — Adaptive review + release planning/synthesis
-  profiles (adaptive execution, étudiée dans `docs/ADAPTIVE_EXECUTION.md` ;
-  Git/PR/merge governance reste décalée en Slice 20).
+  - **Slice 18.5 (Stabilisation pré-Slice 19) — DONE** : convention
+    canonique `code_review` (capability) vs `reviewer` (rôle) corrigée
+    dans `MVPManager.REVIEW_CAPABILITY` ; transport `reasoning_effort`
+    pour le backend `claude_code` (flag natif `claude --effort`)
+    confirmé et câblé dans `RalphExecutionEngine._build_backend_args`.
+  - **Slice 19 (Adaptive review/planning integration) — DONE** : voir
+    l'entrée détaillée ci-dessus dans le découpage incrémental —
+    `MVPManager._select_reviewer_worker` (review adaptatif, fresh +
+    reprise WAITING + reprise RECOVERY, un seul point de câblage via
+    `_run_review` déjà partagé), `AdaptiveExecutionSelector.select(...,
+    author_worker_id=...)`, et `PlanningCoordinator` (planner +
+    synthesizer adaptatifs — les deux confirmés être de vraies
+    exécutions LLM, CAS B ; `ApprovalCoordinator`/
+    `RoadmapApplicationService` non touchés). 790 tests offline PASS.
+- **Next** : Slice 20 — Git/PR/merge governance si toujours nécessaire
+  (voir son entrée dans le découpage incrémental ci-dessus). OmniRoute
+  reste une qualification future optionnelle, hors roadmap principale —
+  voir `docs/OMNIROUTE_ARBITRATION.md`.
 
 ## Comment reprendre ce projet à froid
 

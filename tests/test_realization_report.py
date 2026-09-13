@@ -137,6 +137,56 @@ class TestBasicAggregation:
         assert len(report.decisions) == 1
         assert report.decisions[0].worker_id == "alice"
 
+    def test_reviewer_role_recommendations_and_decisions_surface_alongside_developer(self, tmp_path: Path) -> None:
+        """Slice 19: review recommendations/decisions are never filtered
+        out by role — the aggregation query is already role-agnostic
+        (WHERE work_item_id = ? only), so a reviewer-role entry appears
+        naturally next to a developer-role one, distinguished by ``role``.
+        No RealizationReport code change was needed for this — this test
+        is the proof."""
+        from orchestrator.adaptive_execution import AdaptiveExecutionDecision, AdaptiveExecutionDecisionStore
+        from orchestrator.complexity_estimation import ExecutionRecommendation, ExecutionRecommendationStore
+        from orchestrator.worker_selector import QualityTier
+
+        project_store, execution_store, handoff_store, report_store = _stores(tmp_path)
+        _seed_work_item(project_store, tmp_path)
+        recommendation_store = ExecutionRecommendationStore(tmp_path / "rec.sqlite3", clock=lambda: UTC_NOW)
+        recommendation_store.record(ExecutionRecommendation(
+            recommendation_id="rec-dev-1", project_id="proj-1", role="developer", estimator_worker_id="alice",
+            estimator_execution_id="exec-est-1", estimator_profile_id="economy", task_fingerprint="fp-dev-1",
+            minimum_quality_tier=QualityTier.SIMPLE, reasons=("small change",), created_at=UTC_NOW,
+            work_item_id="wi-a",
+        ))
+        recommendation_store.record(ExecutionRecommendation(
+            recommendation_id="rec-review-1", project_id="proj-1", role="reviewer", estimator_worker_id="alice",
+            estimator_execution_id="exec-est-2", estimator_profile_id="economy", task_fingerprint="fp-review-1",
+            minimum_quality_tier=QualityTier.COMPLEX, reasons=("security-sensitive review",), created_at=UTC_NOW,
+            work_item_id="wi-a",
+        ))
+        decision_store = AdaptiveExecutionDecisionStore(tmp_path / "dec.sqlite3", clock=lambda: UTC_NOW)
+        decision_store.record(AdaptiveExecutionDecision(
+            decision_id="dec-dev-1", recommendation_id="rec-dev-1", project_id="proj-1", role="developer",
+            worker_id="alice", provider="anthropic", backend="claude_code", profile_id="economy",
+            quality_tier=QualityTier.SIMPLE, model="haiku", created_at=UTC_NOW, work_item_id="wi-a",
+        ))
+        decision_store.record(AdaptiveExecutionDecision(
+            decision_id="dec-review-1", recommendation_id="rec-review-1", project_id="proj-1", role="reviewer",
+            worker_id="victor", provider="openai", backend="codex", profile_id="deep",
+            quality_tier=QualityTier.COMPLEX, model="gpt-5.6-terra", reasoning_effort="high",
+            created_at=UTC_NOW, work_item_id="wi-a",
+        ))
+
+        service = _service(
+            project_store, execution_store, handoff_store, report_store,
+            recommendation_store=recommendation_store, decision_store=decision_store,
+        )
+        report = service.generate(project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a")
+
+        assert {r.role for r in report.recommendations} == {"developer", "reviewer"}
+        assert {d.role for d in report.decisions} == {"developer", "reviewer"}
+        review_decision = next(d for d in report.decisions if d.role == "reviewer")
+        assert review_decision.worker_id == "victor" and review_decision.quality_tier == "COMPLEX"
+
     def test_handoffs_are_aggregated(self, tmp_path: Path) -> None:
         project_store, execution_store, handoff_store, report_store = _stores(tmp_path)
         _seed_work_item(project_store, tmp_path)

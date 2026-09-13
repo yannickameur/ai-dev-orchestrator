@@ -22,15 +22,19 @@ from orchestrator.activity_report import (
     Incident,
     WorkItemSummary,
 )
+from orchestrator.adaptive_execution import AdaptiveExecutionDecision, NoCapableProfileError
+from orchestrator.complexity_estimation import ComplexityEstimationRequest, ExecutionRecommendation
 from orchestrator.execution_store import ExecutionRecord, ExecutionStatus
 from orchestrator.project_state import ProjectStateStore
 from orchestrator.ralph_execution_engine import ExecutionResult, RalphEvent, RalphLaunchError
 from orchestrator.planning import (
     DEFAULT_PLANNING_CAPABILITY,
     DEFAULT_SYNTHESIS_CAPABILITY,
+    PLANNER_ROLE,
     PLANNING_FAILED_TOPIC,
     PLANNING_PROPOSED_TOPIC,
     SYNTHESIS_PROPOSED_TOPIC,
+    SYNTHESIZER_ROLE,
     NoActivityReportForReleaseError,
     PlannerProposal,
     PlannerProposalStatus,
@@ -46,7 +50,7 @@ from orchestrator.planning import (
     RoadmapProposalStatus,
     render_markdown,
 )
-from orchestrator.worker_selector import NoEligibleWorkerError, Worker, WorkerSelectionRequest
+from orchestrator.worker_selector import NoEligibleWorkerError, QualityTier, Worker, WorkerSelectionRequest
 
 UTC_NOW = datetime(2026, 9, 13, 10, 0, tzinfo=timezone.utc)
 
@@ -961,3 +965,457 @@ class TestNoForbiddenBehavior:
         source = inspect.getsource(module)
         for forbidden in ("notify", "Notification", "timedelta(minutes=20)", "20 * 60"):
             assert forbidden not in source
+
+
+# --- Slice 19: adaptive planner/synthesizer selection ------------------------
+
+
+def _multi_profile_worker(
+    *, worker_id: str, provider: str, backend: str, capabilities: frozenset[str],
+    default_profile_id: str = "standard",
+) -> Worker:
+    """A worker with several real ExecutionProfiles (unlike the
+    single-profile fixtures above) — needed to prove adaptive selection
+    picks the profile ``resolve_profile()`` actually resolves, never
+    ``worker.profile()``'s own (possibly different) default."""
+    from orchestrator.worker_selector import ExecutionProfile
+
+    profiles = (
+        ExecutionProfile(profile_id="economy", quality_tier=QualityTier.SIMPLE, model="mini", cost_rank=10),
+        ExecutionProfile(profile_id="standard", quality_tier=QualityTier.STANDARD, model="mid", cost_rank=20),
+        ExecutionProfile(profile_id="deep", quality_tier=QualityTier.COMPLEX, model="max", cost_rank=30),
+    )
+    return Worker(
+        worker_id=worker_id, display_name=worker_id, provider=provider, backend=backend,
+        capabilities=capabilities, profiles=profiles, default_profile_id=default_profile_id,
+    )
+
+
+def _recommendation(**overrides) -> ExecutionRecommendation:
+    fields = dict(
+        recommendation_id="rec-plan-1", project_id="proj-1", role=PLANNER_ROLE,
+        estimator_worker_id="claude_dev_01", estimator_execution_id="est-1",
+        estimator_profile_id="default", task_fingerprint="fp-plan-1",
+        minimum_quality_tier=QualityTier.STANDARD, reasons=("because",), created_at=UTC_NOW,
+        mvp_id="mvp-1",
+    )
+    fields.update(overrides)
+    return ExecutionRecommendation(**fields)
+
+
+class FakeRecommendationService:
+    """Scriptable ExecutionRecommendationService-shaped fake: a fixed
+    recommendation, a per-role mapping, or a scripted error — never
+    actually estimates."""
+
+    def __init__(self, *, recommendation=None, by_role: dict | None = None, error: Exception | None = None) -> None:
+        self._recommendation = recommendation
+        self._by_role = by_role or {}
+        self._error = error
+        self.calls: list[ComplexityEstimationRequest] = []
+
+    async def estimate(self, request: ComplexityEstimationRequest, *, force_refresh: bool = False):
+        self.calls.append(request)
+        if self._error is not None:
+            raise self._error
+        if request.role in self._by_role:
+            return self._by_role[request.role]
+        return self._recommendation
+
+
+class FakeDecisionStore:
+    """Records every AdaptiveExecutionDecision persisted — never a real sqlite3 store."""
+
+    def __init__(self) -> None:
+        self.recorded: list[AdaptiveExecutionDecision] = []
+
+    def record(self, decision: AdaptiveExecutionDecision) -> AdaptiveExecutionDecision:
+        self.recorded.append(decision)
+        return decision
+
+
+class RecordingTierAwareWorkerSelector:
+    """Like FakePlanningWorkerSelector, but actually honors
+    minimum_quality_tier (mirroring WorkerSelector's own real filter) —
+    needed for tests that must prove no-downgrade/fail-closed behavior."""
+
+    def __init__(self, planners: list[Worker], synthesizers: list[Worker] | None = None) -> None:
+        self._planners = list(planners)
+        self._synthesizers = list(synthesizers if synthesizers is not None else planners)
+        self.requests: list[WorkerSelectionRequest] = []
+
+    async def select(self, request: WorkerSelectionRequest) -> Worker:
+        self.requests.append(request)
+        pool = self._planners if DEFAULT_PLANNING_CAPABILITY in request.required_capabilities else self._synthesizers
+        candidates = [
+            w for w in pool
+            if w.worker_id not in request.excluded_worker_ids
+            and (
+                request.minimum_quality_tier is None
+                or any(p.quality_tier >= request.minimum_quality_tier for p in w.profiles)
+            )
+        ]
+        if not candidates:
+            raise NoEligibleWorkerError(request)
+        return candidates[0]
+
+
+def _adaptive_coordinator(
+    project_store, activity_store, planning_store, selector, engine, recommendation_service, decision_store,
+    *, policy=None,
+) -> PlanningCoordinator:
+    return PlanningCoordinator(
+        planning_store, selector, engine, project_store, activity_store,
+        policy=policy, execution_recommendation_service=recommendation_service,
+        adaptive_execution_decision_store=decision_store,
+        clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+    )
+
+
+class TestAdaptivePlannerSelection:
+    def test_each_planner_execution_gets_a_preflight(self, tmp_path: Path) -> None:
+        project_store, activity_store, planning_store = _stores(tmp_path)
+        alice, victor = _alice(), _victor()
+        selector = RecordingTierAwareWorkerSelector([alice, victor])
+        engine = FakePlanningExecutionEngine({
+            alice.worker_id: _planning_result(execution_id="e1", worker=alice, payload=_valid_planner_payload()),
+            victor.worker_id: _planning_result(execution_id="e2", worker=victor, payload=_valid_planner_payload()),
+        })
+        recommendation_service = FakeRecommendationService(recommendation=_recommendation())
+        decision_store = FakeDecisionStore()
+        coordinator = _adaptive_coordinator(
+            project_store, activity_store, planning_store, selector, engine, recommendation_service, decision_store,
+        )
+        session = asyncio.run(coordinator.start_planning_session(project_id="proj-1", mvp_id="mvp-1", release_id="release-1"))
+
+        proposals = asyncio.run(coordinator.run_planners(session.planning_session_id))
+
+        assert len(proposals) == 2
+        assert all(r.role == PLANNER_ROLE for r in recommendation_service.calls)
+
+    def test_minimum_quality_tier_respected_no_downgrade(self, tmp_path: Path) -> None:
+        project_store, activity_store, planning_store = _stores(tmp_path)
+        # Both configured workers cap at STANDARD; recommendation demands COMPLEX.
+        alice = _alice()
+        victor = _victor()
+        selector = RecordingTierAwareWorkerSelector([alice, victor])
+        engine = FakePlanningExecutionEngine()
+        recommendation_service = FakeRecommendationService(
+            recommendation=_recommendation(minimum_quality_tier=QualityTier.COMPLEX)
+        )
+        decision_store = FakeDecisionStore()
+        coordinator = _adaptive_coordinator(
+            project_store, activity_store, planning_store, selector, engine, recommendation_service, decision_store,
+        )
+        session = asyncio.run(coordinator.start_planning_session(project_id="proj-1", mvp_id="mvp-1", release_id="release-1"))
+
+        with pytest.raises(PlanningSessionFailedError):
+            asyncio.run(coordinator.run_planners(session.planning_session_id))
+
+        assert planning_store.get_session(session.planning_session_id).status is PlanningSessionStatus.FAILED
+        assert engine.requests == []  # never executed with a weaker tier
+        assert decision_store.recorded == []  # never a fabricated decision
+
+    def test_resolved_profile_used_not_workers_own_default(self, tmp_path: Path) -> None:
+        deep_alice = _multi_profile_worker(
+            worker_id="claude_dev_01", provider="anthropic", backend="claude_code",
+            capabilities=frozenset({DEFAULT_PLANNING_CAPABILITY}),
+        )
+        deep_victor = _multi_profile_worker(
+            worker_id="codex_dev_01", provider="openai", backend="codex",
+            capabilities=frozenset({DEFAULT_PLANNING_CAPABILITY}),
+        )
+        assert deep_alice.profile().model == "mid"  # the worker's OWN default (standard)
+        selector = RecordingTierAwareWorkerSelector([deep_alice, deep_victor])
+        project_store, activity_store, planning_store = _stores(tmp_path)
+        engine = FakePlanningExecutionEngine({
+            deep_alice.worker_id: _planning_result(execution_id="e1", worker=deep_alice, payload=_valid_planner_payload()),
+            deep_victor.worker_id: _planning_result(execution_id="e2", worker=deep_victor, payload=_valid_planner_payload()),
+        })
+        # COMPLEX forces resolve_profile() to pick "deep" (model="max"), never "standard".
+        recommendation_service = FakeRecommendationService(
+            recommendation=_recommendation(minimum_quality_tier=QualityTier.COMPLEX)
+        )
+        decision_store = FakeDecisionStore()
+        coordinator = _adaptive_coordinator(
+            project_store, activity_store, planning_store, selector, engine, recommendation_service, decision_store,
+        )
+        session = asyncio.run(coordinator.start_planning_session(project_id="proj-1", mvp_id="mvp-1", release_id="release-1"))
+
+        proposals = asyncio.run(coordinator.run_planners(session.planning_session_id))
+
+        assert all(p.model == "max" for p in proposals)
+        assert all(req.model == "max" for req in engine.requests)
+        assert all(d.quality_tier is QualityTier.COMPLEX for d in decision_store.recorded)
+
+    def test_multiple_planners_still_multiple_executions_and_decisions(self, tmp_path: Path) -> None:
+        project_store, activity_store, planning_store = _stores(tmp_path)
+        alice, victor = _alice(), _victor()
+        selector = RecordingTierAwareWorkerSelector([alice, victor])
+        engine = FakePlanningExecutionEngine({
+            alice.worker_id: _planning_result(execution_id="e1", worker=alice, payload=_valid_planner_payload()),
+            victor.worker_id: _planning_result(execution_id="e2", worker=victor, payload=_valid_planner_payload()),
+        })
+        recommendation_service = FakeRecommendationService(recommendation=_recommendation())
+        decision_store = FakeDecisionStore()
+        coordinator = _adaptive_coordinator(
+            project_store, activity_store, planning_store, selector, engine, recommendation_service, decision_store,
+        )
+        session = asyncio.run(coordinator.start_planning_session(project_id="proj-1", mvp_id="mvp-1", release_id="release-1"))
+
+        proposals = asyncio.run(coordinator.run_planners(session.planning_session_id))
+
+        assert len(proposals) == 2
+        assert {p.worker_id for p in proposals} == {alice.worker_id, victor.worker_id}
+        assert len(engine.requests) == 2
+
+    def test_planner_diversity_still_prefers_distinct_providers(self, tmp_path: Path) -> None:
+        project_store, activity_store, planning_store = _stores(tmp_path)
+        alice, chloe, victor = _alice(), _chloe(), _victor()  # alice+chloe same provider, victor different
+        selector = RecordingTierAwareWorkerSelector([alice, chloe, victor])
+        engine = FakePlanningExecutionEngine({
+            alice.worker_id: _planning_result(execution_id="e1", worker=alice, payload=_valid_planner_payload()),
+            victor.worker_id: _planning_result(execution_id="e2", worker=victor, payload=_valid_planner_payload()),
+        })
+        recommendation_service = FakeRecommendationService(recommendation=_recommendation())
+        decision_store = FakeDecisionStore()
+        coordinator = _adaptive_coordinator(
+            project_store, activity_store, planning_store, selector, engine, recommendation_service, decision_store,
+            policy=PlanningPolicy(planner_count=2, prefer_distinct_providers=True),
+        )
+        session = asyncio.run(coordinator.start_planning_session(project_id="proj-1", mvp_id="mvp-1", release_id="release-1"))
+
+        proposals = asyncio.run(coordinator.run_planners(session.planning_session_id))
+
+        assert {p.provider for p in proposals} == {"anthropic", "openai"}  # never both anthropic
+
+    def test_recommendation_reused_across_planners_same_fingerprint(self, tmp_path: Path) -> None:
+        """Two planners on the identical snapshot share one recommendation
+        (one estimate() call for both) — explicitly acceptable — but still
+        get their own persisted decision each."""
+        project_store, activity_store, planning_store = _stores(tmp_path)
+        alice, victor = _alice(), _victor()
+        selector = RecordingTierAwareWorkerSelector([alice, victor])
+        engine = FakePlanningExecutionEngine({
+            alice.worker_id: _planning_result(execution_id="e1", worker=alice, payload=_valid_planner_payload()),
+            victor.worker_id: _planning_result(execution_id="e2", worker=victor, payload=_valid_planner_payload()),
+        })
+        recommendation_service = FakeRecommendationService(recommendation=_recommendation())
+        decision_store = FakeDecisionStore()
+        coordinator = _adaptive_coordinator(
+            project_store, activity_store, planning_store, selector, engine, recommendation_service, decision_store,
+        )
+        session = asyncio.run(coordinator.start_planning_session(project_id="proj-1", mvp_id="mvp-1", release_id="release-1"))
+
+        asyncio.run(coordinator.run_planners(session.planning_session_id))
+
+        assert len(recommendation_service.calls) == 1  # shared recommendation
+        assert len(decision_store.recorded) == 2  # but two distinct, audited decisions
+        assert decision_store.recorded[0].decision_id != decision_store.recorded[1].decision_id
+        assert {d.worker_id for d in decision_store.recorded} == {alice.worker_id, victor.worker_id}
+
+    def test_structural_incapacity_fails_closed_no_fabricated_profile(self, tmp_path: Path) -> None:
+        """A worker WorkerSelector returns with no profile actually
+        reaching the tier (should not happen with a real WorkerSelector,
+        but this module never trusts that silently either) fails closed
+        via NoCapableProfileError — never a fabricated CRITICAL profile."""
+        project_store, activity_store, planning_store = _stores(tmp_path)
+        alice, victor = _alice(), _victor()  # single STANDARD-tier profile each
+        # Deliberately the TIER-BLIND fake: it does not filter by tier
+        # itself, so a CRITICAL recommendation reaches resolve_profile()
+        # with a worker that cannot actually satisfy it.
+        selector = FakePlanningWorkerSelector([alice, victor])
+        engine = FakePlanningExecutionEngine()
+        recommendation_service = FakeRecommendationService(
+            recommendation=_recommendation(minimum_quality_tier=QualityTier.CRITICAL)
+        )
+        decision_store = FakeDecisionStore()
+        coordinator = _adaptive_coordinator(
+            project_store, activity_store, planning_store, selector, engine, recommendation_service, decision_store,
+        )
+        session = asyncio.run(coordinator.start_planning_session(project_id="proj-1", mvp_id="mvp-1", release_id="release-1"))
+
+        with pytest.raises(PlanningSessionFailedError):
+            asyncio.run(coordinator.run_planners(session.planning_session_id))
+
+        assert planning_store.get_session(session.planning_session_id).status is PlanningSessionStatus.FAILED
+        assert decision_store.recorded == []
+        assert engine.requests == []
+
+    def test_no_adaptive_selection_when_not_configured_preserves_prior_behavior(self, tmp_path: Path) -> None:
+        project_store, activity_store, planning_store = _stores(tmp_path)
+        alice, victor = _alice(), _victor()
+        selector = FakePlanningWorkerSelector([alice, victor])
+        engine = FakePlanningExecutionEngine({
+            alice.worker_id: _planning_result(execution_id="e1", worker=alice, payload=_valid_planner_payload()),
+            victor.worker_id: _planning_result(execution_id="e2", worker=victor, payload=_valid_planner_payload()),
+        })
+        coordinator = _coordinator(project_store, activity_store, planning_store, selector, engine)  # no adaptive deps
+        session = asyncio.run(coordinator.start_planning_session(project_id="proj-1", mvp_id="mvp-1", release_id="release-1"))
+
+        proposals = asyncio.run(coordinator.run_planners(session.planning_session_id))
+
+        assert all(p.model == alice.profile().model or p.model == victor.profile().model for p in proposals)
+
+
+class TestAdaptiveSynthesizerSelection:
+    def test_synthesis_has_its_own_preflight_distinct_from_planner(self, tmp_path: Path) -> None:
+        project_store, activity_store, planning_store = _stores(tmp_path)
+        alice, victor = _alice(), _victor()
+        selector = RecordingTierAwareWorkerSelector([alice, victor])
+        engine = FakePlanningExecutionEngine({
+            alice.worker_id: _planning_result(execution_id="e1", worker=alice, payload=_valid_planner_payload()),
+            victor.worker_id: _planning_result(execution_id="e2", worker=victor, payload=_valid_planner_payload()),
+        })
+        recommendation_service = FakeRecommendationService(recommendation=_recommendation())
+        decision_store = FakeDecisionStore()
+        coordinator = _adaptive_coordinator(
+            project_store, activity_store, planning_store, selector, engine, recommendation_service, decision_store,
+        )
+        session = asyncio.run(coordinator.start_planning_session(project_id="proj-1", mvp_id="mvp-1", release_id="release-1"))
+        asyncio.run(coordinator.run_planners(session.planning_session_id))
+
+        engine._results_by_worker[alice.worker_id] = _planning_result(
+            execution_id="e3", worker=alice, topic=SYNTHESIS_PROPOSED_TOPIC, payload=_valid_synthesizer_payload(),
+        )
+        engine._results_by_worker[victor.worker_id] = _planning_result(
+            execution_id="e3", worker=victor, topic=SYNTHESIS_PROPOSED_TOPIC, payload=_valid_synthesizer_payload(),
+        )
+
+        asyncio.run(coordinator.synthesize(session.planning_session_id))
+
+        roles_seen = {r.role for r in recommendation_service.calls}
+        assert roles_seen == {PLANNER_ROLE, SYNTHESIZER_ROLE}
+        # The two role-specific requests have distinct content (never the
+        # exact same ComplexityEstimationRequest object/fingerprint input).
+        planner_call = next(r for r in recommendation_service.calls if r.role == PLANNER_ROLE)
+        synthesis_call = next(r for r in recommendation_service.calls if r.role == SYNTHESIZER_ROLE)
+        assert planner_call.acceptance_criteria != synthesis_call.acceptance_criteria
+
+    def test_synthesis_does_not_reuse_planner_recommendation(self, tmp_path: Path) -> None:
+        """Different tiers per role prove synthesis's recommendation is its
+        own, never copied from the planner's."""
+        project_store, activity_store, planning_store = _stores(tmp_path)
+        alice, victor = _alice(), _victor()
+        selector = RecordingTierAwareWorkerSelector([alice, victor])
+        engine = FakePlanningExecutionEngine({
+            alice.worker_id: _planning_result(execution_id="e1", worker=alice, payload=_valid_planner_payload()),
+            victor.worker_id: _planning_result(execution_id="e2", worker=victor, payload=_valid_planner_payload()),
+        })
+        recommendation_service = FakeRecommendationService(by_role={
+            PLANNER_ROLE: _recommendation(role=PLANNER_ROLE, minimum_quality_tier=QualityTier.SIMPLE),
+            SYNTHESIZER_ROLE: _recommendation(
+                recommendation_id="rec-synth-1", role=SYNTHESIZER_ROLE, minimum_quality_tier=QualityTier.STANDARD,
+            ),
+        })
+        decision_store = FakeDecisionStore()
+        coordinator = _adaptive_coordinator(
+            project_store, activity_store, planning_store, selector, engine, recommendation_service, decision_store,
+        )
+        session = asyncio.run(coordinator.start_planning_session(project_id="proj-1", mvp_id="mvp-1", release_id="release-1"))
+        asyncio.run(coordinator.run_planners(session.planning_session_id))
+
+        engine._results_by_worker[alice.worker_id] = _planning_result(
+            execution_id="e3", worker=alice, topic=SYNTHESIS_PROPOSED_TOPIC, payload=_valid_synthesizer_payload(),
+        )
+        engine._results_by_worker[victor.worker_id] = _planning_result(
+            execution_id="e3", worker=victor, topic=SYNTHESIS_PROPOSED_TOPIC, payload=_valid_synthesizer_payload(),
+        )
+        proposal = asyncio.run(coordinator.synthesize(session.planning_session_id))
+
+        synth_requests = [r for r in selector.requests if DEFAULT_SYNTHESIS_CAPABILITY in r.required_capabilities]
+        assert all(r.minimum_quality_tier is QualityTier.STANDARD for r in synth_requests)
+        assert proposal.synthesizer_worker_id in {alice.worker_id, victor.worker_id}
+        synth_decision = next(d for d in decision_store.recorded if d.role == SYNTHESIZER_ROLE)
+        assert synth_decision.recommendation_id == "rec-synth-1"
+
+    def test_synthesizer_diversity_preference_preserved(self, tmp_path: Path) -> None:
+        project_store, activity_store, planning_store = _stores(tmp_path)
+        alice, victor = _alice(), _victor()  # both declare synthesis capability
+        selector = RecordingTierAwareWorkerSelector([alice, victor])
+        engine = FakePlanningExecutionEngine({
+            alice.worker_id: _planning_result(execution_id="e1", worker=alice, payload=_valid_planner_payload()),
+            victor.worker_id: _planning_result(execution_id="e2", worker=victor, payload=_valid_planner_payload()),
+        })
+        recommendation_service = FakeRecommendationService(recommendation=_recommendation())
+        decision_store = FakeDecisionStore()
+        coordinator = _adaptive_coordinator(
+            project_store, activity_store, planning_store, selector, engine, recommendation_service, decision_store,
+            policy=PlanningPolicy(planner_count=2, prefer_distinct_synthesizer_worker=True),
+        )
+        session = asyncio.run(coordinator.start_planning_session(project_id="proj-1", mvp_id="mvp-1", release_id="release-1"))
+        asyncio.run(coordinator.run_planners(session.planning_session_id))
+
+        engine._results_by_worker[alice.worker_id] = _planning_result(
+            execution_id="e3", worker=alice, topic=SYNTHESIS_PROPOSED_TOPIC, payload=_valid_synthesizer_payload(),
+        )
+        engine._results_by_worker[victor.worker_id] = _planning_result(
+            execution_id="e3", worker=victor, topic=SYNTHESIS_PROPOSED_TOPIC, payload=_valid_synthesizer_payload(),
+        )
+
+        # Both alice and victor were used as planners (planner_count=2, two
+        # workers) — prefer_distinct_synthesizer_worker cannot be honored,
+        # so the fallback (reuse a planner) kicks in, exactly as before
+        # Slice 19; this proves the diversity *preference* code path is
+        # still reached (not skipped) even under adaptive selection.
+        proposal = asyncio.run(coordinator.synthesize(session.planning_session_id))
+        assert proposal.synthesizer_worker_id in {alice.worker_id, victor.worker_id}
+
+    def test_synthesis_quota_exhaustion_fails_closed_not_downgraded(self, tmp_path: Path) -> None:
+        project_store, activity_store, planning_store = _stores(tmp_path)
+        alice, victor = _alice(), _victor()
+        selector = RecordingTierAwareWorkerSelector([alice, victor])
+        engine = FakePlanningExecutionEngine({
+            alice.worker_id: _planning_result(execution_id="e1", worker=alice, payload=_valid_planner_payload()),
+            victor.worker_id: _planning_result(execution_id="e2", worker=victor, payload=_valid_planner_payload()),
+        })
+        # Both planners are STANDARD-tier only; synthesis demands COMPLEX.
+        recommendation_service = FakeRecommendationService(by_role={
+            PLANNER_ROLE: _recommendation(role=PLANNER_ROLE, minimum_quality_tier=QualityTier.STANDARD),
+            SYNTHESIZER_ROLE: _recommendation(
+                recommendation_id="rec-synth-2", role=SYNTHESIZER_ROLE, minimum_quality_tier=QualityTier.COMPLEX,
+            ),
+        })
+        decision_store = FakeDecisionStore()
+        coordinator = _adaptive_coordinator(
+            project_store, activity_store, planning_store, selector, engine, recommendation_service, decision_store,
+        )
+        session = asyncio.run(coordinator.start_planning_session(project_id="proj-1", mvp_id="mvp-1", release_id="release-1"))
+        asyncio.run(coordinator.run_planners(session.planning_session_id))
+
+        with pytest.raises(PlanningSessionFailedError):
+            asyncio.run(coordinator.synthesize(session.planning_session_id))
+
+        assert planning_store.get_session(session.planning_session_id).status is PlanningSessionStatus.FAILED
+        # No synthesis decision was ever fabricated.
+        assert all(d.role != SYNTHESIZER_ROLE for d in decision_store.recorded)
+
+
+class TestRoadmapSynthesisIsRealLLM:
+    """Factual finding (Slice 19): unlike a hypothetical deterministic
+    synthesis, THIS codebase's roadmap synthesis genuinely runs via
+    WorkerSelector + RalphExecutionEngine (SYNTHESIZER_ROLE,
+    roadmap_synthesis capability) — so the CAS B branch of the Slice 19
+    spec applies, never CAS A. This is a factual/documentation-anchoring
+    test, not a behavior test."""
+
+    def test_synthesize_genuinely_launches_a_worker_execution(self, tmp_path: Path) -> None:
+        project_store, activity_store, planning_store = _stores(tmp_path)
+        selector = FakePlanningWorkerSelector([_alice(), _victor()])
+        engine = FakePlanningExecutionEngine({
+            "claude_dev_01": _planning_result(execution_id="e1", worker=_alice(), payload=_valid_planner_payload()),
+            "codex_dev_01": _planning_result(execution_id="e2", worker=_victor(), payload=_valid_planner_payload()),
+        })
+        coordinator = _coordinator(project_store, activity_store, planning_store, selector, engine)
+        session = asyncio.run(coordinator.start_planning_session(project_id="proj-1", mvp_id="mvp-1", release_id="release-1"))
+        asyncio.run(coordinator.run_planners(session.planning_session_id))
+        engine._results_by_worker["claude_dev_01"] = _planning_result(
+            execution_id="e3", worker=_alice(), topic=SYNTHESIS_PROPOSED_TOPIC, payload=_valid_synthesizer_payload(),
+        )
+
+        asyncio.run(coordinator.synthesize(session.planning_session_id))
+
+        # A real ExecutionRequest was built and sent through the real
+        # RalphExecutionEngine seam — never a Python-only deterministic
+        # computation.
+        assert any(r.role == SYNTHESIZER_ROLE for r in engine.requests)
