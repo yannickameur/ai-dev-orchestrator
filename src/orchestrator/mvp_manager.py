@@ -151,17 +151,51 @@ freely differ between the original attempt and a resume (e.g. Victor/deep
 timed out, Alice/deep resumes) — no worker-continuity affinity is ever
 assumed or enforced.
 
-Deliberately NOT extended to review resumption
-(`_resume_review_wait`/the review branch of
-`_try_resume_recovery_required`) in this slice — review stays entirely
-non-adaptive until Slice 18, exactly as before: no `minimum_quality_tier`,
-no complexity estimator, plain `WorkerSelector.select(...)` +
-`Worker.profile()`'s default, unchanged.
+ADAPTIVE REVIEW SELECTION (Slice 19):
 
-Review, release planning, and roadmap synthesis are NOT made adaptive by
-this slice either — only development/rework. `ReviewPolicy`'s author!=
-reviewer guarantee is completely unaffected: the adaptive selector never
-receives an `author_worker_id` and never touches review at all.
+`_run_review` — the single method already shared by every path that
+resolves a reviewer (the fresh path via `_execute_work_item`, the
+quota-wait resume via `_resume_review_wait`, and the execution-recovery
+resume via `_try_resume_recovery_required`'s review branch, both of the
+latter through `_run_review_from_handoff`) — now goes through
+`_select_reviewer_worker`, the exact same pattern as `_select_dev_worker`:
+when `adaptive_execution_selector` is configured, a fresh
+`ComplexityEstimationRequest` (role=`REVIEWER_ROLE`, never
+`DEFAULT_WORK_ITEM_ROLE` — so the Slice 16 fingerprint/cache is
+independent of development's own pre-flight by construction:
+development=SIMPLE and review=COMPLEX, or the reverse, are both possible
+real outcomes) drives a real `AdaptiveExecutionSelector.select()` call
+instead of a plain `WorkerSelector.select()` + `Worker.profile()` default.
+Because all three call sites already shared `_run_review`, no separate
+wiring was needed per resume path — a resumed review is automatically
+held to the same rules as a fresh one, exactly mirroring Slice 17's
+development-resume fix.
+
+`author_worker_id` is always forwarded through to
+`AdaptiveExecutionSelector.select()` (which forwards it, in turn, to
+`WorkerSelectionRequest.author_worker_id`) — `ReviewPolicy`'s author!=
+reviewer guarantee and the existing cross-provider review-independence
+policy (`prefer_distinct_provider_for_review`/
+`require_distinct_provider_for_review`) are never bypassed or weakened by
+the adaptive layer; they are the same `WorkerSelector`-owned checks as
+before, merely reached through one more layer. `ReviewRecord`'s own
+`__post_init__` invariant (`reviewer_worker_id != author_worker_id`) is
+the final, structural backstop either way.
+
+A quota-exhausted-for-the-required-tier reviewer never falls back to the
+author or to a weaker tier: `NoEligibleWorkerError`/`ReviewIndependenceError`/
+`UnknownWorkerError` from the adaptive selector's own `WorkerSelector`
+call are still the only exceptions `_run_review` catches to consider a
+`WAITING`/`BLOCKED` outcome — exactly as before Slice 19. A structural
+incapacity discovered by the adaptive layer itself
+(`NoReliableRecommendationError`/`EstimatorProfileNotConfiguredError`/
+`InvalidRecommendationPayloadError`/`NoCapableProfileError`) is never
+caught here either, symmetric with development: it propagates, fail-
+closed, never mislabeled as a diagnosable quota wait.
+
+Release planning and roadmap synthesis are made adaptive by this slice
+too, but entirely within `orchestrator.planning` — see that module's own
+docstring; nothing in `MVPManager` changes for either.
 """
 
 from __future__ import annotations
@@ -509,6 +543,76 @@ class MVPManager:
             WorkerSelectionRequest(required_capabilities=work_item.required_capabilities)
         )
         return worker, None, None
+
+    async def _select_reviewer_worker(
+        self, *, project: Project, mvp_id: str, work_item: WorkItem, author_worker_id: str,
+        git_sha: str | None, previous_findings: tuple[ReviewFinding, ...] | None,
+    ) -> tuple[Worker, str | None, str | None]:
+        """Resolves the reviewer for one review attempt (Slice 19).
+
+        Mirrors ``_select_dev_worker`` exactly: shared by every path that
+        resolves a reviewer — the fresh path (``_run_review`` called from
+        ``_execute_work_item``), the quota-wait resume
+        (``_resume_review_wait``), and the execution-recovery resume
+        (``_try_resume_recovery_required``'s review branch) — because all
+        three already funnel through this same ``_select_reviewer_worker``
+        (via ``_run_review``/``_run_review_from_handoff``), a resumed
+        review is held to exactly the same adaptive rules as a fresh one,
+        with no separate wiring needed per resume path.
+
+        ``author_worker_id`` is always forwarded to
+        ``AdaptiveExecutionSelector.select()``/``WorkerSelector.select()``
+        so the existing author!=reviewer guarantee and cross-provider
+        review-independence policy apply exactly as before — this method
+        never weakens or bypasses either.
+
+        Returns ``(worker, model, reasoning_effort)``; ``model``/
+        ``reasoning_effort`` are ``None`` when adaptive execution is not
+        configured (caller then falls back to ``Worker.profile()``'s
+        default, exactly as pre-Slice-19).
+        """
+        if self._adaptive_execution_selector is not None:
+            estimation_request = self._build_review_estimation_request(
+                project=project, mvp_id=mvp_id, work_item=work_item,
+                git_sha=git_sha, previous_findings=previous_findings,
+            )
+            selection = await self._adaptive_execution_selector.select(
+                estimation_request=estimation_request,
+                required_capabilities=frozenset({REVIEW_CAPABILITY}),
+                author_worker_id=author_worker_id,
+            )
+            return selection.worker, selection.decision.model, selection.decision.reasoning_effort
+        reviewer = await self._worker_selector.select(
+            WorkerSelectionRequest(
+                required_capabilities=frozenset({REVIEW_CAPABILITY}), author_worker_id=author_worker_id,
+            )
+        )
+        return reviewer, None, None
+
+    def _build_review_estimation_request(
+        self, *, project: Project, mvp_id: str, work_item: WorkItem,
+        git_sha: str | None, previous_findings: tuple[ReviewFinding, ...] | None,
+    ) -> ComplexityEstimationRequest:
+        """Facts available right now for a review pre-flight.
+
+        Deliberately its own ``role`` (``REVIEWER_ROLE``, never
+        ``DEFAULT_WORK_ITEM_ROLE``) — the Slice 16 fingerprint already
+        includes ``role``, so this is independently estimated/cached from
+        development's own pre-flight by construction: development=SIMPLE
+        and review=COMPLEX (or the reverse) are both possible real
+        outcomes, never one copied from the other. ``review_findings`` is
+        populated whenever a previous review exists (a re-review after
+        rework), never gated on a separate "is this rework" flag the way
+        the development pre-flight is — a review pre-flight always wants
+        whatever review history exists for this exact WorkItem.
+        """
+        latest_handoff = self._handoff_store.latest_for_work_item(work_item.work_item_id)
+        return ComplexityEstimationRequest(
+            project_id=project.project_id, role=REVIEWER_ROLE, workspace=project.workspace,
+            objective=work_item.title, acceptance_criteria=work_item.acceptance_criteria,
+            mvp_id=mvp_id, work_item_id=work_item.work_item_id,
+            latest_handoff=latest_handoff, review_findings=previous_findings or (), git_sha=git_sha,
+        )
 
     def _build_estimation_request(
         self, *, project: Project, mvp_id: str, work_item: WorkItem, is_rework: bool,
@@ -970,12 +1074,14 @@ class MVPManager:
             _summarize_gate(gate_result) if gate_result is not None else "not configured"
         )
 
+        previous_review = self._review_store.latest_for_work_item(work_item.work_item_id)
+        previous_findings = previous_review.findings if previous_review is not None else None
+
         try:
-            reviewer = await self._worker_selector.select(
-                WorkerSelectionRequest(
-                    required_capabilities=frozenset({REVIEW_CAPABILITY}),
-                    author_worker_id=dev_result.record.worker_id,
-                )
+            reviewer, reviewer_model, reviewer_reasoning_effort = await self._select_reviewer_worker(
+                project=project, mvp_id=mvp_id, work_item=work_item,
+                author_worker_id=dev_result.record.worker_id,
+                git_sha=dev_result.record.git_sha_after, previous_findings=previous_findings,
             )
         except _REVIEWER_SELECTION_ERRORS as exc:
             if self._wait_coordinator is not None:
@@ -1003,10 +1109,10 @@ class MVPManager:
             )
             return review, work_item, "no eligible independent reviewer — blocked pending manual intervention"
 
-        previous_review = self._review_store.latest_for_work_item(work_item.work_item_id)
-        previous_findings = previous_review.findings if previous_review is not None else None
-
-        reviewer_profile = reviewer.profile()
+        if reviewer_model is None:
+            reviewer_profile = reviewer.profile()
+            reviewer_model = reviewer_profile.model
+            reviewer_reasoning_effort = reviewer_profile.reasoning_effort
         review_request = ExecutionRequest(
             execution_id=self._id_factory(),
             task_id=work_item.work_item_id,
@@ -1021,8 +1127,8 @@ class MVPManager:
             success_topics=frozenset({REVIEW_SUCCESS_TOPIC}),
             failure_topics=frozenset({REVIEW_FAILURE_TOPIC}),
             timeout_seconds=self._timeout_seconds,
-            model=reviewer_profile.model,
-            reasoning_effort=reviewer_profile.reasoning_effort,
+            model=reviewer_model,
+            reasoning_effort=reviewer_reasoning_effort,
         )
 
         try:
@@ -1035,7 +1141,7 @@ class MVPManager:
                 author_worker_id=dev_result.record.worker_id,
                 reviewer_execution_id=review_request.execution_id,
                 reviewer_worker_id=reviewer.worker_id, reviewer_provider=reviewer.provider,
-                reviewer_model=reviewer_profile.model,
+                reviewer_model=reviewer_model,
                 started_at=started_at, finished_at=self._clock(), status=ReviewStatus.ERROR,
                 git_sha_reviewed=dev_result.record.git_sha_after,
             )
@@ -1054,7 +1160,7 @@ class MVPManager:
             author_worker_id=dev_result.record.worker_id,
             reviewer_execution_id=review_exec_result.record.execution_id,
             reviewer_worker_id=reviewer.worker_id, reviewer_provider=reviewer.provider,
-            reviewer_model=reviewer_profile.model,
+            reviewer_model=reviewer_model,
             started_at=started_at, finished_at=self._clock(), status=status, findings=findings,
             git_sha_reviewed=dev_result.record.git_sha_after,
         )

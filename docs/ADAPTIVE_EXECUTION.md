@@ -290,9 +290,9 @@ finale worker/quota qui reste toujours réévaluée à chaque tentative).
 | `Worker`/`ExecutionProfile` | Modification nécessaire (mineure, additive) : `Worker.enabled: bool = True` (Slice 15) ; `ExecutionProfile.cost_rank: int = 0` (Slice 17) — préférence économique **configurée**, jamais un prix réel, jamais inférée du modèle ; défaut `0` pour rester rétrocompatible (bascule alors sur la proximité de tier comme départage, déjà un choix par défaut raisonnable). |
 | `WorkerSelector`/`WorkerSelectionRequest` | **Fait (Slice 17), extension minimale confirmée** : `WorkerSelectionRequest.minimum_quality_tier: QualityTier \| None` — un worker n'est candidat que s'il a au moins un profil `quality_tier >= minimum_quality_tier` ; ce filtre s'applique **avant** toute diagnose de quota (dans `_filter_by_capabilities_and_governance`), ce qui distingue gratuitement "aucun worker capable" (diagnostics vides, jamais transformé en `WAITING`) de "un worker capable existe mais son provider est en quota" (diagnostics normaux, `WAITING` inchangé). L'ordre de sélection existant (capacité > gouvernance > quota > coût/priorité) reste inchangé ; le choix du *profil* concret (cost_rank, proximité de tier, reasoning hint) reste entièrement dans `orchestrator.adaptive_execution`, jamais dans `WorkerSelector`. |
 | `RalphExecutionEngine` | Aucune modification structurelle : `Worker.model`/`.reasoning_effort` restent les seuls champs consommés par `_build_backend_args`/`_render_hats_config` ; un `ExecutionProfile` résolu se traduit dans ces mêmes champs avant d'atteindre ce module. Invariant à préserver : ce module ne doit jamais apprendre la notion de "tier". |
-| `MVPManager` | **Fait (Slice 17, y compris la reprise)** : paramètre optionnel `adaptive_execution_selector` (même patron que `quality_gate_runner`/`review_store`/`wait_store`) ; comportement Slice 7-14 inchangé si absent. Câblé via un helper privé partagé (`_select_dev_worker`) sur DEVELOPMENT **et** REWORK — le chemin candidat frais (`run_next_work_item`), la reprise d'attente quota (`_try_resume_due_wait`), et la reprise après crash (`_try_resume_recovery_required`) reconstruisent tous le même pre-flight à partir des faits persistants courants (jamais `Worker.profile()` par défaut "parce que c'est une reprise") — le cache/fingerprint Slice 16 réutilise naturellement la recommandation existante quand rien n'a changé, en recalcule une nouvelle sinon. Seule la reprise **review** (`_resume_review_wait`, branche review de `_try_resume_recovery_required`) reste non adaptative (Slice 18). Aucune duplication de la logique wait/recovery existante : une erreur de pre-flight/sélection non diagnosable comme quota se propage simplement (fail-closed), une erreur diagnosable comme quota suit le `WAITING` existant sans changement. |
-| Review orchestration (`review.py`) | Modification éventuelle en Slice 18 uniquement — inchangée jusque-là. Invariant à préserver : `ReviewPolicy`/l'indépendance author≠reviewer restent la seule source de vérité, jamais contournées par un choix de profil. |
-| Planning orchestration (`planning.py`) | Modification éventuelle en Slice 18 uniquement (tier pour `release_planning`/`roadmap_synthesis`). Invariant à préserver : `PlanningPolicy.planner_count`/indépendance des planners inchangés. |
+| `MVPManager` | **Fait (Slice 17 pour development/rework, étendu Slice 19 pour review)** : paramètre optionnel `adaptive_execution_selector` (même patron que `quality_gate_runner`/`review_store`/`wait_store`) ; comportement Slice 7-14 inchangé si absent. Câblé via deux helpers privés symétriques — `_select_dev_worker` (DEVELOPMENT/REWORK, Slice 17) et `_select_reviewer_worker` (review, Slice 19). Les trois chemins qui résolvent un reviewer (frais via `_execute_work_item`, reprise `WaitPhase.REVIEW` via `_resume_review_wait`, reprise `RECOVERY_REQUIRED` via `_try_resume_recovery_required`) convergent déjà tous vers `_run_review`/`_run_review_from_handoff` — un seul point de câblage a donc suffi pour rendre les trois adaptatifs d'un coup, jamais `Worker.profile()` par défaut "parce que c'est une reprise". Le cache/fingerprint Slice 16 réutilise naturellement la recommandation existante quand rien n'a changé, en recalcule une nouvelle sinon. Aucune duplication de la logique wait/recovery existante : une erreur de pre-flight/sélection non diagnosable comme quota se propage simplement (fail-closed), une erreur diagnosable comme quota suit le `WAITING` existant sans changement. |
+| Review orchestration (`review.py`) | **Non modifié.** `ReviewPolicy`/l'indépendance author≠reviewer restent la seule source de vérité, jamais contournées par un choix de profil — `AdaptiveExecutionSelector.select()` (Slice 19) forwarde `author_worker_id` à `WorkerSelector` exactement comme la sélection non adaptative le faisait déjà ; `ReviewRecord.__post_init__` (reviewer≠author) reste le filet de sécurité structurel final. |
+| Planning orchestration (`planning.py`) | **Fait (Slice 19)** : deux dépendances optionnelles sur `PlanningCoordinator` (`execution_recommendation_service`, `adaptive_execution_decision_store`) ; comportement inchangé si absentes. `_select_planner`/`_select_synthesizer` gagnent `minimum_quality_tier` ; `AdaptiveExecutionSelector` n'est délibérément PAS composée telle quelle ici (elle ne fait qu'un seul appel `WorkerSelector.select()`, incompatible avec la boucle de diversité existante de `_select_planner`) — les trois primitives sous-jacentes (`ExecutionRecommendationService.estimate()`, le filtre `minimum_quality_tier`, `resolve_profile()`) sont composées directement, une seule `AdaptiveExecutionDecision` persistée par worker réellement sélectionné. Invariant préservé : `PlanningPolicy.planner_count`/indépendance des planners/diversité inchangés. |
 | `ExecutionRecord` | **Aucune modification** — capture déjà `worker_id`/`provider`/`backend`/`model`/`reasoning_effort`/`role`. |
 | `QuotaManager` | **Aucune modification** — reste l'unique source de vérité de disponibilité, jamais dupliquée par l'adaptive execution. |
 | `WaitCoordinator` | **Aucune modification structurelle** — une Execution d'estimation ou de développement contrainte par tier qui échoue faute de quota suit le mécanisme `WAITING` existant tel quel. |
@@ -388,14 +388,35 @@ qui n'a réellement qu'une seule configuration possible.
 
 ## 18. Questions réellement ouvertes
 
-- Renommage des capabilities existantes (`"reviewer"` -> `code_review`,
-  convention `development`) : toujours non fait, resté volontairement hors
-  scope de Slices 15/16/17 (changement fonctionnel assumé, jamais glissé
-  implicitement) — à traiter explicitement quand une slice le justifie.
-- Étendre l'adaptive selection à la reprise **review**
-  (`_resume_review_wait`, branche review de
-  `_try_resume_recovery_required`) : volontairement laissé non-adaptatif
-  jusqu'à Slice 18 (voir §14), comme le reste de la review.
+Aucune question de ce type restante à ce stade (Slice 19) — voir les deux
+entrées « Résolu par Slice 18.5 »/« Résolu par Slice 19 » ci-dessous.
+
+**Résolu par Slice 19** (déplacé hors des questions ouvertes) :
+- Étendre l'adaptive selection à la reprise **review** : fait —
+  `_select_reviewer_worker` (voir §14), câblé une seule fois dans
+  `_run_review`/`_run_review_from_handoff`, déjà partagés par les trois
+  chemins (frais, reprise WAITING, reprise RECOVERY).
+- Forme de l'extension pour porter `author_worker_id` à travers la couche
+  adaptative : un paramètre optionnel `author_worker_id: str | None = None`
+  sur `AdaptiveExecutionSelector.select()`, forwardé tel quel à
+  `WorkerSelectionRequest.author_worker_id` — rétrocompatible (défaut
+  `None`, le chemin development ne le passe jamais), et c'est la manière
+  la plus petite de réactiver la politique cross-provider déjà existante
+  sans la dupliquer.
+- Planning/synthesis : les deux confirmées être de vraies exécutions LLM
+  (`release_planning`/`roadmap_synthesis`, déjà réelles depuis Slice 12,
+  jamais une synthèse déterministe dans ce dépôt) — CAS B partout.
+  `AdaptiveExecutionSelector` volontairement non réutilisée telle quelle
+  pour le planner (sa boucle de diversité n'est pas un simple `select()`
+  unique) ; ses trois primitives sont composées directement dans
+  `planning.py` à la place (voir §14).
+
+**Résolu par Slice 18.5** (déplacé hors des questions ouvertes) :
+- Renommage des capabilities existantes (`"reviewer"` -> `code_review`) :
+  fait — `code_review` est désormais l'unique capability canonique pour
+  le rôle review (`MVPManager.REVIEW_CAPABILITY`), `"reviewer"` reste
+  uniquement le nom du rôle logique (`REVIEWER_ROLE`), jamais les deux
+  comme synonymes.
 
 **Résolu par Slice 17** (déplacé hors des questions ouvertes) :
 - Forme de l'extension de `WorkerSelectionRequest` : un champ

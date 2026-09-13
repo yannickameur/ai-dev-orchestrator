@@ -1,7 +1,28 @@
 # Status
 
-Dernière mise à jour : Slice 18.5 — stabilisation (2026-09-13).
+Dernière mise à jour : Slice 19 (2026-09-13).
 
+- **Slice 19 — Adaptive review/planning integration : DONE.** Review
+  (fresh + reprise `WaitPhase.REVIEW` + reprise `RECOVERY_REQUIRED`, un
+  seul point de câblage via `MVPManager._run_review` déjà partagé par les
+  trois chemins) et release planning/roadmap synthesis
+  (`PlanningCoordinator`, planner **et** synthesizer — les deux confirmés
+  être de vraies exécutions Ralph/LLM, jamais une synthèse déterministe
+  dans ce dépôt) passent désormais par la même chaîne adaptative que
+  development/rework (Slice 17) : pre-flight indépendant par rôle
+  (fingerprint Slice 16), `minimum_quality_tier`, `resolve_profile()`
+  réutilisée sans seconde implémentation, `AdaptiveExecutionDecision`
+  persistée avant toute exécution. `AdaptiveExecutionSelector.select()`
+  gagne un paramètre optionnel `author_worker_id` (rétrocompatible) qui
+  active la politique cross-provider existante de `WorkerSelector` sans
+  jamais la réimplémenter. Aucun profil `CRITICAL` fabriqué (testé
+  explicitement) ; `ApprovalCoordinator`/`RoadmapApplicationService`/
+  `RealizationReport`/`ActivityReport` non touchés (`RealizationReport`
+  agrège déjà les rôles sans filtrage — prouvé par un nouveau test, pas
+  par une modification). `config/workers.yaml` non modifié. Voir
+  `ROADMAP.md`, Slice 19, et `docs/ADAPTIVE_EXECUTION.md`. 790 tests
+  offline PASS (772 + 18). Smoke réel : non relancé (offline uniquement,
+  comme demandé).
 - **Slice 18.5 — Stabilisation pré-Slice 19 : DONE.** Deux corrections
   factuelles trouvées lors de l'audit OmniRoute : (1) mismatch
   `REVIEW_CAPABILITY` ("reviewer") vs la capability réelle
@@ -11,17 +32,14 @@ Dernière mise à jour : Slice 18.5 — stabilisation (2026-09-13).
   côté `claude_code` via le vrai flag `claude --effort <level>` — transmis
   désormais comme pour `codex`, aucun changement de comportement observable
   tant qu'aucun profil Claude ne définit `reasoning_effort`. Voir
-  `ROADMAP.md`, Slice 18.5. 772 tests offline PASS.
+  `ROADMAP.md`, Slice 18.5.
 - **Slice 17 — Adaptive Worker/Profile Selection for development/rework :
   DONE.** `WorkerSelector`/`AdaptiveExecutionSelector`/`resolve_profile()`
   couvrent DEVELOPMENT et REWORK, y compris les chemins de reprise
   (`_try_resume_due_wait`, `_try_resume_recovery_required`) — jamais de
   downgrade silencieux, jamais `Worker.profile()` par défaut quand
-  l'adaptive execution est activée. Seule la reprise **review** reste non
-  adaptative (Slice 19).
-- Review, release planning et roadmap synthesis restent sur une
-  sélection **non adaptative** (profil par défaut) — Slice 19 les
-  couvrira.
+  l'adaptive execution est activée. Review, release planning et roadmap
+  synthesis rendus adaptatifs depuis par la Slice 19 (ci-dessus).
 - **Slice 18 — Realization reports + real cross-worker cold-resume
   acceptance : DONE.** Voir `src/orchestrator/realization_report.py`
   (nouveau : `RealizationReport`, `RealizationReportStore`,
@@ -46,9 +64,10 @@ Dernière mise à jour : Slice 18.5 — stabilisation (2026-09-13).
     aucun downgrade ; aucun bug Slice 17/18 découvert. Preuve versionnée
     (sanitizée) : `docs/reports/real-cross-worker-resume-2026-09-13.html`
   - `~/projects/ralph-spike` original : non modifié (vérifié avant/après)
-- Prochaine étape attendue : **Slice 19 — Adaptive review + release
-  planning/synthesis profiles** (voir `ROADMAP.md`, « Découpage
-  incrémental » ; Git/PR/merge governance reste décalée en Slice 20).
+- Prochaine étape attendue : **Slice 20 — Git/PR/merge governance si
+  toujours nécessaire** (voir `ROADMAP.md`, « Découpage incrémental »).
+  OmniRoute reste une qualification future optionnelle, hors roadmap
+  principale (voir `docs/OMNIROUTE_ARBITRATION.md`).
 
 Détail complet des slices, de la vision cible et du découpage incrémental :
 voir `ROADMAP.md` (source de vérité fonctionnelle).

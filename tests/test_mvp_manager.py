@@ -1693,9 +1693,14 @@ class FakeAdaptiveSelector:
         self._decision = decision
         self._error = error
         self.calls: list = []
+        self.author_worker_ids: list = []
 
-    async def select(self, *, estimation_request, required_capabilities, excluded_worker_ids=frozenset(), force_refresh=False):
+    async def select(
+        self, *, estimation_request, required_capabilities, excluded_worker_ids=frozenset(),
+        author_worker_id=None, force_refresh=False,
+    ):
         self.calls.append(estimation_request)
+        self.author_worker_ids.append(author_worker_id)
         if self._error is not None:
             raise self._error
         return AdaptiveSelection(worker=self._worker, decision=self._decision)
@@ -1761,7 +1766,14 @@ class TestAdaptiveDevelopmentSelection:
 
         decision = _decision()
         victor = _victor()
-        adaptive = FakeAdaptiveSelector(worker=victor, decision=decision)
+        review_decision = _decision(
+            decision_id="decision-review-1", recommendation_id="rec-review-1",
+            worker_id="claude_dev_01", provider="anthropic", backend="claude_code", role="reviewer",
+        )
+        adaptive = ScriptedAdaptiveSelector([
+            AdaptiveSelection(worker=victor, decision=decision),
+            AdaptiveSelection(worker=_alice(), decision=review_decision),
+        ])
         engine = FakeExecutionEngine(
             result=_execution_result(execution_id="e1", task_id="wi-a", worker_id=victor.worker_id, status=ExecutionStatus.SUCCEEDED)
         )
@@ -1773,7 +1785,11 @@ class TestAdaptiveDevelopmentSelection:
 
         asyncio.run(manager.run_next_work_item("mvp-1"))
 
-        assert len(adaptive.calls) == 1
+        # dev pre-flight (index 0) + review pre-flight (index 1, Slice 19:
+        # review_store is configured here so review runs too) — dev always
+        # comes first chronologically.
+        assert len(adaptive.calls) == 2
+        assert adaptive.calls[0].role == "developer"
         findings = adaptive.calls[0].review_findings
         assert len(findings) == 1 and findings[0].summary == "off by one"
 
@@ -1799,7 +1815,14 @@ class TestAdaptiveDevelopmentSelection:
         _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
         victor = _victor()
         decision = _decision()
-        adaptive = FakeAdaptiveSelector(worker=victor, decision=decision)
+        review_decision = _decision(
+            decision_id="decision-review-1", recommendation_id="rec-review-1",
+            worker_id="claude_dev_01", provider="anthropic", backend="claude_code", role="reviewer",
+        )
+        adaptive = ScriptedAdaptiveSelector([
+            AdaptiveSelection(worker=victor, decision=decision),
+            AdaptiveSelection(worker=_alice(), decision=review_decision),
+        ])
         engine = FakeExecutionEngine(
             result=_execution_result(execution_id="e1", task_id="wi-a", worker_id=victor.worker_id, status=ExecutionStatus.SUCCEEDED)
         )
@@ -1808,20 +1831,16 @@ class TestAdaptiveDevelopmentSelection:
         )
         review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
 
-        class _ReviewWorkerSelector:
-            async def select(self, request):
-                return _alice()
-
         manager = MVPManager(
-            project_store, handoff_store, _ReviewWorkerSelector(), engine,
-            adaptive_execution_selector=adaptive, quality_gate_runner=gate_runner, review_store=review_store,
+            project_store, handoff_store, FakeWorkerSelector(error=AssertionError("plain selector must not be used")),
+            engine, adaptive_execution_selector=adaptive, quality_gate_runner=gate_runner, review_store=review_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
 
         assert result.gate_result is not None and result.gate_result.passed
-        assert result.review_result is not None  # the existing review step still ran unchanged
+        assert result.review_result is not None  # the review step still ran, now adaptively (Slice 19)
 
     def test_no_development_on_preflight_failure(self, tmp_path: Path) -> None:
         project_store, handoff_store = _stores(tmp_path)
@@ -1868,37 +1887,151 @@ class TestAdaptiveDevelopmentSelection:
         assert result.wait is not None
 
 
-class TestReviewSelectionIsNotAdaptive:
-    def test_reviewer_selection_request_has_no_minimum_quality_tier(self, tmp_path: Path) -> None:
+class TestReviewSelectionIsAdaptive:
+    """Slice 19: review now goes through the exact same adaptive chain as
+    development — never the plain ``WorkerSelector`` + ``Worker.profile()``
+    default when ``adaptive_execution_selector`` is configured."""
+
+    def test_review_uses_adaptive_selector_with_code_review_capability_and_author_exclusion(
+        self, tmp_path: Path
+    ) -> None:
         project_store, handoff_store = _stores(tmp_path)
         _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        alice = _alice()
         victor = _victor()
-        decision = _decision()
-        adaptive = FakeAdaptiveSelector(worker=victor, decision=decision)
-
-        class _RecordingReviewSelector:
-            def __init__(self):
-                self.requests = []
-
-            async def select(self, request):
-                self.requests.append(request)
-                return _alice()
-
-        review_selector = _RecordingReviewSelector()
+        dev_decision = _decision(worker_id=alice.worker_id, role="developer")
+        review_decision = _decision(
+            decision_id="decision-review-1", recommendation_id="rec-review-1",
+            worker_id=victor.worker_id, provider="openai", backend="codex", role="reviewer",
+            model="gpt-5.6-terra-deep", reasoning_effort="high",
+        )
+        adaptive = ScriptedAdaptiveSelector([
+            AdaptiveSelection(worker=alice, decision=dev_decision),
+            AdaptiveSelection(worker=victor, decision=review_decision),
+        ])
         engine = FakeExecutionEngine(
-            result=_execution_result(execution_id="e1", task_id="wi-a", worker_id=victor.worker_id, status=ExecutionStatus.SUCCEEDED)
+            result=_execution_result(execution_id="e1", task_id="wi-a", worker_id=alice.worker_id, status=ExecutionStatus.SUCCEEDED)
         )
         review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
         manager = MVPManager(
-            project_store, handoff_store, review_selector, engine,
+            project_store, handoff_store, FakeWorkerSelector(error=AssertionError("plain selector must not be used")),
+            engine, adaptive_execution_selector=adaptive, review_store=review_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert len(adaptive.calls) == 2
+        assert adaptive.calls[0].role == "developer"
+        assert adaptive.calls[1].role == "reviewer"
+        assert adaptive.calls[1].work_item_id == "wi-a"
+        # author exclusion is forwarded, not bypassed
+        assert adaptive.author_worker_ids == [None, alice.worker_id]
+        # the review ExecutionRequest used the decision's model/reasoning,
+        # never reviewer.profile()'s own default
+        review_request = engine.requests[1]
+        assert review_request.model == "gpt-5.6-terra-deep"
+        assert review_request.reasoning_effort == "high"
+        assert result.review_result is not None
+        assert result.review_result.reviewer_worker_id == victor.worker_id
+        assert result.review_result.reviewer_model == "gpt-5.6-terra-deep"
+
+    def test_review_recommendation_is_independent_of_development(self, tmp_path: Path) -> None:
+        """development=SIMPLE and review=COMPLEX in the same WorkItem run —
+        the review tier is never copied from development's."""
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        alice = _alice()
+        victor = _victor()
+        dev_decision = _decision(worker_id=alice.worker_id, quality_tier=QualityTier.SIMPLE, role="developer")
+        review_decision = _decision(
+            decision_id="decision-review-1", recommendation_id="rec-review-1",
+            worker_id=victor.worker_id, quality_tier=QualityTier.COMPLEX, role="reviewer",
+        )
+        adaptive = ScriptedAdaptiveSelector([
+            AdaptiveSelection(worker=alice, decision=dev_decision),
+            AdaptiveSelection(worker=victor, decision=review_decision),
+        ])
+        engine = FakeExecutionEngine(
+            result=_execution_result(execution_id="e1", task_id="wi-a", worker_id=alice.worker_id, status=ExecutionStatus.SUCCEEDED)
+        )
+        review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
+        manager = MVPManager(
+            project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
             adaptive_execution_selector=adaptive, review_store=review_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
         )
 
         asyncio.run(manager.run_next_work_item("mvp-1"))
 
-        assert len(review_selector.requests) == 1
-        assert review_selector.requests[0].minimum_quality_tier is None
+        assert adaptive.calls[0].role == "developer"
+        assert adaptive.calls[1].role == "reviewer"
+        # Two independently-built requests with different role -> different
+        # fingerprint/recommendation by construction (Slice 16); here proven
+        # via the two distinct scripted decisions actually being consumed.
+
+    def test_no_review_downgrade_and_no_fabricated_critical_profile(self, tmp_path: Path) -> None:
+        """A CRITICAL review recommendation with no capable profile fails
+        closed (structural incapacity) — propagates uncaught, never a
+        fabricated profile, never silently downgraded, never a fake
+        WAITING (this is not a WorkerSelector-diagnosed quota condition)."""
+        from orchestrator.adaptive_execution import NoCapableProfileError
+
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        alice = _alice()
+        dev_decision = _decision(worker_id=alice.worker_id, role="developer")
+        adaptive = ScriptedAdaptiveSelector([
+            AdaptiveSelection(worker=alice, decision=dev_decision),
+            NoCapableProfileError("victor", QualityTier.CRITICAL),
+        ])
+        engine = FakeExecutionEngine(
+            result=_execution_result(execution_id="e1", task_id="wi-a", worker_id=alice.worker_id, status=ExecutionStatus.SUCCEEDED)
+        )
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: UTC_NOW)
+        review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
+        manager = MVPManager(
+            project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
+            adaptive_execution_selector=adaptive, review_store=review_store, wait_store=wait_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        with pytest.raises(NoCapableProfileError):
+            asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        # Never turned into a WAITING — NoCapableProfileError is not a
+        # WorkerSelector diagnostic-bearing exception.
+        assert wait_store.list_pending() == []
+
+    def test_review_quota_exhaustion_waits_never_falls_back_to_author(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        alice = _alice()
+        dev_decision = _decision(worker_id=alice.worker_id, role="developer")
+        reset_at = UTC_NOW + timedelta(hours=2)
+        quota_error = NoEligibleWorkerError(
+            WorkerSelectionRequest(required_capabilities=frozenset({"code_review"})),
+            diagnostics=(_quota_diag(provider="openai", reset_at=reset_at),),
+        )
+        adaptive = ScriptedAdaptiveSelector([AdaptiveSelection(worker=alice, decision=dev_decision), quota_error])
+        engine = FakeExecutionEngine(
+            result=_execution_result(execution_id="e1", task_id="wi-a", worker_id=alice.worker_id, status=ExecutionStatus.SUCCEEDED)
+        )
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: UTC_NOW)
+        review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
+        manager = MVPManager(
+            project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
+            adaptive_execution_selector=adaptive, review_store=review_store, wait_store=wait_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.WAITING
+        pending = wait_store.list_pending()
+        assert len(pending) == 1 and pending[0].phase is WaitPhase.REVIEW
+        # Only the developer ran — no review execution was ever attempted.
+        assert len(engine.requests) == 1
 
 
 # --- Slice 17 correction: adaptive resume (wait + recovery) -----------------
@@ -1911,9 +2044,14 @@ class ScriptedAdaptiveSelector:
     def __init__(self, script: list) -> None:
         self._script = list(script)
         self.calls: list[ComplexityEstimationRequest] = []
+        self.author_worker_ids: list = []
 
-    async def select(self, *, estimation_request, required_capabilities, excluded_worker_ids=frozenset(), force_refresh=False):
+    async def select(
+        self, *, estimation_request, required_capabilities, excluded_worker_ids=frozenset(),
+        author_worker_id=None, force_refresh=False,
+    ):
         self.calls.append(estimation_request)
+        self.author_worker_ids.append(author_worker_id)
         outcome = self._script.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -2134,12 +2272,14 @@ class TestAdaptiveRecoveryResume:
 
 
 
-class TestAdaptiveReviewResumeUnaffected:
-    """Anti-regression: WaitPhase.REVIEW resume and review-phase recovery
-    resume must stay entirely non-adaptive until Slice 18 — no
-    minimum_quality_tier, no complexity estimator involved at all."""
+class TestAdaptiveReviewResume:
+    """Slice 19: WaitPhase.REVIEW resume and review-phase recovery resume
+    both become adaptive, mirroring Slice 17's development-resume fix —
+    never a plain ``WorkerSelector`` + ``Worker.profile()`` default when
+    ``adaptive_execution_selector`` is configured, and the original
+    developer/author stays excluded even after a cold resume."""
 
-    def test_review_wait_resume_does_not_use_adaptive_selector(self, tmp_path: Path) -> None:
+    def test_review_wait_resume_uses_adaptive_selector_and_excludes_author(self, tmp_path: Path) -> None:
         project_store, handoff_store = _stores(tmp_path)
         _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
         project_store.refresh_readiness("mvp-1")
@@ -2149,31 +2289,43 @@ class TestAdaptiveReviewResumeUnaffected:
         handoff_store.create(
             handoff_id="h1", project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
             objective="A", execution_id="exec-dev-1", worker_id="claude_dev_01",
-            created_at=UTC_NOW, test_results="quality_gate=PASSED",
+            created_at=UTC_NOW, test_results="quality_gate=PASSED", git_sha_after="sha-1",
         )
         wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: UTC_NOW)
         wait_store.create(
             wait_id="w1", project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
             phase=WaitPhase.REVIEW, reason=WaitReason.QUOTA_RESET, eligible_at=UTC_NOW,
         )
-        adaptive = ScriptedAdaptiveSelector([])  # must never be called
+        victor = _victor()
+        review_decision = _decision(
+            decision_id="decision-review-resume-1", recommendation_id="rec-review-resume-1",
+            worker_id=victor.worker_id, provider="openai", backend="codex", role="reviewer",
+            model="gpt-5.6-terra-deep", reasoning_effort="high",
+        )
+        adaptive = ScriptedAdaptiveSelector([AdaptiveSelection(worker=victor, decision=review_decision)])
         review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
-        reviewer_selector = FakeWorkerSelector(worker=_victor())
         engine = FakeExecutionEngine(
             result=_execution_result(execution_id="whatever", task_id="wi-a", worker_id="codex_dev_01", status=ExecutionStatus.SUCCEEDED)
         )
         manager = MVPManager(
-            project_store, handoff_store, reviewer_selector, engine,
-            adaptive_execution_selector=adaptive, wait_store=wait_store, review_store=review_store,
+            project_store, handoff_store, FakeWorkerSelector(error=AssertionError("plain selector must not be used")),
+            engine, adaptive_execution_selector=adaptive, wait_store=wait_store, review_store=review_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
         )
 
-        asyncio.run(manager.run_next_work_item("mvp-1"))
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
 
-        assert adaptive.calls == []
-        assert reviewer_selector.requests[0].minimum_quality_tier is None
+        assert len(adaptive.calls) == 1
+        assert adaptive.calls[0].role == "reviewer"
+        assert adaptive.author_worker_ids == ["claude_dev_01"]  # original developer, still excluded
+        assert engine.requests[0].model == "gpt-5.6-terra-deep"
+        assert engine.requests[0].reasoning_effort == "high"
+        assert result.review_result is not None
+        assert result.review_result.reviewer_worker_id == victor.worker_id
+        # A brand-new execution_id, never the interrupted one.
+        assert engine.requests[0].execution_id != "exec-dev-1"
 
-    def test_review_phase_recovery_resume_does_not_use_adaptive_selector(self, tmp_path: Path) -> None:
+    def test_review_phase_recovery_resume_uses_adaptive_selector_and_excludes_author(self, tmp_path: Path) -> None:
         project_store, handoff_store = _stores(tmp_path)
         _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
         execution_store = _execution_store(tmp_path)
@@ -2185,7 +2337,7 @@ class TestAdaptiveReviewResumeUnaffected:
         handoff_store.create(
             handoff_id="h1", project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
             objective="A", execution_id="exec-dev-1", worker_id="claude_dev_01",
-            created_at=UTC_NOW, test_results="quality_gate=PASSED",
+            created_at=UTC_NOW, test_results="quality_gate=PASSED", git_sha_after="sha-1",
         )
         project_store.refresh_readiness("mvp-1")
         project_store.mark_work_item_running("wi-a")
@@ -2195,19 +2347,76 @@ class TestAdaptiveReviewResumeUnaffected:
             provider="openai", backend="codex", model="terra", role="reviewer",
         )  # orphaned mid-review
 
-        adaptive = ScriptedAdaptiveSelector([])  # must never be called
+        victor = _victor()
+        review_decision = _decision(
+            decision_id="decision-review-recovery-1", recommendation_id="rec-review-recovery-1",
+            worker_id=victor.worker_id, provider="openai", backend="codex", role="reviewer",
+        )
+        adaptive = ScriptedAdaptiveSelector([AdaptiveSelection(worker=victor, decision=review_decision)])
         review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
-        reviewer_selector = FakeWorkerSelector(worker=_victor())
         engine = FakeExecutionEngine(
             result=_execution_result(execution_id="whatever", task_id="wi-a", worker_id="codex_dev_01", status=ExecutionStatus.SUCCEEDED)
         )
         manager = MVPManager(
-            project_store, handoff_store, reviewer_selector, engine,
-            adaptive_execution_selector=adaptive, execution_store=execution_store, review_store=review_store,
+            project_store, handoff_store, FakeWorkerSelector(error=AssertionError("plain selector must not be used")),
+            engine, adaptive_execution_selector=adaptive, execution_store=execution_store, review_store=review_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
         )
 
         asyncio.run(manager.run_next_work_item("mvp-1"))
 
-        assert adaptive.calls == []
-        assert reviewer_selector.requests[0].minimum_quality_tier is None
+        assert len(adaptive.calls) == 1
+        assert adaptive.calls[0].role == "reviewer"
+        # The author is read from the last *developer*-role handoff, never
+        # the orphaned reviewer's own recovery handoff (see
+        # `_find_last_developer_handoff`) — still correctly excluded.
+        assert adaptive.author_worker_ids == ["claude_dev_01"]
+        assert all(req.execution_id != "exec-review-old" for req in engine.requests)  # never reused
+
+    def test_review_recovery_resume_can_change_reviewer(self, tmp_path: Path) -> None:
+        """The previous reviewer may be reused or changed on recovery —
+        never an arbitrary new rule pinning it to the same worker."""
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        execution_store = _execution_store(tmp_path)
+        execution_store.create(
+            execution_id="exec-dev-1", task_id="wi-a", worker_id="claude_dev_01",
+            provider="anthropic", backend="claude_code", model="sonnet", role="developer",
+        )
+        execution_store.mark_succeeded("exec-dev-1")
+        handoff_store.create(
+            handoff_id="h1", project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
+            objective="A", execution_id="exec-dev-1", worker_id="claude_dev_01",
+            created_at=UTC_NOW, test_results="quality_gate=PASSED", git_sha_after="sha-1",
+        )
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        project_store.mark_work_item_reviewing("wi-a")
+        execution_store.create(
+            execution_id="exec-review-old", task_id="wi-a", worker_id="codex_dev_01",
+            provider="openai", backend="codex", model="terra", role="reviewer",
+        )  # the PREVIOUS reviewer was victor/codex_dev_01
+
+        # This time a DIFFERENT worker is adaptively selected as reviewer.
+        third_reviewer = Worker.with_single_profile(
+            worker_id="claude_dev_99", display_name="Third", provider="anthropic",
+            backend="claude_code", model="opus", capabilities=frozenset({"code_review"}),
+        )
+        review_decision = _decision(
+            decision_id="decision-review-changed-1", recommendation_id="rec-review-changed-1",
+            worker_id=third_reviewer.worker_id, provider="anthropic", backend="claude_code", role="reviewer",
+        )
+        adaptive = ScriptedAdaptiveSelector([AdaptiveSelection(worker=third_reviewer, decision=review_decision)])
+        review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
+        engine = FakeExecutionEngine(
+            result=_execution_result(execution_id="whatever", task_id="wi-a", worker_id=third_reviewer.worker_id, status=ExecutionStatus.SUCCEEDED)
+        )
+        manager = MVPManager(
+            project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
+            adaptive_execution_selector=adaptive, execution_store=execution_store, review_store=review_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.review_result.reviewer_worker_id == "claude_dev_99"  # changed, never pinned

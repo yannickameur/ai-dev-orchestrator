@@ -341,16 +341,28 @@ class AdaptiveExecutionSelector:
         estimation_request: ComplexityEstimationRequest,
         required_capabilities: frozenset[str],
         excluded_worker_ids: frozenset[str] = frozenset(),
+        author_worker_id: str | None = None,
         force_refresh: bool = False,
     ) -> AdaptiveSelection:
         """Pre-flight, then a real Worker + ExecutionProfile choice, persisted.
 
+        ``author_worker_id`` (Slice 19), when supplied, is forwarded as-is
+        to ``WorkerSelectionRequest.author_worker_id`` — this is what makes
+        a call a *review* selection as far as ``WorkerSelector`` is
+        concerned: the resulting worker can never be the author, and
+        ``WorkerSelectionPolicy``'s cross-provider preferred/required
+        review-independence policy applies exactly as it already does for
+        non-adaptive review selection. This module never reimplements or
+        weakens that policy — it only ever forwards the one field
+        ``WorkerSelector`` already uses to activate it.
+
         Fail-closed end to end: no exception here is ever caught to fall
         back to a default profile — an unhandled ``NoReliableRecommendationError``/
         ``EstimatorProfileNotConfiguredError`` (Slice 16),
-        ``NoEligibleWorkerError``/``ReviewIndependenceError`` (WorkerSelector),
-        or ``NoCapableProfileError`` (this module) must all simply
-        propagate to the caller: "no development happens this attempt".
+        ``NoEligibleWorkerError``/``ReviewIndependenceError``/
+        ``UnknownWorkerError`` (WorkerSelector), or ``NoCapableProfileError``
+        (this module) must all simply propagate to the caller: "no
+        execution happens this attempt".
         """
         recommendation = await self._recommendation_service.estimate(
             estimation_request, force_refresh=force_refresh
@@ -360,6 +372,7 @@ class AdaptiveExecutionSelector:
             WorkerSelectionRequest(
                 required_capabilities=required_capabilities,
                 excluded_worker_ids=excluded_worker_ids,
+                author_worker_id=author_worker_id,
                 minimum_quality_tier=recommendation.minimum_quality_tier,
             )
         )
