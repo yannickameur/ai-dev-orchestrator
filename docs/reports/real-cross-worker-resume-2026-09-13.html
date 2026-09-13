@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Realization report — wi-smoke-fix-add</title>
+<style>
+body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; margin: 0; padding: 16px;
+       background: #f6f8fa; color: #1f2328; }
+.container { max-width: 960px; margin: 0 auto; }
+h1 { font-size: 1.4em; margin-bottom: 4px; }
+h2 { font-size: 1.1em; margin-top: 28px; border-bottom: 1px solid #d0d7de; padding-bottom: 4px; }
+.status-badge { display: inline-block; padding: 4px 10px; border-radius: 6px; color: #fff; font-weight: 600; }
+.summary { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 12px 16px; margin: 12px 0; }
+table { border-collapse: collapse; width: 100%; margin: 8px 0 16px 0; background: #fff; }
+th, td { border: 1px solid #d0d7de; padding: 6px 8px; text-align: left; font-size: 0.9em; word-break: break-word; }
+th { background: #f6f8fa; }
+.meta { color: #57606a; font-size: 0.85em; }
+.timeline { list-style: none; padding-left: 0; }
+.timeline li { border-left: 3px solid #d0d7de; padding: 4px 0 4px 12px; margin-bottom: 4px; }
+.refs { color: #57606a; font-size: 0.8em; }
+.empty { color: #57606a; font-style: italic; }
+@media (max-width: 600px) { table, thead, tbody, th, td, tr { display: block; } th { display: none; }
+  td { border: none; padding: 2px 0; } td::before { content: attr(data-label) ": "; font-weight: 600; } }
+</style>
+</head>
+<body><div class="container">
+<h1>Realization report — wi-smoke-fix-add</h1>
+<p><span class="status-badge" style="background:#1a7f37">COMPLETED</span> &nbsp; final WorkItem status: <strong>completed</strong></p>
+<p class="meta">report_id=86566dd6ae61420486dc3871a80d486c · project_id=proj-smoke · mvp_id=mvp-smoke · generated_at=2026-09-13T14:32:52.417431+00:00</p>
+<div class="summary">WorkItem &#x27;wi-smoke-fix-add&#x27; (Fix add() to actually add, using TDD, with a real regression test) was worked on by 2 worker(s) across 2 execution(s). Work was handed off across workers: alice, victor. Current report status: completed.</div>
+<h2>A. Objective</h2>
+<p>Fix add() to actually add, using TDD, with a real regression test</p>
+<p><strong>Acceptance criteria:</strong></p><ul>
+<li>add(2, 3) returns 5</li>
+<li>test_review_candidate.py passes</li>
+</ul>
+<p><strong>Git SHA:</strong> initial=a4040df77ec9de1cf52828ea44652c6f909a6958 -&gt; final=4c4b595184487b67c27649a923f9b361619225b8</p>
+<h2>B. Timeline</h2>
+<ul class="timeline">
+<li><strong>2026-09-13T14:30:38.104196+00:00</strong> — [recommendation] Pre-flight recommendation for role=&#x27;developer&#x27;: minimum_quality_tier=SIMPLE<div class="refs">recommendation_id=8905618c93274ea0b55e36037e4ac623, estimator_worker_id=alice</div></li>
+<li><strong>2026-09-13T14:30:38.104401+00:00</strong> — [adaptive_decision] Adaptive decision: worker=alice profile=economy tier=SIMPLE<div class="refs">decision_id=e8557a59052b411fafa7c328331d4dcc, recommendation_id=8905618c93274ea0b55e36037e4ac623</div></li>
+<li><strong>2026-09-13T14:30:38.105616+00:00</strong> — [execution_started] Execution started: role=developer worker=alice model=haiku<div class="refs">execution_id=e8557a59052b411fafa7c328331d4dcc-exec</div></li>
+<li><strong>2026-09-13T14:30:57.552312+00:00</strong> — [execution_finished] Execution finished: status=succeeded<div class="refs">execution_id=e8557a59052b411fafa7c328331d4dcc-exec</div></li>
+<li><strong>2026-09-13T14:30:57.554269+00:00</strong> — [handoff] Handoff created: next_action=Fix add() in review_candidate.py to make the regression test pass (TDD GREEN).<div class="refs">handoff_id=wi-smoke-fix-add-handoff-a</div></li>
+<li><strong>2026-09-13T14:31:37.857637+00:00</strong> — [recommendation] Pre-flight recommendation for role=&#x27;developer&#x27;: minimum_quality_tier=SIMPLE<div class="refs">recommendation_id=236cf951594949079072330f2a0cfa2c, estimator_worker_id=alice</div></li>
+<li><strong>2026-09-13T14:31:37.857869+00:00</strong> — [adaptive_decision] Adaptive decision: worker=victor profile=economy tier=SIMPLE<div class="refs">decision_id=6eff379cec304ca88da6329735276131, recommendation_id=236cf951594949079072330f2a0cfa2c</div></li>
+<li><strong>2026-09-13T14:31:37.859293+00:00</strong> — [execution_started] Execution started: role=developer worker=victor model=gpt-5.6-terra<div class="refs">execution_id=6eff379cec304ca88da6329735276131-exec</div></li>
+<li><strong>2026-09-13T14:32:52.386786+00:00</strong> — [execution_finished] Execution finished: status=succeeded<div class="refs">execution_id=6eff379cec304ca88da6329735276131-exec</div></li>
+<li><strong>2026-09-13T14:32:52.388386+00:00</strong> — [validation] Quality gate mini-project-tests (unit_test): passed<div class="refs">validation_run_id=121d2d1023d1400984287145d199e31b</div></li>
+<li><strong>2026-09-13T14:32:52.401439+00:00</strong> — [handoff] Handoff created: next_action=none — work item complete<div class="refs">handoff_id=wi-smoke-fix-add-handoff-b</div></li>
+</ul>
+<h2>C. Workers / Executions</h2>
+<table><thead><tr><th>execution_id</th><th>role</th><th>worker</th><th>provider/backend</th><th>model</th><th>reasoning</th><th>started</th><th>finished</th><th>status</th><th>exit</th><th>git before -&gt; after</th></tr></thead><tbody>
+<tr><td data-label="execution_id">e8557a59052b411fafa7c328331d4dcc-exec</td><td data-label="role">developer</td><td data-label="worker">alice</td><td data-label="provider/backend">anthropic/claude_code</td><td data-label="model">haiku</td><td data-label="reasoning">(none)</td><td data-label="started">2026-09-13T14:30:38.105616+00:00</td><td data-label="finished">2026-09-13T14:30:57.552312+00:00</td><td data-label="status">succeeded</td><td data-label="exit">0</td><td data-label="git">a4040df77ec9de1cf52828ea44652c6f909a6958 -&gt; 39b49a00e509f3aac538fb0404024515d705efa8</td></tr>
+<tr><td data-label="execution_id">6eff379cec304ca88da6329735276131-exec</td><td data-label="role">developer</td><td data-label="worker">victor</td><td data-label="provider/backend">openai/codex</td><td data-label="model">gpt-5.6-terra</td><td data-label="reasoning">low</td><td data-label="started">2026-09-13T14:31:37.859293+00:00</td><td data-label="finished">2026-09-13T14:32:52.386786+00:00</td><td data-label="status">succeeded</td><td data-label="exit">0</td><td data-label="git">39b49a00e509f3aac538fb0404024515d705efa8 -&gt; 4c4b595184487b67c27649a923f9b361619225b8</td></tr>
+</tbody></table>
+<h2>D. Adaptive execution</h2>
+<table><thead><tr><th>recommendation_id</th><th>role</th><th>estimator</th><th>tier</th><th>reasoning hint</th><th>reasons</th></tr></thead><tbody>
+<tr><td data-label="recommendation_id">8905618c93274ea0b55e36037e4ac623</td><td data-label="role">developer</td><td data-label="estimator">alice (economy)</td><td data-label="tier">SIMPLE</td><td data-label="reasoning hint">low</td><td data-label="reasons">One-line code fix (change subtraction operator to addition); Trivial test cases for basic arithmetic verification; No architectural changes or module interactions; Clear, unambiguous requirements with no ambiguity; Zero persistence, concurrency, security, or migration concerns; Immediate verification path via simple unit tests; Isolated function with no dependencies</td></tr>
+<tr><td data-label="recommendation_id">236cf951594949079072330f2a0cfa2c</td><td data-label="role">developer</td><td data-label="estimator">alice (economy)</td><td data-label="tier">SIMPLE</td><td data-label="reasoning hint">low</td><td data-label="reasons">Single-line fix: change operator from subtraction to addition; Complete test coverage: test already written and correct, immediate verification; Trivial scope: standalone arithmetic function with no dependencies; Zero ambiguity: clear requirement (add(2,3) == 5), no edge cases; No architectural impact: stateless function, no persistence or concurrency concerns; Instant feedback: test passes/fails immediately after fix; Minimal regression risk: test guards against reversion</td></tr>
+</tbody></table>
+<table><thead><tr><th>decision_id</th><th>worker</th><th>profile</th><th>tier</th><th>model</th><th>reasoning</th><th>rationale</th></tr></thead><tbody>
+<tr><td data-label="decision_id">e8557a59052b411fafa7c328331d4dcc</td><td data-label="worker">alice</td><td data-label="profile">economy</td><td data-label="tier">SIMPLE</td><td data-label="model">haiku</td><td data-label="reasoning">(none)</td><td data-label="rationale">minimum_quality_tier=SIMPLE; chosen_tier=SIMPLE; cost_rank=10; recommended_reasoning=&#x27;low&#x27; could not be matched exactly — tier never degraded</td></tr>
+<tr><td data-label="decision_id">6eff379cec304ca88da6329735276131</td><td data-label="worker">victor</td><td data-label="profile">economy</td><td data-label="tier">SIMPLE</td><td data-label="model">gpt-5.6-terra</td><td data-label="reasoning">low</td><td data-label="rationale">minimum_quality_tier=SIMPLE; chosen_tier=SIMPLE; cost_rank=10; recommended_reasoning=&#x27;low&#x27; honored exactly</td></tr>
+</tbody></table>
+<h2>E. Handoffs</h2>
+<div class="summary"><strong>wi-smoke-fix-add-handoff-a</strong> <span class="meta">(2026-09-13T14:30:57.554269+00:00, worker=alice)</span><br>completed_work: Added test_review_candidate.py asserting add(2, 3) == 5 (TDD RED).<br>decisions: (none)<br>test_results: (none)<br>open_issues: (none)<br>next_action: Fix add() in review_candidate.py to make the regression test pass (TDD GREEN).<br>files_touched: (none)<br>git_sha_after: 39b49a00e509f3aac538fb0404024515d705efa8</div>
+<div class="summary"><strong>wi-smoke-fix-add-handoff-b</strong> <span class="meta">(2026-09-13T14:32:52.401439+00:00, worker=victor)</span><br>completed_work: Fixed add() to return a + b; regression test passes.<br>decisions: (none)<br>test_results: quality_gate=PASSED<br>open_issues: (none)<br>next_action: none — work item complete<br>files_touched: (none)<br>git_sha_after: 4c4b595184487b67c27649a923f9b361619225b8</div>
+<h2>F. Quality gates</h2>
+<table><thead><tr><th>validation_id</th><th>kind</th><th>required</th><th>status</th><th>exit</th><th>duration_ms</th><th>git SHA</th></tr></thead><tbody>
+<tr><td data-label="validation_id">mini-project-tests</td><td data-label="kind">unit_test</td><td data-label="required">True</td><td data-label="status">passed</td><td data-label="exit">0</td><td data-label="duration_ms">10</td><td data-label="git SHA">4c4b595184487b67c27649a923f9b361619225b8</td></tr>
+</tbody></table>
+<h2>G. Reviews</h2>
+<p class="empty">(no reviews recorded)</p>
+<h2>H. Incidents</h2>
+<p class="empty">(none observed)</p>
+<h2>J. Final result</h2>
+<ul>
+<li>Status: completed</li>
+<li>Executions: 2</li>
+<li>Distinct workers: alice, victor</li>
+<li>Handoffs: 2</li>
+<li>Quota waits: 0</li>
+</ul>
+</div></body></html>
