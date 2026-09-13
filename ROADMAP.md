@@ -893,7 +893,7 @@ testable offline, et documenter explicitement ses dépendances.
   partiellement incohérente
 - Aucune opération Git runtime (`add`/`commit`/`push`/merge) — cette slice
   ne modifie que le fichier de travail ; gouvernance Git/PR/merge reste
-  Slice 19
+  Slice 20
 - Tests : `tests/test_roadmap_application.py` (100% offline, sqlite3 réel
   + vrai fichier `ROADMAP.md` sous `tmp_path`, horloge/`id_factory`
   injectables, `MVPManager` simulé par un stub — aucun réseau/subprocess/
@@ -1054,7 +1054,7 @@ testable offline, et documenter explicitement ses dépendances.
   reprise" (cela violerait l'invariant no-downgrade) ; le cache/fingerprint
   Slice 16 réutilise naturellement la recommandation existante si rien de
   pertinent n'a changé, en recalcule une nouvelle sinon. Seule la reprise
-  **review** reste non adaptative (Slice 18, voir
+  **review** reste non adaptative (Slice 19, voir
   `docs/ADAPTIVE_EXECUTION.md` §14/§18). Absent (défaut) : comportement
   Slice 7-16 inchangé à l'identique
 - Fail-closed de bout en bout : aucune exception de pre-flight/sélection
@@ -1062,7 +1062,7 @@ testable offline, et documenter explicitement ses dépendances.
   `NoEligibleWorkerError` diagnosticable comme quota déclenche `WAITING`
   (mécanisme existant, jamais dupliqué)
 - Review, release planning, roadmap synthesis **non touchés** — restent
-  sur une sélection non adaptative (Slice 18)
+  sur une sélection non adaptative (Slice 19)
 - Tests : `tests/test_adaptive_execution.py` (26, unitaires) + nouvelles
   classes `TestAdaptiveDevelopmentSelection`/`TestReviewSelectionIsNotAdaptive`/
   `TestAdaptiveWaitResume`/`TestAdaptiveRecoveryResume`/
@@ -1070,7 +1070,56 @@ testable offline, et documenter explicitement ses dépendances.
   (intégration, y compris les deux chemins de reprise) — 100% offline
 - Dépend de : Slice 16 (recommandation) et Slice 15 (profils)
 
-**Slice 18 — Adaptive review/planning integration**
+**Slice 18 — Realization reports + real cross-worker cold-resume acceptance — ✅ DONE**
+- Nouveau `src/orchestrator/realization_report.py` : `RealizationReport`,
+  `RealizationReportStore` (sqlite3, insert-only), `RealizationReportService`
+  — un snapshot détaillé, déterministe, d'un WorkItem (objectif, timeline
+  chronologique, executions, recommendations/adaptive decisions, handoffs,
+  quality gates, reviews, waits, incidents), agrégé depuis les stores déjà
+  existants (`ProjectStateStore`/`ExecutionStore`/`HandoffStore`/
+  `ValidationStore`/`ReviewStore`/`WaitStore`/`ExecutionRecommendationStore`/
+  `AdaptiveExecutionDecisionStore`) — jamais LLM-généré, jamais une
+  duplication d'`ActivityReport` (qui reste la consolidation release/MVP)
+- `RealizationReport.render_html()` : rendu HTML autonome (aucun CDN/JS
+  externe, CSS inline, tout le texte HTML-escaped, déterministe), résumé
+  humain construit par règles explicites (jamais un LLM) ; `write_html()`
+  écrit atomiquement (tempfile + `os.replace`) ; `compute_html_hash()`
+  pour vérifier la stabilité du rendu
+- Insert-only comme le reste du projet : une nouvelle génération produit
+  toujours un nouveau `report_id`, un rapport intermédiaire
+  (`HANDOFF_READY`) n'est jamais écrasé par le rapport final
+  (`COMPLETED`/`BLOCKED`/`FAILED`)
+- `HandoffRecord` reste l'unique artefact machine de passation ; le HTML
+  n'est jamais reparsé par aucun composant — contexte supplémentaire pour
+  un futur worker, jamais une source d'état
+- Validation d'acceptation Slice 17 : `tests/integration/test_cross_worker_resume_e2e.py`
+  (offline, déjà PASS) puis `scripts/smoke_cross_worker_real.py` — un
+  smoke manuel réel (jamais lancé par `pytest`), deux vrais workers de
+  `config/workers.yaml` (un backend `claude_code`, un backend `codex`),
+  vrai `ExecutionRecommendationService`/`AdaptiveExecutionSelector`/
+  `RalphExecutionEngine`, contrôleur qui lance Phase A et Phase B comme
+  deux process OS réellement distincts (aucun objet Python partagé entre
+  les deux), vérification de disponibilité provider en lecture seule
+  avant tout smoke (jamais de reset credit consommé ; `BLOCKED` proprement
+  si un provider est indisponible), copie jetable de
+  `~/projects/ralph-spike` sous `/tmp` (original jamais modifié, vérifié
+  avant/après), et une copie HTML sanitizée versionnée dans
+  `docs/reports/` comme preuve historique
+- Dépend de : Slice 17 (adaptive development/rework) et Slice 16
+  (`ExecutionRecommendationService`)
+- **Smoke réel exécuté et PASS (2026-09-13)** : deux vrais workers de
+  `config/workers.yaml` — `alice` (anthropic/claude_code, modèle `haiku`,
+  profil `economy`, tier `SIMPLE`) puis `victor` (openai/codex, modèle
+  `gpt-5.6-terra`, `reasoning_effort=low`, profil `economy`, tier
+  `SIMPLE`) — deux process OS réellement distincts (PIDs différents),
+  `execution_id` distincts, chaîne git SHA réelle (avant A -> après A ->
+  après B), handoff réellement transmis (le `next_action` de Worker A
+  apparaît dans le prompt de Worker B), quality gate réel PASSED,
+  `~/projects/ralph-spike` original inchangé (vérifié avant/après). Aucun
+  bug Slice 17/18 découvert. Preuve : `docs/reports/real-cross-worker-resume-2026-09-13.html`
+  (copie sanitizée, chemins temporaires neutralisés, aucun secret)
+
+**Slice 19 — Adaptive review/planning integration**
 - Étend le pre-flight/l'sélection adaptative aux rôles review, release
   planning et roadmap synthesis — chacun avec son propre tier (jamais le
   tier development réutilisé tel quel)
@@ -1080,11 +1129,11 @@ testable offline, et documenter explicitement ses dépendances.
 - Dépend de : Slice 17 (le mécanisme d'intégration doit déjà exister côté
   développement avant d'être étendu)
 
-**Slice 19 — Git/PR/merge governance si toujours nécessaire**
+**Slice 20 — Git/PR/merge governance si toujours nécessaire**
 - Recoupe l'ancienne Phase 2 (« GitHub : branches et Pull Requests »)
   ci-dessous — `GitHubWorkspace`, CLI `gh`, politique de merge
 - Positionnée en dernier dans ce découpage incrémental : à ré-évaluer une
-  fois Slices 7-18 en place (peut-être partiellement anticipée si un
+  fois Slices 7-19 en place (peut-être partiellement anticipée si un
   besoin concret apparaît avant)
 
 **Éléments non re-séquencés explicitement** (restent valables, à intégrer
@@ -1093,7 +1142,7 @@ quand le besoin se précise, sans rang fixe) :
 - Abstraction `Workspace` (`prepare(task)`/`finalize(task, result)`) :
   `RalphExecutionEngine` (Slice 6) fait aujourd'hui du `git rev-parse HEAD`
   en lecture seule directement, sans cette abstraction — suffisant tant
-  que Slice 19 (Git/PR/merge) n'est pas requise ; l'abstraction complète
+  que Slice 20 (Git/PR/merge) n'est pas requise ; l'abstraction complète
   n'est réintroduite que si/quand ce besoin devient concret
 - CLI minimale (`python -m orchestrator ...`) : utile dès que Slice 7
   expose des commandes stables (`mvp create`, `workitem run`, `handoff
@@ -1139,7 +1188,7 @@ Ce résumé sert de repère rapide ; le détail vérifiable est dans
 
 ### Phase 2 — GitHub : branches et Pull Requests
 
-> Recoupée par **Slice 19** (« Git/PR/merge governance si toujours
+> Recoupée par **Slice 20** (« Git/PR/merge governance si toujours
 > nécessaire ») dans le découpage incrémental sous Phase 1 — le contenu
 > ci-dessous reste le détail de référence.
 
@@ -1322,11 +1371,17 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     `resolve_profile`), extension `WorkerSelectionRequest.minimum_quality_tier`,
     `ExecutionProfile.cost_rank`, intégration opt-in dans `MVPManager`
     (development + rework uniquement), et les tests associés. Review/
-    planning/release-planning non touchés (Slice 18).
-- **Next** : Slice 18 — Adaptive review + release planning/synthesis
-  profiles (adaptive execution, étudiée dans
-  `docs/ADAPTIVE_EXECUTION.md` ; Git/PR/merge governance reste décalée en
-  Slice 19).
+    planning/release-planning non touchés (Slice 19).
+  - **Slice 18 (Realization reports + real cross-worker cold-resume
+    acceptance) — DONE** : voir `src/orchestrator/realization_report.py`
+    (nouveau : `RealizationReport`, `RealizationReportStore`,
+    `RealizationReportService`), `scripts/smoke_cross_worker_real.py`
+    (smoke manuel, jamais lancé par `pytest`), et les tests associés.
+    Smoke réel exécuté et **PASS** (voir détail ci-dessus dans le
+    découpage) ; preuve versionnée dans `docs/reports/`.
+- **Next** : Slice 19 — Adaptive review + release planning/synthesis
+  profiles (adaptive execution, étudiée dans `docs/ADAPTIVE_EXECUTION.md` ;
+  Git/PR/merge governance reste décalée en Slice 20).
 
 ## Comment reprendre ce projet à froid
 
