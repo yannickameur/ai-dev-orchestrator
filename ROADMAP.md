@@ -1250,21 +1250,119 @@ testable offline, et documenter explicitement ses dépendances.
 - Dépend de : Slice 17 (le mécanisme d'intégration existait déjà côté
   développement avant d'être étendu)
 
-**Slice 20 — Git/PR/merge governance si toujours nécessaire**
-- Recoupe l'ancienne Phase 2 (« GitHub : branches et Pull Requests »)
-  ci-dessous — `GitHubWorkspace`, CLI `gh`, politique de merge
-- Positionnée en dernier dans ce découpage incrémental : à ré-évaluer une
-  fois Slices 7-19 en place (peut-être partiellement anticipée si un
-  besoin concret apparaît avant)
+**Slice 20 — Git/PR/merge governance — ✅ DONE**
+- Nouveau `src/orchestrator/git_governance.py` : `LocalGitWorkspace`
+  (wrapper explicite argv autour du CLI `git`, jamais `shell=True`, jamais
+  de commande destructive — pas de stash/reset --hard/clean -fd/rebase/
+  force-push automatique), `GitGovernancePolicy` (base_branch, branches
+  protégées, `require_clean_worktree`, `require_review`,
+  `require_required_gates`, `merge_strategy` (fast-forward-only par
+  défaut), `auto_merge` = **False par défaut**, `remote_pr_enabled`),
+  `GitWorkItemRecord`/`GitWorkItemStore` (sqlite3, une ligne mutable par
+  WorkItem + journal d'événements insert-only pour l'audit), et
+  `GitGovernanceService` (`prepare_work_item`, `capture_head`,
+  `assert_review_target`, `compute_merge_eligibility` — pur, déterministe,
+  jamais LLM —, `merge`, `reconcile`, `publish_pull_request`).
+- Branche gouvernée déterministe et stable après restart/retry/reprise :
+  `work/<work-item-id-sanitisé>` (jamais recréée), `main` protégée par
+  défaut (aucun worker n'y est jamais lancé directement pour un WorkItem
+  gouverné), `base_sha` capturé une seule fois et immuable pour tout le
+  cycle de vie du WorkItem.
+- Working tree : tracked dirty => `DirtyWorkingTreeError` fail-closed
+  (jamais de stash/reset/clean automatique) ; untracked signalé mais
+  jamais bloquant par défaut (décision documentée dans
+  `docs/GIT_GOVERNANCE.md`).
+- Preuve liée au SHA exact : `compute_merge_eligibility` compare le
+  `head_sha` courant du WorkItem à la fois au SHA du dernier quality gate
+  et à celui de la dernière review — un nouveau commit après l'un ou
+  l'autre invalide silencieusement l'ancienne preuve (jamais "probablement
+  bon" ; `NOT_MERGEABLE` explicite dans tous les cas manquants/périmés).
+  Aucun profil `CRITICAL` n'existe (inchangé, non fabriqué) ; sans
+  incidence particulière sur la gouvernance Git.
+- Stratégie de merge : fast-forward-only exclusivement
+  (`git switch <base>` puis `git merge --ff-only <work_branch>`) — jamais
+  de commit de merge artificiel, jamais de réécriture d'historique ; une
+  divergence de `base_branch` est détectée (`git merge-base
+  --is-ancestor`) et fait échouer le merge proprement (`MergeRefusedError`
+  / statut `CONFLICT` persisté), jamais de rebase/force/résolution
+  automatique.
+- `auto_merge` reste `False` par défaut (le WorkItem s'arrête à
+  `MERGE_READY`) ; testé réellement à `True` sur des dépôts git
+  temporaires (fusion réelle, `main` avance exactement au head du
+  WorkItem).
+- Intégration `MVPManager` opt-in (`git_governance_service`,
+  `validation_store` optionnels, comportement pré-Slice-20 inchangé si
+  omis) : `prepare_work_item` avant le premier DEVELOPMENT (et repris,
+  jamais recréé, sur REWORK/reprise WAITING/reprise RECOVERY —
+  `_execute_work_item` reste le point de câblage unique, partagé par les
+  trois chemins) ; `capture_head` après chaque exécution développeur ;
+  `assert_review_target` avant chaque review (même mécanisme partagé que
+  Slice 19, `_run_review`) ; `compute_merge_eligibility`/`merge` (si
+  `auto_merge=True`) une fois le WorkItem `COMPLETED`, que ce soit via le
+  chemin sans review ou via une review (fraîche ou reprise) approuvée.
+- Reprise après restart : `GitGovernanceService.reconcile` reconstruit
+  l'état depuis `GitWorkItemStore` + le dépôt réel (jamais depuis la
+  branche « actuellement checkoutée ») ; branche manquante alors que le
+  store attend un statut non terminal => `GitBranchMissingError`
+  fail-closed (jamais de recréation silencieuse) ; head divergent =>
+  reconcilié uniquement si le SHA réel correspond à un `ExecutionRecord`
+  connu et persisté, sinon `GitHeadDriftError` fail-closed (aucune
+  heuristique large) ; un WorkItem déjà `MERGED` reste `MERGED` après
+  restart, prouvé par un test dédié.
+- Abstraction PR optionnelle : `PullRequestPublisher`/`PullRequestRecord`
+  + `GitHubCliPullRequestPublisher` (wrapper `gh pr create`, argv explicite,
+  jamais de SDK GitHub, jamais `shell=True`). Une PR n'implique jamais une
+  autorisation de merge (testé explicitement) ; `remote_pr_enabled=False`
+  par défaut ; **aucune vraie PR/push distant créé pendant cette session**
+  — uniquement testé avec un subprocess runner injecté (argv exact
+  vérifié), zéro appel réseau dans `pytest`.
+- `ReleaseManager` (extension minimale, opt-in via `git_work_item_store`) :
+  nouveau `ReleaseCheck` `governed-work-items-merged` — un WorkItem
+  `COMPLETED` *gouverné* doit être réellement `MERGED` pour que le
+  release gate passe (jamais de release avec du code business gouverné
+  encore non fusionné) ; un WorkItem jamais gouverné n'est jamais
+  pénalisé. Pas de refonte : aucun tag/GitHub Release/changelog/semver
+  ajouté (non requis par cette Slice).
+- `RealizationReport` (extension minimale, opt-in via
+  `git_work_item_store`) : nouveaux champs `git_base_branch`,
+  `git_work_branch`, `git_merge_status`, `git_merged_sha`,
+  `git_pull_request_number/url`, et les événements d'audit déjà persistés
+  (`branch_prepared`, `head_captured`, `merge_ready`, `merged`,
+  `merge_conflict`) apparaissent dans la timeline — projection directe du
+  journal `GitWorkItemStore.list_events`, jamais une réanalyse du log git
+  brut. Compatible sans `git_work_item_store` (champs `None`, aucune
+  section rendue).
+- `ApprovalCoordinator`/`RoadmapApplicationService` non touchés — la
+  gouvernance Git du cycle de code d'un WorkItem reste découplée de
+  l'application de décisions produit sur `ROADMAP.md`.
+- Aucun push distant réel, aucune vraie PR, aucun reset credit consommé ;
+  aucune session Claude/Codex réelle lancée (seul `claude --help`/`git`/
+  repos temporaires locaux ont été utilisés). Smoke local réel exécuté
+  (voir `tests/test_mvp_manager_git_governance.py::TestLocalGovernedSmokeE2E`) :
+  WorkItem → branche préparée → commit réel du worker (faux mais git-réel)
+  → gate PASS → review APPROVED → éligibilité PASS → `auto_merge=True` →
+  merge ff-only → `main` avance exactement au head → redémarrage simulé
+  (nouvelles instances de store) → `MERGED` toujours observable. **PASS**.
+- Nouveaux fichiers de tests : `tests/test_git_governance.py` (73 tests,
+  dépôts git temporaires réels — aucun mock de `git` pour les tests
+  fondamentaux), `tests/test_mvp_manager_git_governance.py` (10 tests
+  d'intégration bout-en-bout), extensions de `tests/test_realization_report.py`
+  et `tests/test_release_manager.py`. 876 tests offline PASS (790 + 86).
+- Voir `docs/GIT_GOVERNANCE.md` pour le détail : cycle de vie de la
+  branche gouvernée, éligibilité au merge, preuve liée au SHA,
+  rationnel fast-forward-only, sémantique de reprise.
 
 **Éléments non re-séquencés explicitement** (restent valables, à intégrer
 quand le besoin se précise, sans rang fixe) :
 - `OllamaAdapter` (provider local/gratuit, hors 3 adapters MVP 0.1)
 - Abstraction `Workspace` (`prepare(task)`/`finalize(task, result)`) :
-  `RalphExecutionEngine` (Slice 6) fait aujourd'hui du `git rev-parse HEAD`
-  en lecture seule directement, sans cette abstraction — suffisant tant
-  que Slice 20 (Git/PR/merge) n'est pas requise ; l'abstraction complète
-  n'est réintroduite que si/quand ce besoin devient concret
+  **partiellement livrée par Slice 20** sous la forme de
+  `LocalGitWorkspace`/`GitGovernanceService` (préparation de branche,
+  capture de head, éligibilité au merge) — `RalphExecutionEngine`
+  (Slice 6) continue de faire son `git rev-parse HEAD` en lecture seule
+  directement, sans changement ; une abstraction `Workspace` générique
+  multi-fournisseur (au-delà de Git local) resterait à envisager
+  seulement si un besoin concret (ex. un `GitHubWorkspace` réel) apparaît
 - CLI minimale (`python -m orchestrator ...`) : utile dès que Slice 7
   expose des commandes stables (`mvp create`, `workitem run`, `handoff
   show`, etc.) — pas de rang fixe imposé, à ajouter quand l'ergonomie le
@@ -1309,9 +1407,13 @@ Ce résumé sert de repère rapide ; le détail vérifiable est dans
 
 ### Phase 2 — GitHub : branches et Pull Requests
 
-> Recoupée par **Slice 20** (« Git/PR/merge governance si toujours
-> nécessaire ») dans le découpage incrémental sous Phase 1 — le contenu
-> ci-dessous reste le détail de référence.
+> **Slice 20 (Git/PR/merge governance) est DONE** (voir le découpage
+> incrémental sous Phase 1) et couvre la gouvernance de branche/merge
+> locale + une abstraction PR optionnelle (`PullRequestPublisher`,
+> `GitHubCliPullRequestPublisher` via le CLI `gh`, jamais de SDK). Le
+> contenu ci-dessous reste le détail de référence pour ce qui n'a pas été
+> nécessaire cette Slice (push/merge distant réel, statut CI, flux PR
+> complet) — non requis tant qu'un besoin concret ne le justifie pas.
 
 Objectif : remplacer le Git purement local par un flux Git + GitHub complet.
 
@@ -1515,10 +1617,24 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     synthesizer adaptatifs — les deux confirmés être de vraies
     exécutions LLM, CAS B ; `ApprovalCoordinator`/
     `RoadmapApplicationService` non touchés). 790 tests offline PASS.
-- **Next** : Slice 20 — Git/PR/merge governance si toujours nécessaire
-  (voir son entrée dans le découpage incrémental ci-dessus). OmniRoute
-  reste une qualification future optionnelle, hors roadmap principale —
-  voir `docs/OMNIROUTE_ARBITRATION.md`.
+  - **Slice 20 (Git/PR/merge governance) — DONE** : voir l'entrée
+    détaillée ci-dessus dans le découpage incrémental —
+    `src/orchestrator/git_governance.py` (`LocalGitWorkspace`,
+    `GitGovernancePolicy`, `GitWorkItemRecord`/`GitWorkItemStore`,
+    `GitGovernanceService`), intégration opt-in `MVPManager`/
+    `ReleaseManager`/`RealizationReport`, fast-forward-only par défaut,
+    `auto_merge=False` par défaut (testé réellement à `True`), aucune
+    PR/push distant réel cette session. 876 tests offline PASS.
+- **Next : revue de roadmap avec l'utilisateur.** Toutes les Slices 7-20
+  du découpage incrémental Phase 1 sont maintenant DONE — c'est le point
+  de contrôle prévu par le principe du projet (« entre deux grandes
+  versions stables, relire ROADMAP.md/docs/status.md avec l'utilisateur,
+  discuter des priorités, puis seulement modifier cette section »).
+  Aucune Slice 21 n'est décidée ni proposée unilatéralement ici — la
+  suite (nouvelle Slice, refonte, ou clôture de Phase 1) doit être
+  arbitrée avec l'utilisateur avant toute nouvelle implémentation.
+  OmniRoute reste une qualification future optionnelle, hors roadmap
+  principale — voir `docs/OMNIROUTE_ARBITRATION.md`.
 
 ## Comment reprendre ce projet à froid
 

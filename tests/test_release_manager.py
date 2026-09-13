@@ -519,6 +519,87 @@ class TestGitShaCapture:
         assert release.git_sha is None
 
 
+class TestGovernedMergeCheck:
+    def test_release_blocked_when_a_governed_work_item_is_not_merged(self, tmp_path: Path) -> None:
+        from orchestrator.git_governance import GitWorkItemRecord, GitWorkItemStatus, GitWorkItemStore
+
+        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, ["wi-a"])
+        _complete(project_store, "wi-a")
+        git_store = GitWorkItemStore(tmp_path / "git.sqlite3", clock=lambda: UTC_NOW)
+        git_store.create(GitWorkItemRecord(
+            git_work_id="g1", project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
+            repository_path=str(tmp_path), base_branch="main", work_branch="work/wi-a",
+            base_sha="a" * 40, status=GitWorkItemStatus.PREPARED, created_at=UTC_NOW, updated_at=UTC_NOW,
+        ))
+        manager = _manager(
+            (project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store),
+            git_work_item_store=git_store,
+        )
+
+        release = manager.attempt_release("proj-1", "mvp-1")
+
+        assert release.status is ReleaseGateStatus.FAILED
+        check = next(c for c in release.checks if c.check_id == "governed-work-items-merged")
+        assert check.passed is False
+        assert "wi-a" in check.related_ids
+
+    def test_release_passes_once_governed_work_item_is_merged(self, tmp_path: Path) -> None:
+        from orchestrator.git_governance import GitWorkItemRecord, GitWorkItemStatus, GitWorkItemStore
+
+        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, ["wi-a"])
+        _complete(project_store, "wi-a")
+        git_store = GitWorkItemStore(tmp_path / "git.sqlite3", clock=lambda: UTC_NOW)
+        git_store.create(GitWorkItemRecord(
+            git_work_id="g1", project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
+            repository_path=str(tmp_path), base_branch="main", work_branch="work/wi-a",
+            base_sha="a" * 40, status=GitWorkItemStatus.PREPARED, created_at=UTC_NOW, updated_at=UTC_NOW,
+        ))
+        git_store.update_head("wi-a", "b" * 40)
+        git_store.mark_merge_ready("wi-a")
+        git_store.mark_merged("wi-a", merged_sha="b" * 40)
+        manager = _manager(
+            (project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store),
+            git_work_item_store=git_store,
+        )
+
+        release = manager.attempt_release("proj-1", "mvp-1")
+
+        assert release.status is ReleaseGateStatus.PASSED
+
+    def test_ungoverned_work_items_never_penalized(self, tmp_path: Path) -> None:
+        from orchestrator.git_governance import GitWorkItemStore
+
+        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, ["wi-a"])
+        _complete(project_store, "wi-a")
+        git_store = GitWorkItemStore(tmp_path / "git.sqlite3", clock=lambda: UTC_NOW)  # configured, but wi-a never governed
+        manager = _manager(
+            (project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store),
+            git_work_item_store=git_store,
+        )
+
+        release = manager.attempt_release("proj-1", "mvp-1")
+
+        assert release.status is ReleaseGateStatus.PASSED
+        check = next(c for c in release.checks if c.check_id == "governed-work-items-merged")
+        assert check.passed is True
+
+    def test_no_git_work_item_store_preserves_prior_behavior(self, tmp_path: Path) -> None:
+        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, ["wi-a"])
+        _complete(project_store, "wi-a")
+        manager = _manager(
+            (project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store),
+        )  # no git_work_item_store at all
+
+        release = manager.attempt_release("proj-1", "mvp-1")
+
+        assert release.status is ReleaseGateStatus.PASSED
+        assert "governed-work-items-merged" not in [c.check_id for c in release.checks]
+
+
 class TestNoForbiddenBehavior:
     def test_no_git_mutation_commands_in_source(self) -> None:
         import inspect
