@@ -132,7 +132,19 @@ def _build_backend_args(backend: str, model: str, reasoning_effort: str | None) 
             args += ["-c", f'model_reasoning_effort="{reasoning_effort}"']
         return args
     if backend == "claude_code":
-        return ["--model", model]
+        # `claude --effort <low|medium|high|xhigh|max>` is a real, native
+        # Claude Code CLI flag (confirmed via `claude --help` — not a
+        # codex-style `-c key=value` override, Claude Code takes it
+        # directly), passed through verbatim as an extra hat backend arg,
+        # the same mechanism already validated for codex's
+        # `model_reasoning_effort` (see docs/SPIKE_RALPH.md). Omitted
+        # entirely when unset, matching the codex branch above, so a
+        # profile that never set reasoning_effort (e.g. today's Claude
+        # profiles in config/workers.yaml) transmits nothing extra.
+        args = ["--model", model]
+        if reasoning_effort:
+            args += ["--effort", reasoning_effort]
+        return args
     raise UnsupportedBackendError(backend)
 
 
