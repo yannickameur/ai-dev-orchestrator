@@ -100,15 +100,23 @@ class ExecutionProfile:
 
     ``Worker`` is the agent identity (governance); ``ExecutionProfile`` is
     a configuration this Worker can execute under (``model``,
-    ``reasoning_effort``, and the ``quality_tier`` it satisfies). Slice 15
-    only carries this data — nothing here chooses a profile: that remains
-    Slice 17.
+    ``reasoning_effort``, and the ``quality_tier`` it satisfies).
+
+    ``cost_rank`` (Slice 17) is a configured, relative economic preference
+    — never a real provider price, never inferred from ``model``/
+    ``reasoning_effort`` — lower means "prefer this profile economically".
+    It defaults to ``0`` (no preference configured): with every profile at
+    the same rank, the adaptive selector (``orchestrator.
+    adaptive_execution``) simply falls back to picking the tier closest to
+    what was actually required, which is already a sensible zero-config
+    default.
     """
 
     profile_id: str
     quality_tier: QualityTier
     model: str
     reasoning_effort: str | None = None
+    cost_rank: int = 0
 
     def __post_init__(self) -> None:
         _require_non_empty_str(self.profile_id, field_name="ExecutionProfile.profile_id")
@@ -117,6 +125,8 @@ class ExecutionProfile:
                 f"ExecutionProfile.quality_tier must be a QualityTier, got {type(self.quality_tier)!r}"
             )
         _require_non_empty_str(self.model, field_name="ExecutionProfile.model")
+        if not isinstance(self.cost_rank, int) or isinstance(self.cost_rank, bool) or self.cost_rank < 0:
+            raise ValueError(f"ExecutionProfile.cost_rank must be a non-negative int, got {self.cost_rank!r}")
         if self.reasoning_effort is not None:
             _require_non_empty_str(self.reasoning_effort, field_name="ExecutionProfile.reasoning_effort")
 
@@ -307,11 +317,22 @@ class WorkerSelectionRequest:
     ``author_worker_id``, when supplied, marks this as a review selection:
     the resulting worker can never be that same worker, and the
     provider-independence policy applies.
+
+    ``minimum_quality_tier`` (Slice 17), when supplied, is the smallest
+    additional filter this module accepts: a worker is only a candidate if
+    at least one of its declared ``ExecutionProfile``s satisfies
+    ``profile.quality_tier >= minimum_quality_tier``. This module never
+    picks *which* profile — that stays entirely
+    ``orchestrator.adaptive_execution``'s job — it only ever decides
+    whether a worker is capable of reaching that tier *at all*, using the
+    exact same capability/governance/quota pipeline as every other
+    selection (never a second, parallel filtering path).
     """
 
     required_capabilities: frozenset[str] = field(default_factory=frozenset)
     author_worker_id: str | None = None
     excluded_worker_ids: frozenset[str] = field(default_factory=frozenset)
+    minimum_quality_tier: QualityTier | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -321,6 +342,11 @@ class WorkerSelectionRequest:
                 self.required_capabilities, field_name="WorkerSelectionRequest.required_capabilities"
             ),
         )
+        if self.minimum_quality_tier is not None and not isinstance(self.minimum_quality_tier, QualityTier):
+            raise TypeError(
+                f"WorkerSelectionRequest.minimum_quality_tier must be a QualityTier or None, "
+                f"got {type(self.minimum_quality_tier)!r}"
+            )
         object.__setattr__(
             self,
             "excluded_worker_ids",
@@ -477,6 +503,10 @@ class WorkerSelector:
             if worker.worker_id not in excluded
             and worker.enabled
             and request.required_capabilities <= worker.capabilities
+            and (
+                request.minimum_quality_tier is None
+                or any(p.quality_tier >= request.minimum_quality_tier for p in worker.profiles)
+            )
         ]
 
     async def _diagnose_candidate_providers(

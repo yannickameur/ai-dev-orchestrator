@@ -287,10 +287,10 @@ finale worker/quota qui reste toujours réévaluée à chaque tentative).
 
 | Composant | Impact |
 |---|---|
-| `Worker` | Modification nécessaire (mineure, additive) : `enabled: bool = True`. |
-| `WorkerSelector`/`WorkerSelectionRequest` | Modification éventuelle : accepter un `minimum_quality_tier`/profil candidat en plus de `required_capabilities` — reste à concevoir en Slice 17, l'ordre de sélection existant (capacité > gouvernance > quota > coût) est un invariant à préserver tel quel. |
+| `Worker`/`ExecutionProfile` | Modification nécessaire (mineure, additive) : `Worker.enabled: bool = True` (Slice 15) ; `ExecutionProfile.cost_rank: int = 0` (Slice 17) — préférence économique **configurée**, jamais un prix réel, jamais inférée du modèle ; défaut `0` pour rester rétrocompatible (bascule alors sur la proximité de tier comme départage, déjà un choix par défaut raisonnable). |
+| `WorkerSelector`/`WorkerSelectionRequest` | **Fait (Slice 17), extension minimale confirmée** : `WorkerSelectionRequest.minimum_quality_tier: QualityTier \| None` — un worker n'est candidat que s'il a au moins un profil `quality_tier >= minimum_quality_tier` ; ce filtre s'applique **avant** toute diagnose de quota (dans `_filter_by_capabilities_and_governance`), ce qui distingue gratuitement "aucun worker capable" (diagnostics vides, jamais transformé en `WAITING`) de "un worker capable existe mais son provider est en quota" (diagnostics normaux, `WAITING` inchangé). L'ordre de sélection existant (capacité > gouvernance > quota > coût/priorité) reste inchangé ; le choix du *profil* concret (cost_rank, proximité de tier, reasoning hint) reste entièrement dans `orchestrator.adaptive_execution`, jamais dans `WorkerSelector`. |
 | `RalphExecutionEngine` | Aucune modification structurelle : `Worker.model`/`.reasoning_effort` restent les seuls champs consommés par `_build_backend_args`/`_render_hats_config` ; un `ExecutionProfile` résolu se traduit dans ces mêmes champs avant d'atteindre ce module. Invariant à préserver : ce module ne doit jamais apprendre la notion de "tier". |
-| `MVPManager` | Modification opt-in (même patron que `quality_gate_runner`/`review_store`/`wait_store`) : un futur paramètre optionnel type `adaptive_execution` au constructeur ; comportement Slice 7-14 inchangé si absent. Invariant à préserver : jamais de duplication de la logique wait/recovery existante. |
+| `MVPManager` | **Fait (Slice 17, y compris la reprise)** : paramètre optionnel `adaptive_execution_selector` (même patron que `quality_gate_runner`/`review_store`/`wait_store`) ; comportement Slice 7-14 inchangé si absent. Câblé via un helper privé partagé (`_select_dev_worker`) sur DEVELOPMENT **et** REWORK — le chemin candidat frais (`run_next_work_item`), la reprise d'attente quota (`_try_resume_due_wait`), et la reprise après crash (`_try_resume_recovery_required`) reconstruisent tous le même pre-flight à partir des faits persistants courants (jamais `Worker.profile()` par défaut "parce que c'est une reprise") — le cache/fingerprint Slice 16 réutilise naturellement la recommandation existante quand rien n'a changé, en recalcule une nouvelle sinon. Seule la reprise **review** (`_resume_review_wait`, branche review de `_try_resume_recovery_required`) reste non adaptative (Slice 18). Aucune duplication de la logique wait/recovery existante : une erreur de pre-flight/sélection non diagnosable comme quota se propage simplement (fail-closed), une erreur diagnosable comme quota suit le `WAITING` existant sans changement. |
 | Review orchestration (`review.py`) | Modification éventuelle en Slice 18 uniquement — inchangée jusque-là. Invariant à préserver : `ReviewPolicy`/l'indépendance author≠reviewer restent la seule source de vérité, jamais contournées par un choix de profil. |
 | Planning orchestration (`planning.py`) | Modification éventuelle en Slice 18 uniquement (tier pour `release_planning`/`roadmap_synthesis`). Invariant à préserver : `PlanningPolicy.planner_count`/indépendance des planners inchangés. |
 | `ExecutionRecord` | **Aucune modification** — capture déjà `worker_id`/`provider`/`backend`/`model`/`reasoning_effort`/`role`. |
@@ -388,14 +388,23 @@ qui n'a réellement qu'une seule configuration possible.
 
 ## 18. Questions réellement ouvertes
 
-- Forme exacte de l'extension de `WorkerSelectionRequest` pour porter un
-  tier/profil minimum (nouveau champ ? requête séparée ?) — reste à
-  trancher en concevant Slice 17 (toujours pas fait : Slice 16 ne
-  sélectionne qu'un estimator, jamais un worker final par tier).
 - Renommage des capabilities existantes (`"reviewer"` -> `code_review`,
   convention `development`) : toujours non fait, resté volontairement hors
-  scope de Slices 15/16 (changement fonctionnel assumé, jamais glissé
+  scope de Slices 15/16/17 (changement fonctionnel assumé, jamais glissé
   implicitement) — à traiter explicitement quand une slice le justifie.
+- Étendre l'adaptive selection à la reprise **review**
+  (`_resume_review_wait`, branche review de
+  `_try_resume_recovery_required`) : volontairement laissé non-adaptatif
+  jusqu'à Slice 18 (voir §14), comme le reste de la review.
+
+**Résolu par Slice 17** (déplacé hors des questions ouvertes) :
+- Forme de l'extension de `WorkerSelectionRequest` : un champ
+  `minimum_quality_tier: QualityTier | None`, filtré avant toute diagnose
+  de quota (voir §14) — pas de requête séparée, c'est la plus petite
+  évolution qui préserve l'ordre de sélection existant.
+- `cost_rank` : ajouté sur `ExecutionProfile` (int, défaut 0, validé
+  non-négatif dans `WorkerRegistry`) — préférence économique configurée,
+  jamais un prix réel.
 
 **Résolu par Slice 16** (déplacé hors des questions ouvertes) :
 - Fingerprint : implémenté (`compute_task_fingerprint`,

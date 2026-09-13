@@ -1012,19 +1012,62 @@ testable offline, et documenter explicitement ses dépendances.
 - Dépend de : Slice 15 (les tiers/profils doivent exister pour qu'une
   recommandation ait un sens)
 
-**Slice 17 — Adaptive Worker/Profile selection integration (development)**
-- L'orchestrateur (jamais un event LLM directement) choisit le profil le
-  moins coûteux satisfaisant `minimum_quality_tier`, en respectant l'ordre
-  existant capability > gouvernance > quota/disponibilité > coût/priorité
-  — jamais un tier minimum silencieusement dégradé faute de quota :
-  chercher un autre worker/profil au tier suffisant, sinon `WAITING`
-  (mécanisme Slice 11 existant, jamais dupliqué)
-- Câblé uniquement côté développement dans `MVPManager` (opt-in, comme
-  chaque capacité Slice 8/9/11 précédente) ; review/planning restent
-  inchangés jusqu'à Slice 18
-- Un événement d'estimation invalide ou absent ne bloque jamais le
-  fonctionnement existant : comportement Slice 7-14 inchangé quand
-  l'adaptive execution n'est pas activée (`adaptive_execution.enabled`)
+**Slice 17 — Adaptive Worker/Profile Selection for development/rework — ✅ DONE**
+- Nouveau `src/orchestrator/adaptive_execution.py` : `AdaptiveExecutionSelector`,
+  `AdaptiveExecutionDecision`, `AdaptiveExecutionDecisionStore`,
+  `resolve_profile()`. Compose `ExecutionRecommendationService` (Slice 16)
+  + `WorkerSelector` (Slice 4, étendu) — ne réimplémente ni l'un ni l'autre
+- `WorkerSelectionRequest.minimum_quality_tier: QualityTier | None` (Slice
+  4, extension minimale) : un worker n'est candidat que s'il a au moins un
+  profil `quality_tier >= minimum_quality_tier`, filtré **avant** toute
+  diagnose de quota — l'ordre existant capability > gouvernance > quota/
+  disponibilité > coût/priorité reste inchangé ; le choix du *profil*
+  concret (cost_rank, proximité de tier, reasoning hint) reste
+  entièrement dans `adaptive_execution.py`, jamais dans `WorkerSelector`
+- `ExecutionProfile.cost_rank: int = 0` (préférence économique
+  **configurée**, jamais un prix réel), validé non-négatif dans
+  `WorkerRegistry`, ajouté à `config/workers.yaml`
+- `resolve_profile()` : jamais de profil sous `minimum_quality_tier` ;
+  parmi les profils capables, préfère un `reasoning_effort` correspondant
+  exactement au hint (sans jamais dégrader le tier pour l'obtenir), puis
+  `cost_rank` minimal, puis tier le plus proche du minimum, puis
+  `profile_id` — déterministe
+- Distinction WAITING vs incapacité structurelle obtenue **sans code
+  supplémentaire** : un worker sans profil capable est éliminé avant
+  toute diagnose de quota (`ProviderSelectionDiagnostic` jamais généré
+  pour lui) ⇒ `NoEligibleWorkerError(diagnostics=())` ⇒
+  `WaitCoordinator.record_wait` (Slice 11, inchangé) retourne `None` ⇒
+  l'exception se propage (fail-closed, jamais de `WAITING` fabriqué) ;
+  un worker capable mais en quota épuisé reste diagnostiqué normalement
+  ⇒ `WAITING` avec deadline exactement comme avant
+- `AdaptiveExecutionDecision` persistée (insert-only, `AdaptiveExecutionDecisionStore`,
+  sqlite3) : snapshot concret (worker/provider/backend/profile/model/
+  reasoning_effort/rationale), traçable à la `recommendation_id`, jamais
+  affecté par un `config/workers.yaml` modifié après coup
+- `MVPManager` : nouveau paramètre optionnel `adaptive_execution_selector`
+  (même patron opt-in que `quality_gate_runner`/`review_store`/
+  `wait_store`) ; câblé via un helper privé partagé (`_select_dev_worker`)
+  sur DEVELOPMENT **et** REWORK, y compris leurs chemins de reprise
+  (`_try_resume_due_wait`, `_try_resume_recovery_required`) — une reprise
+  reconstruit le pre-flight depuis les faits persistants courants et
+  n'utilise **jamais** `Worker.profile()` par défaut "parce que c'est une
+  reprise" (cela violerait l'invariant no-downgrade) ; le cache/fingerprint
+  Slice 16 réutilise naturellement la recommandation existante si rien de
+  pertinent n'a changé, en recalcule une nouvelle sinon. Seule la reprise
+  **review** reste non adaptative (Slice 18, voir
+  `docs/ADAPTIVE_EXECUTION.md` §14/§18). Absent (défaut) : comportement
+  Slice 7-16 inchangé à l'identique
+- Fail-closed de bout en bout : aucune exception de pre-flight/sélection
+  n'est jamais capturée pour retomber sur un profil par défaut — seule
+  `NoEligibleWorkerError` diagnosticable comme quota déclenche `WAITING`
+  (mécanisme existant, jamais dupliqué)
+- Review, release planning, roadmap synthesis **non touchés** — restent
+  sur une sélection non adaptative (Slice 18)
+- Tests : `tests/test_adaptive_execution.py` (26, unitaires) + nouvelles
+  classes `TestAdaptiveDevelopmentSelection`/`TestReviewSelectionIsNotAdaptive`/
+  `TestAdaptiveWaitResume`/`TestAdaptiveRecoveryResume`/
+  `TestAdaptiveReviewResumeUnaffected` dans `tests/test_mvp_manager.py`
+  (intégration, y compris les deux chemins de reprise) — 100% offline
 - Dépend de : Slice 16 (recommandation) et Slice 15 (profils)
 
 **Slice 18 — Adaptive review/planning integration**
@@ -1272,10 +1315,18 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     implémenté, cache par fingerprint, et les tests associés. Aucune
     sélection finale de worker/profile, aucune intégration `MVPManager`
     (Slice 17).
-- **Next** : Slice 17 — Adaptive Worker/Profile Selection integration
-  (development) (adaptive execution, étudiée dans
-  `docs/ADAPTIVE_EXECUTION.md` ; voir « Découpage incrémental » ci-dessus
-  pour Slice 18, Git/PR/merge governance décalée en Slice 19).
+  - **Slice 17 (Adaptive Worker/Profile Selection for
+    development/rework) — DONE** : voir `src/orchestrator/
+    adaptive_execution.py` (nouveau : `AdaptiveExecutionSelector`,
+    `AdaptiveExecutionDecisionStore`, `AdaptiveExecutionDecision`,
+    `resolve_profile`), extension `WorkerSelectionRequest.minimum_quality_tier`,
+    `ExecutionProfile.cost_rank`, intégration opt-in dans `MVPManager`
+    (development + rework uniquement), et les tests associés. Review/
+    planning/release-planning non touchés (Slice 18).
+- **Next** : Slice 18 — Adaptive review + release planning/synthesis
+  profiles (adaptive execution, étudiée dans
+  `docs/ADAPTIVE_EXECUTION.md` ; Git/PR/merge governance reste décalée en
+  Slice 19).
 
 ## Comment reprendre ce projet à froid
 

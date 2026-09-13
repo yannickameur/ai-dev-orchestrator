@@ -128,9 +128,13 @@ def _parse_profile(profile_id: Any, data: Any, *, worker_id: str) -> ExecutionPr
         raise InvalidWorkerConfigError(
             f"{context}: reasoning_effort must be a non-empty string or null, got {reasoning_effort!r}"
         )
+    cost_rank = data.get("cost_rank", 0)
+    if not isinstance(cost_rank, int) or isinstance(cost_rank, bool) or cost_rank < 0:
+        raise InvalidWorkerConfigError(f"{context}: cost_rank must be a non-negative int, got {cost_rank!r}")
     try:
         return ExecutionProfile(
-            profile_id=profile_id, quality_tier=quality_tier, model=model, reasoning_effort=reasoning_effort
+            profile_id=profile_id, quality_tier=quality_tier, model=model,
+            reasoning_effort=reasoning_effort, cost_rank=cost_rank,
         )
     except (ValueError, TypeError) as exc:
         raise InvalidWorkerConfigError(f"{context}: {exc}") from exc
