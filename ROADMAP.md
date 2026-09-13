@@ -839,11 +839,73 @@ testable offline, et documenter explicitement ses dépendances.
 - Tests : `tests/test_approval.py` (100% offline, sqlite3 réel sous
   `tmp_path`, horloge/`id_factory` injectables, aucun réseau/subprocess)
 
-**Slice 14 — Git/PR/merge governance si toujours nécessaire**
+**Slice 14 — Apply decided RoadmapProposal + create/start next MVP — ✅ DONE**
+- Ferme la boucle autonome entre deux releases : une décision terminale
+  `APPROVED`/`AUTO_APPROVED` (Slice 13) sur une `RoadmapProposal` (Slice
+  12) est appliquée — jamais `AWAITING_APPROVAL`/`REJECTED`/
+  `MODIFY_REQUESTED`, ni l'absence de toute fenêtre d'approbation, qui
+  laissent l'opération sans aucune trace (aucune ligne créée, aucun
+  fichier touché, aucun MVP)
+- Voir `src/orchestrator/roadmap_application.py` (nouveau :
+  `RoadmapApplication`, `RoadmapApplicationStore`,
+  `RoadmapApplicationService`, `RoadmapApplicationStatus`) et
+  `tests/test_roadmap_application.py`
+- Garde de cohérence roadmap_hash : avant toute application, le hash
+  sha256 courant de `ROADMAP.md` est recalculé et comparé à celui capturé
+  dans le `PlanningSnapshot` source ; une divergence n'applique jamais la
+  proposition — un `RoadmapApplication` `CONFLICT` explicite
+  (« STALE_PROPOSAL ») est persisté et une `RoadmapConflictError` est
+  levée, sans aucune mutation
+- Application déterministe, sans LLM : le diff KEEP/ADD/MOVE/DROP et le
+  MVP proposé sont transformés en `ROADMAP.md`/MVP/WorkItems réels par une
+  transformation pure — aucun worker, aucun appel
+  Claude/Codex/Ralph/`RalphExecutionEngine`/`WorkerSelector` dans ce
+  module ; le seul appel à un worker reste l'invocation optionnelle et
+  déjà existante de `MVPManager.run_next_work_item(...)` pour démarrer le
+  premier WorkItem du nouveau MVP — jamais une réimplémentation de
+  `MVPManager`
+- `ROADMAP.md` reste un document humain : tout le contenu en dehors de
+  deux marqueurs dédiés (`<!-- orchestrator:roadmap-applications:begin
+  -->`/`...:end -->`, ajoutés une seule fois en fin de fichier) est
+  préservé verbatim pour toujours ; seule la section gérée entre ces
+  marqueurs est régénérée intégralement à chaque application, à partir de
+  `RoadmapApplicationStore` (jamais par découpage/relecture incrémentale
+  de texte) — ce qui la rend déterministe indépendamment de tout état
+  antérieur du fichier
+- Idempotence et redémarrage : `target_mvp_id` et le mapping titre
+  proposé -> `work_item_id` réel sont décidés une seule fois, avant toute
+  mutation, et persistés dans la ligne `RoadmapApplication` elle-même — un
+  deuxième appel pour la même proposition déjà `APPLIED` renvoie le
+  résultat existant sans réappliquer ; un `APPLYING` orphelin après crash
+  n'est JAMAIS rejoué aveuglément par `apply_decided_proposal` (qui lève
+  `RoadmapApplicationInProgressError`) — seule
+  `RoadmapApplicationService.reconcile(...)` le résout explicitement, en
+  comparant le hash courant du fichier à `roadmap_hash_before`/
+  `roadmap_hash_after` déjà connus, puis en (re)créant MVP/WorkItems de
+  façon idempotente (capture des `Duplicate*Error` déjà exposées par
+  `ProjectStateStore`)
+- Écriture atomique de `ROADMAP.md` via `tempfile.mkstemp` (même
+  répertoire) puis `os.replace` — jamais d'écriture progressive, jamais de
+  fichier partiellement écrit observable
+- Validation des dépendances du MVP proposé avant toute mutation : titres
+  dupliqués, référence de dépendance inconnue, ou cycle -> échec fermé
+  (`RoadmapApplicationFailedError`, aucune mutation), jamais de roadmap
+  partiellement incohérente
+- Aucune opération Git runtime (`add`/`commit`/`push`/merge) — cette slice
+  ne modifie que le fichier de travail ; gouvernance Git/PR/merge reste
+  Slice 15
+- Tests : `tests/test_roadmap_application.py` (100% offline, sqlite3 réel
+  + vrai fichier `ROADMAP.md` sous `tmp_path`, horloge/`id_factory`
+  injectables, `MVPManager` simulé par un stub — aucun réseau/subprocess/
+  LLM)
+- Dépend de : Slice 12 (RoadmapProposal) et Slice 13 (décision
+  APPROVED/AUTO_APPROVED)
+
+**Slice 15 — Git/PR/merge governance si toujours nécessaire**
 - Recoupe l'ancienne Phase 2 (« GitHub : branches et Pull Requests »)
   ci-dessous — `GitHubWorkspace`, CLI `gh`, politique de merge
 - Positionnée en dernier dans ce découpage incrémental : à ré-évaluer une
-  fois Slices 7-13 en place (peut-être partiellement anticipée si un
+  fois Slices 7-14 en place (peut-être partiellement anticipée si un
   besoin concret apparaît avant)
 
 **Éléments non re-séquencés explicitement** (restent valables, à intégrer
@@ -852,7 +914,7 @@ quand le besoin se précise, sans rang fixe) :
 - Abstraction `Workspace` (`prepare(task)`/`finalize(task, result)`) :
   `RalphExecutionEngine` (Slice 6) fait aujourd'hui du `git rev-parse HEAD`
   en lecture seule directement, sans cette abstraction — suffisant tant
-  que Slice 14 (Git/PR/merge) n'est pas requise ; l'abstraction complète
+  que Slice 15 (Git/PR/merge) n'est pas requise ; l'abstraction complète
   n'est réintroduite que si/quand ce besoin devient concret
 - CLI minimale (`python -m orchestrator ...`) : utile dès que Slice 7
   expose des commandes stables (`mvp create`, `workitem run`, `handoff
@@ -898,7 +960,7 @@ Ce résumé sert de repère rapide ; le détail vérifiable est dans
 
 ### Phase 2 — GitHub : branches et Pull Requests
 
-> Recoupée par **Slice 14** (« Git/PR/merge governance si toujours
+> Recoupée par **Slice 15** (« Git/PR/merge governance si toujours
 > nécessaire ») dans le découpage incrémental sous Phase 1 — le contenu
 > ci-dessous reste le détail de référence.
 
@@ -1052,13 +1114,15 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     voir `src/orchestrator/approval.py` (nouveau : `ApprovalStore`,
     `ApprovalCoordinator`, `ApprovalWindow`, `ApprovalPolicy`), layered sur
     `RoadmapProposal` (Slice 12) par référence, et les tests associés.
-- **Next** : Slice 14 — Git/PR/merge governance si toujours nécessaire (à
-  ré-évaluer d'abord : rien dans les slices 7-13 ne l'a rendue bloquante
-  jusqu'ici) ; sinon, la prochaine brique naturelle est l'application
-  réelle d'une `RoadmapProposal` décidée (`APPROVED`/`AUTO_APPROVED`) —
-  mutation de `ROADMAP.md` et création du MVP suivant dans
-  `ProjectStateStore` — non encore numérotée comme slice explicite, voir
-  « Découpage incrémental » ci-dessus.
+  - **Slice 14 (Apply decided RoadmapProposal + create/start next MVP) —
+    DONE** : voir `src/orchestrator/roadmap_application.py` (nouveau :
+    `RoadmapApplicationStore`, `RoadmapApplicationService`,
+    `RoadmapApplication`), garde de cohérence roadmap_hash, application
+    déterministe et idempotente, section `ROADMAP.md` gérée/régénérée
+    entre marqueurs dédiés, reconciliation explicite après crash, et les
+    tests associés. Ferme la boucle autonome Release N -> MVP N+1.
+- **Next** : Slice 15 — Git/PR/merge governance, à ré-évaluer (rien dans
+  les slices 7-14 ne l'a rendue bloquante jusqu'ici).
 
 ## Comment reprendre ce projet à froid
 
