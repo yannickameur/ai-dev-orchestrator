@@ -790,7 +790,7 @@ testable offline, et documenter explicitement ses dépendances.
 - Dépend de : Slice 10 (il faut un rapport d'activité et un release gate
   pour avoir une release « réussie » à analyser)
 
-**Slice 13 — Notification + optimistic approval window (20 min)**
+**Slice 13 — Notification + optimistic approval window (20 min) — ✅ DONE**
 - Pas de human gate bloquant entre deux releases : proposition persistée
   → notification envoyée → délai de 20 minutes → `APPROVE` (immédiat) /
   `REJECT` (n'enchaîne pas le MVP suivant) / `MODIFY` (nouvelle
@@ -801,6 +801,43 @@ testable offline, et documenter explicitement ses dépendances.
   vaut jamais autorisation pour une action destructive, financière ou
   sensible ailleurs. Policy configurable (délai, activation)
 - Dépend de : Slice 12 (il faut une proposition de synthèse à approuver)
+- Voir `src/orchestrator/approval.py` (nouveau : `ApprovalWindow`,
+  `ApprovalStore`, `ApprovalCoordinator`, `ApprovalPolicy`,
+  `ApprovalStatus`) et `tests/test_approval.py`. Layered sur
+  `RoadmapProposal` (Slice 12) par référence (`roadmap_proposal_id`),
+  exactement comme `WaitRecord` (Slice 11) est layered sur
+  `ProviderAvailability` — `planning.RoadmapProposalStatus` reste
+  volontairement figé à sa seule valeur `PROPOSED`, jamais modifié par
+  cette slice
+- `ApprovalCoordinator.open_window(...)` : idempotent par
+  `roadmap_proposal_id` (un redémarrage qui rejoue l'ouverture ne crée
+  jamais une deadline ni une notification en double) ; deadline calculée
+  une fois à la création à partir de la policy en vigueur à cet instant
+  (`ApprovalWindow.auto_approval_enabled` figé pour toujours, jamais
+  recalculé depuis une policy relue plus tard — un changement de policy
+  n'affecte jamais rétroactivement une fenêtre déjà ouverte)
+- Statuts : `AWAITING_APPROVAL`/`APPROVED`/`REJECTED`/`MODIFY_REQUESTED`/
+  `AUTO_APPROVED`, transition unique (jamais de re-décision une fois
+  terminal) ; `APPROVE`/`REJECT`/`MODIFY` sont des décisions immédiates
+  (jamais besoin d'attendre la deadline) ; seul `AUTO_APPROVED` est
+  contraint à `now >= deadline_at` (`require_due`, fail-closed —
+  `ApprovalNotYetDueError` sinon, jamais de fenêtre auto-approuvée par
+  anticipation)
+- `ApprovalCoordinator.resolve_due()` : purement événementiel/temporel,
+  aucun thread, aucun sleep — même posture que `WaitCoordinator` (Slice
+  11) ; un appelant l'invoque à sa propre cadence. Notification livrée via
+  un `NotificationSink` (callable) injectable, `None` par défaut (no-op) ;
+  un échec du notifieur est capturé et audité
+  (`ApprovalWindow.notification_error`) mais ne bloque jamais la création
+  de la fenêtre ni sa deadline
+- Reporté (hors périmètre explicite de cette slice, comme annoncé par le
+  découpage Slice 12) : aucune mutation de `ROADMAP.md`, aucune création
+  de MVP réel dans `ProjectStateStore`, et `MODIFY_REQUESTED` ne déclenche
+  aucune nouvelle session de planning automatiquement — une slice future
+  agit sur la décision persistée ici (« mise à jour roadmap » / « MVP
+  suivant » du cycle cible)
+- Tests : `tests/test_approval.py` (100% offline, sqlite3 réel sous
+  `tmp_path`, horloge/`id_factory` injectables, aucun réseau/subprocess)
 
 **Slice 14 — Git/PR/merge governance si toujours nécessaire**
 - Recoupe l'ancienne Phase 2 (« GitHub : branches et Pull Requests »)
@@ -1011,9 +1048,17 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     voir `src/orchestrator/planning.py` (nouveau : `PlanningStore`,
     `PlanningCoordinator`, `PlanningSnapshot`/`PlannerProposal`/
     `RoadmapProposal`), et les tests associés.
-- **Next** : Slice 13 — Notification + optimistic approval window (20 min)
-  — voir « Découpage incrémental » ci-dessus pour la suite complète
-  (Slice 13 à 14).
+  - **Slice 13 (Notification + optimistic approval window) — DONE** :
+    voir `src/orchestrator/approval.py` (nouveau : `ApprovalStore`,
+    `ApprovalCoordinator`, `ApprovalWindow`, `ApprovalPolicy`), layered sur
+    `RoadmapProposal` (Slice 12) par référence, et les tests associés.
+- **Next** : Slice 14 — Git/PR/merge governance si toujours nécessaire (à
+  ré-évaluer d'abord : rien dans les slices 7-13 ne l'a rendue bloquante
+  jusqu'ici) ; sinon, la prochaine brique naturelle est l'application
+  réelle d'une `RoadmapProposal` décidée (`APPROVED`/`AUTO_APPROVED`) —
+  mutation de `ROADMAP.md` et création du MVP suivant dans
+  `ProjectStateStore` — non encore numérotée comme slice explicite, voir
+  « Découpage incrémental » ci-dessus.
 
 ## Comment reprendre ce projet à froid
 
