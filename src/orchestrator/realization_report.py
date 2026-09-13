@@ -97,6 +97,14 @@ TIMELINE_HANDOFF = "handoff"
 TIMELINE_VALIDATION = "validation"
 TIMELINE_REVIEW_STARTED = "review_started"
 TIMELINE_REVIEW_FINISHED = "review_finished"
+# Git governance (Slice 20) audit events, reused verbatim from
+# ``GitWorkItemStore.list_events`` — never a re-derivation from raw git
+# log, just a projection of the already-persisted, structured audit trail.
+TIMELINE_GIT_BRANCH_PREPARED = "branch_prepared"
+TIMELINE_GIT_HEAD_CAPTURED = "head_captured"
+TIMELINE_GIT_MERGE_READY = "merge_ready"
+TIMELINE_GIT_MERGED = "merged"
+TIMELINE_GIT_MERGE_CONFLICT = "merge_conflict"
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +241,12 @@ class RealizationReport:
     dependencies: tuple[str, ...] = ()
     git_sha_initial: str | None = None
     git_sha_final: str | None = None
+    git_base_branch: str | None = None
+    git_work_branch: str | None = None
+    git_merge_status: str | None = None
+    git_merged_sha: str | None = None
+    git_pull_request_number: int | None = None
+    git_pull_request_url: str | None = None
     executions: tuple[ExecutionEntry, ...] = ()
     recommendations: tuple[RecommendationEntry, ...] = ()
     decisions: tuple[DecisionEntry, ...] = ()
@@ -476,6 +490,10 @@ def _serialize(report: RealizationReport) -> str:
         "objective": report.objective, "summary_text": report.summary_text,
         "acceptance_criteria": list(report.acceptance_criteria), "dependencies": list(report.dependencies),
         "git_sha_initial": report.git_sha_initial, "git_sha_final": report.git_sha_final,
+        "git_base_branch": report.git_base_branch, "git_work_branch": report.git_work_branch,
+        "git_merge_status": report.git_merge_status, "git_merged_sha": report.git_merged_sha,
+        "git_pull_request_number": report.git_pull_request_number,
+        "git_pull_request_url": report.git_pull_request_url,
         "executions": [_encode_execution(e) for e in report.executions],
         "recommendations": [_encode_recommendation(r) for r in report.recommendations],
         "decisions": [_encode_decision(d) for d in report.decisions],
@@ -496,6 +514,10 @@ def _deserialize(raw: str) -> RealizationReport:
         final_work_item_status=d["final_work_item_status"], objective=d["objective"], summary_text=d["summary_text"],
         acceptance_criteria=tuple(d["acceptance_criteria"]), dependencies=tuple(d["dependencies"]),
         git_sha_initial=d["git_sha_initial"], git_sha_final=d["git_sha_final"],
+        git_base_branch=d.get("git_base_branch"), git_work_branch=d.get("git_work_branch"),
+        git_merge_status=d.get("git_merge_status"), git_merged_sha=d.get("git_merged_sha"),
+        git_pull_request_number=d.get("git_pull_request_number"),
+        git_pull_request_url=d.get("git_pull_request_url"),
         executions=tuple(_decode_execution(e) for e in d["executions"]),
         recommendations=tuple(_decode_recommendation(r) for r in d["recommendations"]),
         decisions=tuple(_decode_decision(x) for x in d["decisions"]),
@@ -625,6 +647,7 @@ class RealizationReportService:
         wait_store=None,
         recommendation_store=None,
         decision_store=None,
+        git_work_item_store=None,
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
     ) -> None:
@@ -637,6 +660,7 @@ class RealizationReportService:
         self._wait_store = wait_store
         self._recommendation_store = recommendation_store
         self._decision_store = decision_store
+        self._git_work_item_store = git_work_item_store
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or _default_id_factory
 
@@ -673,12 +697,22 @@ class RealizationReportService:
             if self._decision_store is not None else ()
         )
 
+        git_work_item = (
+            self._git_work_item_store.try_get(work_item_id)
+            if self._git_work_item_store is not None else None
+        )
+        git_events = (
+            tuple(self._git_work_item_store.list_events(work_item_id))
+            if self._git_work_item_store is not None and git_work_item is not None else ()
+        )
+
         incidents = _collect_incidents(
             work_item=work_item, executions=executions, validations=validations, reviews=reviews,
         )
         timeline = _build_timeline(
             executions=executions, recommendations=recommendations, decisions=decisions,
             handoffs=handoffs, validations=validations, reviews=reviews, waits=waits,
+            git_events=git_events,
         )
 
         git_sha_initial = executions[0].git_sha_before if executions else None
@@ -696,6 +730,12 @@ class RealizationReportService:
             objective=work_item.title, summary_text=summary_text,
             acceptance_criteria=work_item.acceptance_criteria, dependencies=tuple(sorted(work_item.dependencies)),
             git_sha_initial=git_sha_initial, git_sha_final=git_sha_final,
+            git_base_branch=git_work_item.base_branch if git_work_item is not None else None,
+            git_work_branch=git_work_item.work_branch if git_work_item is not None else None,
+            git_merge_status=git_work_item.status.value if git_work_item is not None else None,
+            git_merged_sha=git_work_item.merged_sha if git_work_item is not None else None,
+            git_pull_request_number=git_work_item.pull_request_number if git_work_item is not None else None,
+            git_pull_request_url=git_work_item.pull_request_url if git_work_item is not None else None,
             executions=executions, recommendations=recommendations, decisions=decisions, handoffs=handoffs,
             validations=validations, reviews=reviews, waits=waits, incidents=incidents, timeline=timeline,
         )
@@ -783,6 +823,7 @@ def _build_timeline(
     *, executions: tuple[ExecutionEntry, ...], recommendations: tuple[RecommendationEntry, ...],
     decisions: tuple[DecisionEntry, ...], handoffs: tuple[HandoffEntry, ...],
     validations: tuple[ValidationEntry, ...], reviews: tuple[ReviewEntry, ...], waits: tuple[WaitEntry, ...],
+    git_events: tuple[tuple[str, str, datetime], ...] = (),
 ) -> tuple[TimelineEntry, ...]:
     entries: list[TimelineEntry] = []
 
@@ -844,6 +885,12 @@ def _build_timeline(
             timestamp=r.finished_at, entry_type=TIMELINE_REVIEW_FINISHED,
             summary=f"Review verdict: {r.status}",
             references=(f"review_id={r.review_id}",),
+        ))
+    for event_type, detail, created_at in git_events:
+        entries.append(TimelineEntry(
+            timestamp=created_at, entry_type=event_type,
+            summary=f"Git governance: {event_type} — {detail}",
+            references=(),
         ))
 
     # Deterministic ordering: chronological, ties broken by a stable,
@@ -923,6 +970,19 @@ th { background: #f6f8fa; }
     parts.append(
         f"<p><strong>Git SHA:</strong> initial={_esc(report.git_sha_initial)} -&gt; final={_esc(report.git_sha_final)}</p>"
     )
+    if report.git_work_branch is not None:
+        parts.append(
+            "<p><strong>Git governance:</strong> "
+            f"{_esc(report.git_base_branch)} &lt;- {_esc(report.git_work_branch)}, "
+            f"status={_esc(report.git_merge_status)}"
+            + (f", merged_sha={_esc(report.git_merged_sha)}" if report.git_merged_sha else "")
+            + (
+                f', PR <a href="{_esc(report.git_pull_request_url)}">'
+                f"#{_esc(report.git_pull_request_number)}</a>"
+                if report.git_pull_request_url else ""
+            )
+            + "</p>"
+        )
 
     parts.append("<h2>B. Timeline</h2>")
     if report.timeline:

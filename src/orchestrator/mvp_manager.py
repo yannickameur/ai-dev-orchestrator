@@ -208,6 +208,7 @@ from typing import Callable
 from orchestrator.adaptive_execution import AdaptiveExecutionSelector
 from orchestrator.complexity_estimation import ComplexityEstimationRequest
 from orchestrator.execution_store import ExecutionStatus, ExecutionStore, UnknownExecutionError
+from orchestrator.git_governance import GitGovernanceService
 from orchestrator.handoff import HandoffRecord, HandoffStore
 from orchestrator.project_state import MVP, Project, ProjectStateStore, WorkItem, WorkItemStatus
 from orchestrator.ralph_execution_engine import (
@@ -225,7 +226,7 @@ from orchestrator.review import (
     ReviewStore,
     parse_findings,
 )
-from orchestrator.validation import QualityGateResult, QualityGateRunner
+from orchestrator.validation import QualityGateResult, QualityGateRunner, ValidationStore
 from orchestrator.wait import WaitCoordinator, WaitPhase, WaitRecord, WaitStore
 from orchestrator.worker_selector import (
     NoEligibleWorkerError,
@@ -401,6 +402,8 @@ class MVPManager:
         wait_store: WaitStore | None = None,
         execution_store: ExecutionStore | None = None,
         adaptive_execution_selector: AdaptiveExecutionSelector | None = None,
+        validation_store: ValidationStore | None = None,
+        git_governance_service: GitGovernanceService | None = None,
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
@@ -417,6 +420,8 @@ class MVPManager:
         self._timeout_seconds = timeout_seconds
         self._wait_store = wait_store
         self._adaptive_execution_selector = adaptive_execution_selector
+        self._validation_store = validation_store
+        self._git_governance_service = git_governance_service
         self._wait_coordinator = (
             WaitCoordinator(wait_store, clock=self._clock, id_factory=self._id_factory)
             if wait_store is not None
@@ -948,6 +953,12 @@ class MVPManager:
                     f"Previous review findings: {_summarize_findings(previous_review.findings)}"
                 )
 
+        if self._git_governance_service is not None:
+            self._git_governance_service.prepare_work_item(
+                project_id=project.project_id, mvp_id=mvp_id, work_item_id=work_item.work_item_id,
+                repository_path=project.workspace,
+            )
+
         if dev_model is None:
             dev_profile = dev_worker.profile()
             dev_model = dev_profile.model
@@ -967,6 +978,11 @@ class MVPManager:
             reasoning_effort=dev_reasoning_effort,
         )
         dev_result = await self._execution_engine.execute(dev_request)
+
+        if self._git_governance_service is not None:
+            self._git_governance_service.capture_head(
+                work_item.work_item_id, repository_path=project.workspace,
+            )
 
         if dev_result.record.status is ExecutionStatus.INTERRUPTED and self._recovery_coordinator is not None:
             # A timeout RalphExecutionEngine observed itself, within this
@@ -1008,6 +1024,9 @@ class MVPManager:
         elif self._review_store is None:
             work_item = self._project_state_store.mark_work_item_completed(work_item.work_item_id)
             next_action = "proceed to the next eligible WorkItem"
+            self._maybe_finalize_git(
+                project=project, work_item=work_item, gate_result=gate_result, review_result=None,
+            )
         else:
             work_item = self._project_state_store.mark_work_item_reviewing(work_item.work_item_id)
             review_result, work_item, next_action = await self._run_review(
@@ -1109,6 +1128,11 @@ class MVPManager:
             )
             return review, work_item, "no eligible independent reviewer — blocked pending manual intervention"
 
+        if self._git_governance_service is not None:
+            self._git_governance_service.assert_review_target(
+                work_item.work_item_id, repository_path=project.workspace,
+            )
+
         if reviewer_model is None:
             reviewer_profile = reviewer.profile()
             reviewer_model = reviewer_profile.model
@@ -1168,6 +1192,9 @@ class MVPManager:
 
         if status is ReviewStatus.APPROVED:
             work_item = self._project_state_store.mark_work_item_completed(work_item.work_item_id)
+            self._maybe_finalize_git(
+                project=project, work_item=work_item, gate_result=gate_result, review_result=review,
+            )
             return review, work_item, "review approved — proceed to the next eligible WorkItem"
 
         if status is ReviewStatus.INTERRUPTED and self._recovery_coordinator is not None:
@@ -1220,3 +1247,57 @@ class MVPManager:
             findings = parse_findings(rejection_events[-1].payload, self._id_factory)
             return ReviewStatus.REJECTED, findings
         return ReviewStatus.ERROR, ()
+
+    def _maybe_finalize_git(
+        self, *, project: Project, work_item: WorkItem,
+        gate_result: QualityGateResult | None, review_result: ReviewRecord | None,
+    ) -> None:
+        """Computes merge eligibility (Slice 20) once a WorkItem reaches
+        ``COMPLETED``, and merges immediately if ``policy.auto_merge`` says
+        so — otherwise leaves it at ``MERGE_READY`` for a later explicit
+        merge. A no-op when git governance is not configured (exact
+        pre-Slice-20 behavior preserved).
+
+        Never trusts a live ``gate_result``/``review_result`` alone: either
+        can be ``None`` here (the review-not-configured completion path
+        passes no review; a resumed-review completion has no live
+        ``gate_result``) — in that case the latest persisted evidence is
+        read back from ``validation_store``/``review_store`` instead, so
+        eligibility is computed identically whether the evidence came from
+        this exact call or survived a cold restart.
+        """
+        if self._git_governance_service is None:
+            return
+
+        gate_passed: bool | None = None
+        gate_git_sha: str | None = None
+        if gate_result is not None:
+            gate_passed = gate_result.passed
+            gate_git_sha = gate_result.git_sha
+        elif self._validation_store is not None:
+            latest_gate = self._validation_store.latest_gate_result_for_work_item(work_item.work_item_id)
+            if latest_gate is not None:
+                gate_passed = latest_gate.passed
+                gate_git_sha = latest_gate.git_sha
+
+        review_approved: bool | None = None
+        review_git_sha: str | None = None
+        if review_result is not None:
+            review_approved = review_result.status is ReviewStatus.APPROVED
+            review_git_sha = review_result.git_sha_reviewed
+        elif self._review_store is not None:
+            latest_review = self._review_store.latest_for_work_item(work_item.work_item_id)
+            if latest_review is not None:
+                review_approved = latest_review.status is ReviewStatus.APPROVED
+                review_git_sha = latest_review.git_sha_reviewed
+
+        eligibility = self._git_governance_service.compute_merge_eligibility(
+            work_item.work_item_id, repository_path=project.workspace,
+            work_item_status=work_item.status.value,
+            gate_passed=gate_passed, gate_git_sha=gate_git_sha,
+            review_approved=review_approved, review_git_sha=review_git_sha,
+        )
+        if eligibility.mergeable and self._git_governance_service.policy.auto_merge:
+            self._git_governance_service.merge(
+                work_item.work_item_id, repository_path=project.workspace, eligibility=eligibility,
+            )

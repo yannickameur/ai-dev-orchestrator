@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Callable
 
 from orchestrator.execution_store import ExecutionStatus, ExecutionStore
+from orchestrator.git_governance import GitWorkItemStatus, GitWorkItemStore
 from orchestrator.handoff import HandoffStore
 from orchestrator.project_state import MVP, ProjectStateStore, WorkItemStatus
 from orchestrator.activity_report import (
@@ -110,6 +111,7 @@ class ReleaseManager:
         release_store: ReleaseStore,
         activity_report_store: ActivityReportStore,
         *,
+        git_work_item_store: GitWorkItemStore | None = None,
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
     ) -> None:
@@ -120,6 +122,7 @@ class ReleaseManager:
         self._handoff_store = handoff_store
         self._release_store = release_store
         self._activity_report_store = activity_report_store
+        self._git_work_item_store = git_work_item_store
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or _default_id_factory
 
@@ -244,7 +247,42 @@ class ReleaseManager:
             related_ids=tuple(dangling),
         )
 
-        return (all_completed_check, gate_check, review_check, running_check)
+        checks = (all_completed_check, gate_check, review_check, running_check)
+        if self._git_work_item_store is not None:
+            checks += (self._build_git_merge_check(completed_ids),)
+        return checks
+
+    def _build_git_merge_check(self, completed_ids: list[str]) -> ReleaseCheck:
+        """Slice 20: a COMPLETED WorkItem that is *governed* (has a
+        ``GitWorkItemRecord``) must actually be ``MERGED`` before the
+        release can be considered coherent — otherwise the release gate
+        could pass while real code sits unmerged on a feature branch. A
+        WorkItem with no governed record at all (git governance not used
+        for it) is never counted here — this check only ever tightens
+        behavior for WorkItems that opted into governance, never
+        penalizes ones that did not.
+        """
+        pending = [
+            work_item_id for work_item_id in completed_ids
+            if self._is_governed_but_not_merged(work_item_id)
+        ]
+        governed_count = sum(
+            1 for work_item_id in completed_ids
+            if self._git_work_item_store.try_get(work_item_id) is not None
+        )
+        return ReleaseCheck(
+            check_id="governed-work-items-merged",
+            passed=not pending,
+            summary=(
+                f"{governed_count - len(pending)}/{governed_count} governed completed work items merged"
+                if governed_count else "no governed work items for this MVP"
+            ),
+            related_ids=tuple(pending),
+        )
+
+    def _is_governed_but_not_merged(self, work_item_id: str) -> bool:
+        record = self._git_work_item_store.try_get(work_item_id)
+        return record is not None and record.status is not GitWorkItemStatus.MERGED
 
     def _has_passed_gate(self, work_item_id: str) -> bool:
         gate = self._validation_store.latest_gate_result_for_work_item(work_item_id)

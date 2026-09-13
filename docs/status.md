@@ -1,7 +1,29 @@
 # Status
 
-Dernière mise à jour : Slice 19 (2026-09-13).
+Dernière mise à jour : Slice 20 (2026-09-13).
 
+- **Slice 20 — Git/PR/merge governance : DONE.** Nouveau
+  `src/orchestrator/git_governance.py` (`LocalGitWorkspace`,
+  `GitGovernancePolicy`, `GitWorkItemRecord`/`GitWorkItemStore`,
+  `GitGovernanceService`) — l'orchestrateur devient propriétaire de la
+  branche/du SHA/de l'éligibilité au merge d'un WorkItem ; Ralph reste le
+  moteur d'exécution, les workers ne décident jamais eux-mêmes de la
+  branche, du merge, ou de la mergeabilité. Branche gouvernée
+  déterministe et stable après restart (`work/<work-item-id>`), `main`
+  protégée par défaut, `base_sha` immuable, preuve de merge liée au SHA
+  exact (gate + review), fast-forward-only par défaut (jamais de rebase/
+  force/reset automatique ; une divergence fait échouer proprement),
+  `auto_merge=False` par défaut (testé réellement à `True` sur repos
+  temporaires). Intégration opt-in dans `MVPManager` (fresh + rework +
+  reprise WAITING + reprise RECOVERY, un seul point de câblage partagé),
+  `ReleaseManager` (nouveau check `governed-work-items-merged`) et
+  `RealizationReport` (branche/SHA/statut de merge/PR + événements
+  d'audit dans la timeline). Abstraction PR optionnelle (`gh` CLI, argv
+  explicite) — une PR n'implique jamais une autorisation de merge ;
+  aucune vraie PR/push distant créé cette session. Smoke local réel PASS
+  (dépôt temporaire, sans provider LLM additionnel). 876 tests offline
+  PASS (790 + 86). Voir `ROADMAP.md`, Slice 20, et
+  `docs/GIT_GOVERNANCE.md`.
 - **Slice 19 — Adaptive review/planning integration : DONE.** Review
   (fresh + reprise `WaitPhase.REVIEW` + reprise `RECOVERY_REQUIRED`, un
   seul point de câblage via `MVPManager._run_review` déjà partagé par les
@@ -64,10 +86,11 @@ Dernière mise à jour : Slice 19 (2026-09-13).
     aucun downgrade ; aucun bug Slice 17/18 découvert. Preuve versionnée
     (sanitizée) : `docs/reports/real-cross-worker-resume-2026-09-13.html`
   - `~/projects/ralph-spike` original : non modifié (vérifié avant/après)
-- Prochaine étape attendue : **Slice 20 — Git/PR/merge governance si
-  toujours nécessaire** (voir `ROADMAP.md`, « Découpage incrémental »).
-  OmniRoute reste une qualification future optionnelle, hors roadmap
-  principale (voir `docs/OMNIROUTE_ARBITRATION.md`).
+- **Next : revue de roadmap avec l'utilisateur.** Toutes les Slices 7-20
+  de la Phase 1 sont DONE — point de contrôle prévu par le projet avant
+  toute nouvelle Slice. Aucune Slice 21 n'est décidée ici. OmniRoute reste
+  une qualification future optionnelle, hors roadmap principale (voir
+  `docs/OMNIROUTE_ARBITRATION.md`).
 
 Détail complet des slices, de la vision cible et du découpage incrémental :
 voir `ROADMAP.md` (source de vérité fonctionnelle).

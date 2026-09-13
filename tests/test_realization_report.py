@@ -15,6 +15,7 @@ import pytest
 
 from orchestrator.activity_report import ActivityReport, ActivityReportStore, ActivitySummary
 from orchestrator.execution_store import ExecutionStatus, ExecutionStore
+from orchestrator.git_governance import GitWorkItemRecord, GitWorkItemStatus, GitWorkItemStore
 from orchestrator.handoff import HandoffStore
 from orchestrator.project_state import ProjectStateStore
 from orchestrator.realization_report import (
@@ -478,3 +479,167 @@ class TestHandoffRemainsCanonical:
         # Exactly the one handoff the test itself created — generating a
         # report never writes a new handoff.
         assert len(handoff_store.list_for_work_item("wi-a")) == 1
+
+
+def _git_store(tmp_path: Path) -> GitWorkItemStore:
+    return GitWorkItemStore(tmp_path / "git_governance.sqlite3", clock=lambda: UTC_NOW)
+
+
+def _prepared_git_record(git_store: GitWorkItemStore, *, work_item_id: str = "wi-a") -> GitWorkItemRecord:
+    record = GitWorkItemRecord(
+        git_work_id="git-1", project_id="proj-1", mvp_id="mvp-1", work_item_id=work_item_id,
+        repository_path="/tmp/workspace", base_branch="main", work_branch=f"work/{work_item_id}",
+        base_sha="a" * 40, status=GitWorkItemStatus.PREPARED, created_at=UTC_NOW, updated_at=UTC_NOW,
+    )
+    return git_store.create(record)
+
+
+class TestGitGovernanceEnrichment:
+    def test_report_without_git_store_stays_compatible(self, tmp_path: Path) -> None:
+        project_store, execution_store, handoff_store, report_store = _stores(tmp_path)
+        _seed_work_item(project_store, tmp_path)
+        service = _service(project_store, execution_store, handoff_store, report_store)  # no git_work_item_store
+
+        report = service.generate(project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a")
+
+        assert report.git_work_branch is None
+        assert report.git_merge_status is None
+        html = report.render_html()
+        assert "Git governance:" not in html  # section only renders when data exists
+
+    def test_report_without_a_governed_record_stays_compatible(self, tmp_path: Path) -> None:
+        project_store, execution_store, handoff_store, report_store = _stores(tmp_path)
+        _seed_work_item(project_store, tmp_path)
+        git_store = _git_store(tmp_path)  # configured, but no record for this WorkItem
+        service = _service(
+            project_store, execution_store, handoff_store, report_store, git_work_item_store=git_store,
+        )
+
+        report = service.generate(project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a")
+
+        assert report.git_work_branch is None
+
+    def test_intermediate_report_shows_branch(self, tmp_path: Path) -> None:
+        project_store, execution_store, handoff_store, report_store = _stores(tmp_path)
+        _seed_work_item(project_store, tmp_path)
+        git_store = _git_store(tmp_path)
+        _prepared_git_record(git_store)
+        service = _service(
+            project_store, execution_store, handoff_store, report_store, git_work_item_store=git_store,
+        )
+
+        report = service.generate(project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a")
+
+        assert report.git_base_branch == "main"
+        assert report.git_work_branch == "work/wi-a"
+        assert report.git_merge_status == "prepared"
+        assert report.git_merged_sha is None
+        html = report.render_html()
+        assert "work/wi-a" in html
+        assert "Git governance:" in html
+
+    def test_final_report_shows_merge_status_and_sha(self, tmp_path: Path) -> None:
+        project_store, execution_store, handoff_store, report_store = _stores(tmp_path)
+        _seed_work_item(project_store, tmp_path)
+        git_store = _git_store(tmp_path)
+        _prepared_git_record(git_store)
+        git_store.update_head("wi-a", "b" * 40)
+        git_store.mark_merge_ready("wi-a")
+        git_store.mark_merged("wi-a", merged_sha="b" * 40)
+        service = _service(
+            project_store, execution_store, handoff_store, report_store, git_work_item_store=git_store,
+        )
+
+        report = service.generate(project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a")
+
+        assert report.git_merge_status == "merged"
+        assert report.git_merged_sha == "b" * 40
+        html = report.render_html()
+        assert f"merged_sha={'b' * 40}" in html
+
+    def test_pull_request_info_surfaced_when_present(self, tmp_path: Path) -> None:
+        project_store, execution_store, handoff_store, report_store = _stores(tmp_path)
+        _seed_work_item(project_store, tmp_path)
+        git_store = _git_store(tmp_path)
+        _prepared_git_record(git_store)
+        git_store.record_pull_request("wi-a", number=42, url="https://example.invalid/pull/42")
+        service = _service(
+            project_store, execution_store, handoff_store, report_store, git_work_item_store=git_store,
+        )
+
+        report = service.generate(project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a")
+
+        assert report.git_pull_request_number == 42
+        assert report.git_pull_request_url == "https://example.invalid/pull/42"
+        html = report.render_html()
+        assert "https://example.invalid/pull/42" in html
+        assert "#42" in html
+
+    def test_git_events_appear_in_timeline(self, tmp_path: Path) -> None:
+        project_store, execution_store, handoff_store, report_store = _stores(tmp_path)
+        _seed_work_item(project_store, tmp_path)
+        git_store = _git_store(tmp_path)
+        _prepared_git_record(git_store)
+        git_store.update_head("wi-a", "b" * 40)
+        git_store.mark_merge_ready("wi-a")
+        git_store.mark_merged("wi-a", merged_sha="b" * 40)
+        service = _service(
+            project_store, execution_store, handoff_store, report_store, git_work_item_store=git_store,
+        )
+
+        report = service.generate(project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a")
+
+        entry_types = [t.entry_type for t in report.timeline]
+        assert "branch_prepared" in entry_types
+        assert "merge_ready" in entry_types
+        assert "merged" in entry_types
+
+    def test_git_conflict_event_appears_in_timeline(self, tmp_path: Path) -> None:
+        project_store, execution_store, handoff_store, report_store = _stores(tmp_path)
+        _seed_work_item(project_store, tmp_path)
+        git_store = _git_store(tmp_path)
+        _prepared_git_record(git_store)
+        git_store.update_head("wi-a", "b" * 40)
+        git_store.mark_conflict("wi-a", reason="base branch advanced incompatibly")
+        service = _service(
+            project_store, execution_store, handoff_store, report_store, git_work_item_store=git_store,
+        )
+
+        report = service.generate(project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a")
+
+        assert "merge_conflict" in [t.entry_type for t in report.timeline]
+
+    def test_html_escaping_unchanged_for_git_section(self, tmp_path: Path) -> None:
+        project_store, execution_store, handoff_store, report_store = _stores(tmp_path)
+        _seed_work_item(project_store, tmp_path)
+        git_store = _git_store(tmp_path)
+        _prepared_git_record(git_store)
+        git_store.update_head("wi-a", "b" * 40)
+        git_store.mark_conflict("wi-a", reason="<script>alert(1)</script>")
+        service = _service(
+            project_store, execution_store, handoff_store, report_store, git_work_item_store=git_store,
+        )
+
+        report = service.generate(project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a")
+        html = report.render_html()
+
+        assert "<script>alert(1)</script>" not in html
+        assert "&lt;script&gt;" in html
+
+    def test_round_trip_through_store_preserves_git_fields(self, tmp_path: Path) -> None:
+        project_store, execution_store, handoff_store, report_store = _stores(tmp_path)
+        _seed_work_item(project_store, tmp_path)
+        git_store = _git_store(tmp_path)
+        _prepared_git_record(git_store)
+        git_store.update_head("wi-a", "b" * 40)
+        git_store.mark_merge_ready("wi-a")
+        git_store.mark_merged("wi-a", merged_sha="b" * 40)
+        service = _service(
+            project_store, execution_store, handoff_store, report_store, git_work_item_store=git_store,
+        )
+        report = service.generate(project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a")
+
+        reloaded = report_store.get(report.report_id)
+        assert reloaded.git_merge_status == "merged"
+        assert reloaded.git_merged_sha == "b" * 40
+        assert reloaded.git_work_branch == "work/wi-a"
