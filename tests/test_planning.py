@@ -52,7 +52,7 @@ UTC_NOW = datetime(2026, 9, 13, 10, 0, tzinfo=timezone.utc)
 
 
 def _alice() -> Worker:
-    return Worker(
+    return Worker.with_single_profile(
         worker_id="claude_dev_01", display_name="Alice", provider="anthropic",
         backend="claude_code", model="sonnet",
         capabilities=frozenset({DEFAULT_PLANNING_CAPABILITY, DEFAULT_SYNTHESIS_CAPABILITY}),
@@ -60,7 +60,7 @@ def _alice() -> Worker:
 
 
 def _chloe() -> Worker:
-    return Worker(
+    return Worker.with_single_profile(
         worker_id="claude_dev_02", display_name="Chloe", provider="anthropic",
         backend="claude_code", model="haiku",
         capabilities=frozenset({DEFAULT_PLANNING_CAPABILITY}),
@@ -68,7 +68,7 @@ def _chloe() -> Worker:
 
 
 def _victor() -> Worker:
-    return Worker(
+    return Worker.with_single_profile(
         worker_id="codex_dev_01", display_name="Victor", provider="openai",
         backend="codex", model="terra",
         capabilities=frozenset({DEFAULT_PLANNING_CAPABILITY, DEFAULT_SYNTHESIS_CAPABILITY}),
@@ -155,7 +155,7 @@ def _planning_result(
 ) -> ExecutionResult:
     record = ExecutionRecord(
         execution_id=execution_id, task_id="planning:x", worker_id=worker.worker_id,
-        provider=worker.provider, backend=worker.backend, model=worker.model, role=role,
+        provider=worker.provider, backend=worker.backend, model=worker.profile().model, role=role,
         started_at=UTC_NOW, status=status,
     )
     events = (RalphEvent(topic=topic, timestamp=UTC_NOW, payload=payload),) if payload is not None else ()
@@ -555,7 +555,7 @@ class TestSynthesis:
                 PlannerProposal(
                     proposal_id=f"manual-{worker.worker_id}", planning_session_id=session.planning_session_id,
                     snapshot_id=session.snapshot_id, worker_id=worker.worker_id, provider=worker.provider,
-                    model=worker.model, execution_id=f"exec-{worker.worker_id}", created_at=UTC_NOW,
+                    model=worker.profile().model, execution_id=f"exec-{worker.worker_id}", created_at=UTC_NOW,
                     status=PlannerProposalStatus.VALID, proposed_mvp_objective=payload,
                     rationale="r", proposed_work_items=(), acceptance_criteria=(), risks=(),
                     deferred_items=(), roadmap_changes=(),
@@ -578,13 +578,13 @@ class TestSynthesis:
         alice, victor = _alice(), _victor()
         p1 = PlannerProposal(
             proposal_id="p-alice", planning_session_id="sess-1", snapshot_id="snap-1",
-            worker_id=alice.worker_id, provider=alice.provider, model=alice.model,
+            worker_id=alice.worker_id, provider=alice.provider, model=alice.profile().model,
             execution_id="e1", created_at=UTC_NOW, status=PlannerProposalStatus.VALID,
             proposed_mvp_objective="A", rationale="r",
         )
         p2 = PlannerProposal(
             proposal_id="p-victor", planning_session_id="sess-1", snapshot_id="snap-1",
-            worker_id=victor.worker_id, provider=victor.provider, model=victor.model,
+            worker_id=victor.worker_id, provider=victor.provider, model=victor.profile().model,
             execution_id="e2", created_at=UTC_NOW, status=PlannerProposalStatus.VALID,
             proposed_mvp_objective="B", rationale="r",
         )

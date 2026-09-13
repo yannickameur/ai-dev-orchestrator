@@ -60,6 +60,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import IntEnum
 from typing import Iterable, Sequence
 
 from orchestrator.quota_manager import ProviderProbeError, QuotaManager
@@ -78,6 +79,57 @@ def _as_frozenset_of_str(values: Iterable[str], *, field_name: str) -> frozenset
     return result
 
 
+class QualityTier(IntEnum):
+    """A provider-agnostic minimum capability level (Slice 15).
+
+    Expresses "how demanding is this task", never a provider or a model —
+    see ``docs/ADAPTIVE_EXECUTION.md`` section 6. Ordered (``IntEnum``) so
+    "tier >= minimum" comparisons used by later slices (16/17) are trivial
+    and require no separate ranking table.
+    """
+
+    SIMPLE = 1
+    STANDARD = 2
+    COMPLEX = 3
+    CRITICAL = 4
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionProfile:
+    """One concrete configuration a ``Worker`` may be run with.
+
+    ``Worker`` is the agent identity (governance); ``ExecutionProfile`` is
+    a configuration this Worker can execute under (``model``,
+    ``reasoning_effort``, and the ``quality_tier`` it satisfies). Slice 15
+    only carries this data — nothing here chooses a profile: that remains
+    Slice 17.
+    """
+
+    profile_id: str
+    quality_tier: QualityTier
+    model: str
+    reasoning_effort: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_non_empty_str(self.profile_id, field_name="ExecutionProfile.profile_id")
+        if not isinstance(self.quality_tier, QualityTier):
+            raise TypeError(
+                f"ExecutionProfile.quality_tier must be a QualityTier, got {type(self.quality_tier)!r}"
+            )
+        _require_non_empty_str(self.model, field_name="ExecutionProfile.model")
+        if self.reasoning_effort is not None:
+            _require_non_empty_str(self.reasoning_effort, field_name="ExecutionProfile.reasoning_effort")
+
+
+class UnknownExecutionProfileError(ValueError):
+    """Raised by ``Worker.profile()`` for a profile_id this Worker does not declare."""
+
+    def __init__(self, worker_id: str, profile_id: str | None) -> None:
+        super().__init__(f"worker {worker_id!r} has no execution profile {profile_id!r}")
+        self.worker_id = worker_id
+        self.profile_id = profile_id
+
+
 @dataclass(frozen=True, slots=True)
 class Worker:
     """A typed, technical identity for one worker configuration.
@@ -87,36 +139,136 @@ class Worker:
     tie-break). ``display_name`` is a human label only — it must never be
     used for a governance or selection decision.
 
-    Two workers may share the same ``provider`` with different
-    ``model``/``reasoning_effort`` and are independent identities for
+    As of Slice 15, ``Worker`` is the **logical agent** — it no longer
+    carries a fixed ``model``/``reasoning_effort``. Those live on
+    ``ExecutionProfile``, one or more of which a Worker declares in
+    ``profiles``. Two workers may still share the same ``provider`` with
+    different profiles/models and remain independent identities for
     selection purposes (e.g. a fast/cheap and a careful/expensive variant
-    of the same backend).
+    of the same backend) — that invariant is unchanged, it has simply
+    moved from "two Workers" to, optionally, "two profiles of one Worker".
+
+    ``default_profile_id`` is resolved automatically when a Worker
+    declares exactly one profile (unambiguous); with more than one profile
+    it must be set explicitly — never guessed. It exists purely as a
+    transitional convenience so callers that don't yet do adaptive
+    profile selection (Slice 17) can keep working via ``Worker.profile()``
+    with no ``profile_id`` argument. ``estimator_profile_id``, when set,
+    names the profile a future complexity estimator (Slice 16) should use
+    for this Worker — reserved, unused before Slice 16.
     """
 
     worker_id: str
     display_name: str
     provider: str
     backend: str
-    model: str
     capabilities: frozenset[str] = field(default_factory=frozenset)
-    reasoning_effort: str | None = None
     priority: int = 0
+    enabled: bool = True
+    profiles: tuple[ExecutionProfile, ...] = ()
+    default_profile_id: str | None = None
+    estimator_profile_id: str | None = None
 
     def __post_init__(self) -> None:
         _require_non_empty_str(self.worker_id, field_name="Worker.worker_id")
         _require_non_empty_str(self.display_name, field_name="Worker.display_name")
         _require_non_empty_str(self.provider, field_name="Worker.provider")
         _require_non_empty_str(self.backend, field_name="Worker.backend")
-        _require_non_empty_str(self.model, field_name="Worker.model")
         object.__setattr__(
             self,
             "capabilities",
             _as_frozenset_of_str(self.capabilities, field_name="Worker.capabilities"),
         )
-        if self.reasoning_effort is not None:
-            _require_non_empty_str(self.reasoning_effort, field_name="Worker.reasoning_effort")
         if not isinstance(self.priority, int) or isinstance(self.priority, bool):
             raise TypeError(f"Worker.priority must be an int, got {type(self.priority)!r}")
+        if not isinstance(self.enabled, bool):
+            raise TypeError(f"Worker.enabled must be a bool, got {type(self.enabled)!r}")
+
+        object.__setattr__(self, "profiles", tuple(self.profiles))
+        if not self.profiles:
+            raise ValueError(f"Worker {self.worker_id!r} must declare at least one execution profile")
+        profile_ids: set[str] = set()
+        for profile in self.profiles:
+            if not isinstance(profile, ExecutionProfile):
+                raise TypeError(f"Worker.profiles entries must be ExecutionProfile, got {type(profile)!r}")
+            if profile.profile_id in profile_ids:
+                raise ValueError(
+                    f"Worker {self.worker_id!r} declares duplicate profile_id {profile.profile_id!r}"
+                )
+            profile_ids.add(profile.profile_id)
+
+        default_profile_id = self.default_profile_id
+        if default_profile_id is None and len(self.profiles) == 1:
+            default_profile_id = self.profiles[0].profile_id
+            object.__setattr__(self, "default_profile_id", default_profile_id)
+        if default_profile_id is None:
+            raise ValueError(
+                f"Worker {self.worker_id!r}: default_profile_id is required (never guessed) "
+                f"among {len(self.profiles)} profiles {sorted(profile_ids)!r}"
+            )
+        _require_non_empty_str(default_profile_id, field_name="Worker.default_profile_id")
+        if default_profile_id not in profile_ids:
+            raise ValueError(
+                f"Worker {self.worker_id!r}: default_profile_id {default_profile_id!r} "
+                f"is not among its profiles {sorted(profile_ids)!r}"
+            )
+        if self.estimator_profile_id is not None:
+            _require_non_empty_str(self.estimator_profile_id, field_name="Worker.estimator_profile_id")
+            if self.estimator_profile_id not in profile_ids:
+                raise ValueError(
+                    f"Worker {self.worker_id!r}: estimator_profile_id {self.estimator_profile_id!r} "
+                    f"is not among its profiles {sorted(profile_ids)!r}"
+                )
+
+    def profile(self, profile_id: str | None = None) -> ExecutionProfile:
+        """Resolves one of this Worker's profiles.
+
+        ``profile_id=None`` resolves ``default_profile_id`` (set
+        explicitly, or auto-resolved when exactly one profile exists) —
+        never a silent guess among several candidates. Raises
+        ``UnknownExecutionProfileError`` if the requested id (or the
+        default) does not exist.
+        """
+        target = profile_id if profile_id is not None else self.default_profile_id
+        if target is not None:
+            for candidate in self.profiles:
+                if candidate.profile_id == target:
+                    return candidate
+        raise UnknownExecutionProfileError(self.worker_id, target)
+
+    @classmethod
+    def with_single_profile(
+        cls,
+        *,
+        worker_id: str,
+        display_name: str,
+        provider: str,
+        backend: str,
+        model: str,
+        reasoning_effort: str | None = None,
+        quality_tier: QualityTier = QualityTier.STANDARD,
+        profile_id: str = "default",
+        capabilities: Iterable[str] = (),
+        priority: int = 0,
+        enabled: bool = True,
+        estimator_profile_id: str | None = None,
+    ) -> "Worker":
+        """Convenience constructor for the common single-profile case.
+
+        Equivalent to declaring one ``ExecutionProfile`` and this Worker's
+        ``default_profile_id`` pointing at it — a mechanical drop-in for
+        the pre-Slice-15 flat ``Worker(model=..., reasoning_effort=...)``
+        shape, useful whenever a Worker genuinely has only one concrete
+        configuration (most tests, and simple single-tier setups).
+        """
+        profile = ExecutionProfile(
+            profile_id=profile_id, quality_tier=quality_tier, model=model, reasoning_effort=reasoning_effort
+        )
+        return cls(
+            worker_id=worker_id, display_name=display_name, provider=provider, backend=backend,
+            capabilities=frozenset(capabilities), priority=priority, enabled=enabled,
+            profiles=(profile,), default_profile_id=profile_id, estimator_profile_id=estimator_profile_id,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,6 +475,7 @@ class WorkerSelector:
             worker
             for worker in self._workers
             if worker.worker_id not in excluded
+            and worker.enabled
             and request.required_capabilities <= worker.capabilities
         ]
 

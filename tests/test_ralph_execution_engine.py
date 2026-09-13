@@ -48,7 +48,7 @@ def _alice(**overrides) -> Worker:
         backend="claude_code", model="sonnet", capabilities=frozenset({"developer"}),
     )
     fields.update(overrides)
-    return Worker(**fields)
+    return Worker.with_single_profile(**fields)
 
 
 def _victor(**overrides) -> Worker:
@@ -58,14 +58,16 @@ def _victor(**overrides) -> Worker:
         capabilities=frozenset({"developer"}),
     )
     fields.update(overrides)
-    return Worker(**fields)
+    return Worker.with_single_profile(**fields)
 
 
 def _request(tmp_path: Path, **overrides) -> ExecutionRequest:
+    worker = overrides.get("worker", _alice())
+    profile = worker.profile()
     fields = dict(
         execution_id="exec-001",
         task_id="task-001",
-        worker=_alice(),
+        worker=worker,
         role="developer",
         workspace=tmp_path,
         instructions="Do the thing.",
@@ -73,6 +75,8 @@ def _request(tmp_path: Path, **overrides) -> ExecutionRequest:
         success_topics=frozenset({"work.completed"}),
         failure_topics=frozenset({"work.failed"}),
         timeout_seconds=30.0,
+        model=profile.model,
+        reasoning_effort=profile.reasoning_effort,
     )
     fields.update(overrides)
     return ExecutionRequest(**fields)

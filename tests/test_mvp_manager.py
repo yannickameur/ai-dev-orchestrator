@@ -41,7 +41,7 @@ PY = sys.executable
 
 
 def _alice() -> Worker:
-    return Worker(
+    return Worker.with_single_profile(
         worker_id="claude_dev_01", display_name="Alice", provider="anthropic",
         backend="claude_code", model="sonnet", capabilities=frozenset({"developer"}),
     )
@@ -540,14 +540,14 @@ class TestQualityGateIntegration:
 
 
 def _victor() -> Worker:
-    return Worker(
+    return Worker.with_single_profile(
         worker_id="codex_dev_01", display_name="Victor", provider="openai",
         backend="codex", model="gpt-5.6-terra", capabilities=frozenset({"reviewer"}),
     )
 
 
 def _chloe() -> Worker:
-    return Worker(
+    return Worker.with_single_profile(
         worker_id="claude_dev_02", display_name="Chloe", provider="anthropic",
         backend="claude_code", model="haiku", capabilities=frozenset({"developer"}),
     )
@@ -1057,7 +1057,7 @@ class TestQuotaWaitResumeOnDeveloperSelection:
             WorkerSelectionRequest(required_capabilities=frozenset()),
             diagnostics=(_quota_diag(reset_at=reset_at),),
         )
-        victor_dev = Worker(
+        victor_dev = Worker.with_single_profile(
             worker_id="codex_dev_09", display_name="Victor", provider="openai",
             backend="codex", model="terra", capabilities=frozenset({"developer"}),
         )

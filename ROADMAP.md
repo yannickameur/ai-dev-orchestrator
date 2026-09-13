@@ -918,19 +918,49 @@ testable offline, et documenter explicitement ses dépendances.
 > différentes (WorkerSelector/MVPManager d'un côté, review/planning de
 > l'autre) dans un seul diff.
 
-**Slice 15 — Configurable Worker Registry + Execution Profiles**
+**Slice 15 — Configurable Worker Registry + Execution Profiles — ✅ DONE**
 - `config/workers.yaml` (déclaratif, pas de secret) charge des `Worker`
   enrichis (`enabled`, `profiles` — chacun avec `quality_tier`/`model`/
-  `reasoning_effort`) via un nouveau `WorkerRegistry.load(...)` — répond
-  enfin à AC-2 de `MVP_SPEC.yaml`, jamais satisfait jusqu'ici
-- `Worker` reste l'agent logique ; un nouveau type `ExecutionProfile`
-  porte la configuration concrète (`profile_id`, `quality_tier`, `model`,
-  `reasoning_effort`) — voir `docs/ADAPTIVE_EXECUTION.md` section 4-5
-- Aucun changement de comportement par défaut : `WorkerSelector`/
-  `RalphExecutionEngine`/`ExecutionRecord` continuent de fonctionner
-  exactement comme aujourd'hui tant qu'aucun appelant ne demande un
-  profil — pur ajout, jamais une réécriture
-- Ne développe aucun estimator, aucun routage adaptatif (Slices 16/17)
+  `reasoning_effort`) via un nouveau `WorkerRegistry.load(...)` (nouveau
+  module `src/orchestrator/worker_registry.py`) — répond enfin à AC-2 de
+  `MVP_SPEC.yaml`, jamais satisfait jusqu'ici. `PyYAML` ajoutée comme
+  dépendance déclarée (`pyproject.toml`) — première dépendance runtime du
+  projet
+- `Worker` (`src/orchestrator/worker_selector.py`) est désormais l'agent
+  logique seul : `model`/`reasoning_effort` fixes ont disparu du niveau
+  Worker et vivent sur le nouveau type `ExecutionProfile`
+  (`profile_id`/`quality_tier`/`model`/`reasoning_effort`), un ou
+  plusieurs par Worker (`Worker.profiles`). Nouveau type `QualityTier`
+  (`IntEnum` SIMPLE/STANDARD/COMPLEX/CRITICAL) — voir
+  `docs/ADAPTIVE_EXECUTION.md` sections 4-6
+- `default_profile_id` auto-résolu quand un seul profil existe
+  (non ambigu), strictement requis explicitement sinon (jamais deviné) ;
+  `Worker.profile(profile_id=None)` résout le profil concret.
+  `Worker.with_single_profile(...)` (classmethod) couvre le cas mono-profil
+  d'un mot — utilisé pour migrer les fixtures de test existantes
+- Contrairement à l'hypothèse initiale de cette slice, ce n'était PAS un
+  pur ajout : `Worker.model`/`.reasoning_effort` disparaissant, tout code
+  qui les lisait devait changer. Adaptation minimale et mécanique
+  seulement : `ExecutionRequest` (`ralph_execution_engine.py`) porte
+  désormais explicitement `model`/`reasoning_effort` (résolus par
+  l'appelant via `worker.profile()`, jamais par ce moteur) ;
+  `_build_backend_args`/`_ralph_backend_type` prennent des primitives
+  (`backend`, `model`, `reasoning_effort`) au lieu d'un `Worker` entier ;
+  `mvp_manager.py`/`planning.py` résolvent `worker.profile()` avant de
+  construire leur `ExecutionRequest`/`PlannerProposal` — aucune logique de
+  sélection de profil (Slice 17) introduite, juste la lecture du profil
+  par défaut existant. `WorkerSelector` ignore désormais tout worker
+  `enabled=False` (une ligne ajoutée à son filtre existant) ;
+  `RalphExecutionEngine`/`ExecutionRecord`/`MVPManager` restent sinon
+  inchangés dans leur logique propre
+- Ne développe aucun estimator, aucun routage adaptatif par tier, aucune
+  sélection de profil autre que le défaut explicite (Slices 16/17)
+- Tests : `tests/test_worker_registry.py` (nouveau, chargement/validation
+  fail-closed) + mises à jour de `tests/test_worker_selector.py`
+  (`ExecutionProfile`/`QualityTier`/`enabled`), `tests/test_planning.py`,
+  `tests/test_mvp_manager.py`, `tests/test_ralph_execution_engine.py`
+  (migration mécanique vers `Worker.with_single_profile`, aucun
+  changement de comportement testé)
 - Dépend de : Slice 4 (`WorkerSelector`/`Worker` existants)
 
 **Slice 16 — Complexity pre-flight + recommendations**
@@ -1196,10 +1226,17 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     déterministe et idempotente, section `ROADMAP.md` gérée/régénérée
     entre marqueurs dédiés, reconciliation explicite après crash, et les
     tests associés. Ferme la boucle autonome Release N -> MVP N+1.
-- **Next** : Slice 15 — Configurable Worker Registry + Execution Profiles
-  (adaptive execution, étudiée dans `docs/ADAPTIVE_EXECUTION.md` ; voir
-  « Découpage incrémental » ci-dessus pour Slices 15-18, Git/PR/merge
-  governance décalée en Slice 19).
+  - **Slice 15 (Configurable Worker Registry + Execution Profiles) —
+    DONE** : voir `src/orchestrator/worker_registry.py` (nouveau :
+    `WorkerRegistry`), `src/orchestrator/worker_selector.py` (`Worker`
+    devient l'agent logique seul, nouveaux `ExecutionProfile`/
+    `QualityTier`), `config/workers.yaml` (exemple réel, sans secret),
+    `PyYAML` en dépendance déclarée, et les tests associés. Aucun
+    estimator, aucune sélection adaptative de profil (Slices 16/17).
+- **Next** : Slice 16 — Complexity pre-flight + recommendations (adaptive
+  execution, étudiée dans `docs/ADAPTIVE_EXECUTION.md` ; voir « Découpage
+  incrémental » ci-dessus pour Slices 16-18, Git/PR/merge governance
+  décalée en Slice 19).
 
 ## Comment reprendre ce projet à froid
 

@@ -702,6 +702,7 @@ class MVPManager:
                     f"Previous review findings: {_summarize_findings(previous_review.findings)}"
                 )
 
+        dev_profile = dev_worker.profile()
         dev_request = ExecutionRequest(
             execution_id=self._id_factory(),
             task_id=work_item.work_item_id,
@@ -713,6 +714,8 @@ class MVPManager:
             success_topics=frozenset({SUCCESS_TOPIC}),
             failure_topics=frozenset({FAILURE_TOPIC}),
             timeout_seconds=self._timeout_seconds,
+            model=dev_profile.model,
+            reasoning_effort=dev_profile.reasoning_effort,
         )
         dev_result = await self._execution_engine.execute(dev_request)
 
@@ -858,6 +861,7 @@ class MVPManager:
         previous_review = self._review_store.latest_for_work_item(work_item.work_item_id)
         previous_findings = previous_review.findings if previous_review is not None else None
 
+        reviewer_profile = reviewer.profile()
         review_request = ExecutionRequest(
             execution_id=self._id_factory(),
             task_id=work_item.work_item_id,
@@ -872,6 +876,8 @@ class MVPManager:
             success_topics=frozenset({REVIEW_SUCCESS_TOPIC}),
             failure_topics=frozenset({REVIEW_FAILURE_TOPIC}),
             timeout_seconds=self._timeout_seconds,
+            model=reviewer_profile.model,
+            reasoning_effort=reviewer_profile.reasoning_effort,
         )
 
         try:
@@ -884,7 +890,7 @@ class MVPManager:
                 author_worker_id=dev_result.record.worker_id,
                 reviewer_execution_id=review_request.execution_id,
                 reviewer_worker_id=reviewer.worker_id, reviewer_provider=reviewer.provider,
-                reviewer_model=reviewer.model,
+                reviewer_model=reviewer_profile.model,
                 started_at=started_at, finished_at=self._clock(), status=ReviewStatus.ERROR,
                 git_sha_reviewed=dev_result.record.git_sha_after,
             )
@@ -903,7 +909,7 @@ class MVPManager:
             author_worker_id=dev_result.record.worker_id,
             reviewer_execution_id=review_exec_result.record.execution_id,
             reviewer_worker_id=reviewer.worker_id, reviewer_provider=reviewer.provider,
-            reviewer_model=reviewer.model,
+            reviewer_model=reviewer_profile.model,
             started_at=started_at, finished_at=self._clock(), status=status, findings=findings,
             git_sha_reviewed=dev_result.record.git_sha_after,
         )

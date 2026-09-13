@@ -375,6 +375,17 @@ cette session documentaire, à traiter explicitement en Slice 15 si retenu.
 - Configuration : `config/workers.yaml` + `config/orchestrator.yaml`,
   format YAML, `PyYAML` comme nouvelle dépendance minimale.
 
+**Précision issue de l'implémentation réelle de Slice 15** (petit écart de
+détail avec le texte ci-dessus, jamais avec les décisions fermes) :
+`default_profile_id` n'est **jamais optionnel de fait** — auto-résolu
+seulement quand un Worker ne déclare qu'un seul profil (aucune ambiguïté
+possible), et strictement requis explicitement dès qu'il en déclare
+plusieurs (jamais deviné parmi plusieurs candidats). Un
+`Worker.with_single_profile(...)` (classmethod) a été ajouté comme
+constructeur de convenance pour le cas mono-profil — utile en pratique
+pour la migration des fixtures de test existantes, et pour tout worker
+qui n'a réellement qu'une seule configuration possible.
+
 ## 18. Questions réellement ouvertes
 
 - Forme exacte de l'extension de `WorkerSelectionRequest` pour porter un

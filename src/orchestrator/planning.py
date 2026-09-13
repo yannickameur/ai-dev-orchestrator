@@ -1152,6 +1152,7 @@ class PlanningCoordinator:
     ) -> PlannerProposal:
         execution_id = self._id_factory()
         project = self._project_state_store.get_project(session.project_id)
+        profile = worker.profile()
         request = ExecutionRequest(
             execution_id=execution_id, task_id=f"planning:{session.planning_session_id}",
             worker=worker, role=PLANNER_ROLE, workspace=project.workspace,
@@ -1160,6 +1161,7 @@ class PlanningCoordinator:
             success_topics=frozenset({PLANNING_PROPOSED_TOPIC}),
             failure_topics=frozenset({PLANNING_FAILED_TOPIC}),
             timeout_seconds=self._timeout_seconds,
+            model=profile.model, reasoning_effort=profile.reasoning_effort,
         )
         try:
             result = await self._execution_engine.execute(request)
@@ -1185,17 +1187,18 @@ class PlanningCoordinator:
         return PlannerProposal(
             proposal_id=self._id_factory(), planning_session_id=session.planning_session_id,
             snapshot_id=session.snapshot_id, worker_id=worker.worker_id, provider=worker.provider,
-            model=worker.model, reasoning_effort=worker.reasoning_effort, execution_id=execution_id,
+            model=profile.model, reasoning_effort=profile.reasoning_effort, execution_id=execution_id,
             created_at=self._clock(), status=PlannerProposalStatus.VALID, **parsed,
         )
 
     def _invalid_proposal(
         self, session: PlanningSession, worker: Worker, execution_id: str, *, error_summary: str
     ) -> PlannerProposal:
+        profile = worker.profile()
         return PlannerProposal(
             proposal_id=self._id_factory(), planning_session_id=session.planning_session_id,
             snapshot_id=session.snapshot_id, worker_id=worker.worker_id, provider=worker.provider,
-            model=worker.model, reasoning_effort=worker.reasoning_effort, execution_id=execution_id,
+            model=profile.model, reasoning_effort=profile.reasoning_effort, execution_id=execution_id,
             created_at=self._clock(), status=PlannerProposalStatus.INVALID, error_summary=error_summary,
         )
 
@@ -1240,6 +1243,7 @@ class PlanningCoordinator:
 
         execution_id = self._id_factory()
         project = self._project_state_store.get_project(session.project_id)
+        synthesizer_profile = synthesizer.profile()
         request = ExecutionRequest(
             execution_id=execution_id, task_id=f"planning-synthesis:{planning_session_id}",
             worker=synthesizer, role=SYNTHESIZER_ROLE, workspace=project.workspace,
@@ -1248,6 +1252,7 @@ class PlanningCoordinator:
             success_topics=frozenset({SYNTHESIS_PROPOSED_TOPIC}),
             failure_topics=frozenset({SYNTHESIS_FAILED_TOPIC}),
             timeout_seconds=self._timeout_seconds,
+            model=synthesizer_profile.model, reasoning_effort=synthesizer_profile.reasoning_effort,
         )
 
         try:

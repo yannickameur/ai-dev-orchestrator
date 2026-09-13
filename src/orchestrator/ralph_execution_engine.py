@@ -125,19 +125,19 @@ class RalphEventParseError(RalphExecutionEngineError):
     """Raised when a Ralph events JSONL line is invalid or missing required fields."""
 
 
-def _build_backend_args(worker: Worker) -> list[str]:
-    if worker.backend == "codex":
-        args = ["--model", worker.model]
-        if worker.reasoning_effort:
-            args += ["-c", f'model_reasoning_effort="{worker.reasoning_effort}"']
+def _build_backend_args(backend: str, model: str, reasoning_effort: str | None) -> list[str]:
+    if backend == "codex":
+        args = ["--model", model]
+        if reasoning_effort:
+            args += ["-c", f'model_reasoning_effort="{reasoning_effort}"']
         return args
-    if worker.backend == "claude_code":
-        return ["--model", worker.model]
-    raise UnsupportedBackendError(worker.backend)
+    if backend == "claude_code":
+        return ["--model", model]
+    raise UnsupportedBackendError(backend)
 
 
-def _ralph_backend_type(worker: Worker) -> str:
-    return _RALPH_BACKEND_TYPE.get(worker.backend, worker.backend)
+def _ralph_backend_type(backend: str) -> str:
+    return _RALPH_BACKEND_TYPE.get(backend, backend)
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,13 +154,17 @@ class ExecutionRequest:
     success_topics: frozenset[str]
     failure_topics: frozenset[str]
     timeout_seconds: float
+    model: str
+    reasoning_effort: str | None = None
     initial_event_payload: str | None = None
 
     def __post_init__(self) -> None:
-        for name in ("execution_id", "task_id", "role", "instructions", "initial_event_topic"):
+        for name in ("execution_id", "task_id", "role", "instructions", "initial_event_topic", "model"):
             _require_non_empty_str(getattr(self, name), field_name=f"ExecutionRequest.{name}")
         if not isinstance(self.worker, Worker):
             raise TypeError(f"ExecutionRequest.worker must be a Worker, got {type(self.worker)!r}")
+        if self.reasoning_effort is not None:
+            _require_non_empty_str(self.reasoning_effort, field_name="ExecutionRequest.reasoning_effort")
         object.__setattr__(self, "workspace", Path(self.workspace))
         object.__setattr__(self, "success_topics", frozenset(self.success_topics))
         object.__setattr__(self, "failure_topics", frozenset(self.failure_topics))
@@ -396,8 +400,8 @@ def _render_hats_config(
 
 
 def _write_runtime_config(runtime_dir: Path, request: ExecutionRequest) -> tuple[Path, Path, Path]:
-    backend_type = _ralph_backend_type(request.worker)
-    backend_args = _build_backend_args(request.worker)
+    backend_type = _ralph_backend_type(request.worker.backend)
+    backend_args = _build_backend_args(request.worker.backend, request.model, request.reasoning_effort)
 
     prompt_path = runtime_dir / "PROMPT.md"
     prompt_path.write_text(request.instructions)
@@ -476,8 +480,8 @@ class RalphExecutionEngine:
             worker_id=request.worker.worker_id,
             provider=request.worker.provider,
             backend=request.worker.backend,
-            model=request.worker.model,
-            reasoning_effort=request.worker.reasoning_effort,
+            model=request.model,
+            reasoning_effort=request.reasoning_effort,
             role=request.role,
             git_sha_before=git_sha_before,
             started_at=self._clock(),
