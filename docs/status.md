@@ -1,7 +1,17 @@
 # Status
 
-Dernière mise à jour : Slice 18 (2026-09-13).
+Dernière mise à jour : Slice 18.5 — stabilisation (2026-09-13).
 
+- **Slice 18.5 — Stabilisation pré-Slice 19 : DONE.** Deux corrections
+  factuelles trouvées lors de l'audit OmniRoute : (1) mismatch
+  `REVIEW_CAPABILITY` ("reviewer") vs la capability réelle
+  `config/workers.yaml` ("code_review") — corrigé, `code_review` est
+  désormais la seule convention canonique, testé contre le vrai fichier
+  de config ; (2) `reasoning_effort` réellement vérifié comme supporté
+  côté `claude_code` via le vrai flag `claude --effort <level>` — transmis
+  désormais comme pour `codex`, aucun changement de comportement observable
+  tant qu'aucun profil Claude ne définit `reasoning_effort`. Voir
+  `ROADMAP.md`, Slice 18.5. 772 tests offline PASS.
 - **Slice 17 — Adaptive Worker/Profile Selection for development/rework :
   DONE.** `WorkerSelector`/`AdaptiveExecutionSelector`/`resolve_profile()`
   couvrent DEVELOPMENT et REWORK, y compris les chemins de reprise

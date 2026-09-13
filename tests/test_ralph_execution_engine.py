@@ -263,6 +263,33 @@ class TestWorkerSnapshotAndTranslation:
         assert result.record.reasoning_effort is None
         assert "reasoning_effort" not in captured["hats"]
 
+    def test_reasoning_effort_is_transmitted_for_claude_via_effort_flag(self, tmp_path: Path) -> None:
+        """`claude --effort <level>` is a real, native Claude Code CLI flag
+        (confirmed via `claude --help` on this machine — distinct from
+        codex's `-c model_reasoning_effort=` override style). A Claude
+        profile that does set reasoning_effort must transmit it through the
+        same hat backend-args mechanism already validated for codex, never
+        silently drop it.
+        """
+        captured = {}
+
+        def _on_call(args, cwd, timeout):
+            hats_path = Path(args[args.index("-H") + 1])
+            captured["hats"] = hats_path.read_text()
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        worker = _alice(reasoning_effort="high")
+        result = asyncio.run(engine.execute(_request(tmp_path, worker=worker)))
+
+        assert result.record.reasoning_effort == "high"
+        assert '"--effort"' in captured["hats"]
+        assert '"high"' in captured["hats"]
+        # Never the codex-style config-override syntax for this backend.
+        assert "model_reasoning_effort" not in captured["hats"]
+
     def test_initial_custom_event_is_transmitted(self, tmp_path: Path) -> None:
         captured = {}
 

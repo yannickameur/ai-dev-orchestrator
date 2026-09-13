@@ -208,7 +208,14 @@ IdFactory = Callable[[], str]
 
 DEFAULT_WORK_ITEM_ROLE = "developer"
 REVIEWER_ROLE = "reviewer"
-REVIEW_CAPABILITY = "reviewer"
+# The reviewer *role* (above) and the reviewer *capability* (below) are
+# deliberately distinct: role is a logical label used for
+# ExecutionRequest/ExecutionRecord identification and logging,
+# capability is what WorkerSelector actually matches against a Worker's
+# configured ``capabilities`` (config/workers.yaml). The canonical
+# capability string is "code_review" — it must match config/workers.yaml
+# exactly, never a synonym, and never both at once.
+REVIEW_CAPABILITY = "code_review"
 DEFAULT_TIMEOUT_SECONDS = 900.0
 INITIAL_EVENT_TOPIC = "work.start"
 SUCCESS_TOPIC = "work.completed"

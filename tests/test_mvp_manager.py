@@ -548,7 +548,7 @@ class TestQualityGateIntegration:
 def _victor() -> Worker:
     return Worker.with_single_profile(
         worker_id="codex_dev_01", display_name="Victor", provider="openai",
-        backend="codex", model="gpt-5.6-terra", capabilities=frozenset({"reviewer"}),
+        backend="codex", model="gpt-5.6-terra", capabilities=frozenset({REVIEW_CAPABILITY}),
     )
 
 

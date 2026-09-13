@@ -1119,6 +1119,42 @@ testable offline, et documenter explicitement ses dépendances.
   bug Slice 17/18 découvert. Preuve : `docs/reports/real-cross-worker-resume-2026-09-13.html`
   (copie sanitizée, chemins temporaires neutralisés, aucun secret)
 
+**Slice 18.5 — Stabilisation pré-Slice 19 — ✅ DONE**
+- Corrige un mismatch réel découvert lors de l'audit OmniRoute (2026-09-13) :
+  `config/workers.yaml` déclare la capability `code_review` pour `alice`/
+  `victor`, mais `MVPManager.REVIEW_CAPABILITY` valait encore `"reviewer"`
+  — aucun worker réel n'aurait donc jamais été éligible pour une review
+  (`NoEligibleWorkerError` systématique, masqué jusqu'ici car les tests
+  offline utilisaient des fixtures où le nom de capability du faux worker
+  et de la fausse requête coïncidaient toujours). Convention retenue :
+  `code_review` est la capability canonique (elle décrit une capacité),
+  `"reviewer"` reste le nom du rôle logique (`REVIEWER_ROLE`, inchangé) —
+  jamais les deux comme synonymes. Nouveaux tests de régression contre le
+  vrai `config/workers.yaml` (`tests/test_worker_registry.py`,
+  `TestShippedExampleConfigReviewCapability`) : un reviewer est
+  réellement sélectionnable, author≠reviewer reste appliqué, préférence
+  cross-provider conservée, aucun fallback sur un worker sans
+  `code_review`.
+- Audit factuel du transport `reasoning_effort` pour le backend
+  `claude_code` (signalé par l'audit Codex) : `claude --help` confirme un
+  vrai flag natif `--effort <low|medium|high|xhigh|max>` sur ce système
+  (distinct du style `-c key=value` de codex). `_build_backend_args`
+  transmettait déjà `model_reasoning_effort` pour `codex` mais ne
+  transmettait rien pour `claude_code` — corrigé pour transmettre
+  `--effort <valeur>` quand un profil le définit, via le même mécanisme
+  hat `backend.args` déjà validé réellement pour codex
+  (`docs/SPIKE_RALPH.md`). Aucun flag inventé. Aujourd'hui aucun profil
+  Claude de `config/workers.yaml` ne définit `reasoning_effort` (donc
+  aucun changement de comportement observable tant qu'aucun profil ne
+  l'utilise) ; test de régression dédié prouvant que la config générée
+  contient bien `--effort` quand la valeur est renseignée
+  (`tests/test_ralph_execution_engine.py::test_reasoning_effort_is_transmitted_for_claude_via_effort_flag`),
+  et le test existant `test_absence_of_reasoning_effort_is_supported_for_claude`
+  reste vert pour le cas `None`.
+- Ne rend pas la review adaptative (reste Slice 19) ; ne modifie ni les
+  objectifs ni la portée de Slice 19/20.
+- 772 tests offline PASS (766 + 6 nouveaux).
+
 **Slice 19 — Adaptive review/planning integration**
 - Étend le pre-flight/l'sélection adaptative aux rôles review, release
   planning et roadmap synthesis — chacun avec son propre tier (jamais le

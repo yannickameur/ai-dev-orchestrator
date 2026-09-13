@@ -387,3 +387,159 @@ class TestShippedExampleConfig:
         for worker in registry.all_workers():
             assert worker.estimator_profile_id is not None
             worker.profile(worker.estimator_profile_id)  # must resolve without raising
+
+
+class TestShippedExampleConfigReviewCapability:
+    """Regression coverage for the reviewer/code_review naming mismatch.
+
+    ``mvp_manager.REVIEW_CAPABILITY`` and ``config/workers.yaml`` must
+    agree on one single capability string ("code_review") — a stale
+    constant here would silently make every WorkItem review unselectable
+    (NoEligibleWorkerError/WAITING/BLOCKED) even though the shipped config
+    looks correct on its own. These tests exercise the real config file
+    through the real WorkerSelector (no fakes standing in for either), so
+    they would have caught the original mismatch.
+    """
+
+    @staticmethod
+    def _quota_manager():
+        from datetime import datetime, timedelta, timezone
+
+        from orchestrator.providers.adapter import ProviderAdapter
+        from orchestrator.providers.contracts import ProviderAvailability, ProviderState
+        from orchestrator.quota_manager import QuotaManager, QuotaPolicy
+
+        now = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
+
+        class _AlwaysAvailableAdapter(ProviderAdapter):
+            def __init__(self, provider: str) -> None:
+                self._provider = provider
+
+            async def probe(self) -> ProviderState:
+                return ProviderState(
+                    provider=self._provider,
+                    availability=ProviderAvailability(available=True, observed_at=now, reason=None),
+                    observed_at=now,
+                )
+
+        adapters = {
+            "anthropic": _AlwaysAvailableAdapter("anthropic"),
+            "openai": _AlwaysAvailableAdapter("openai"),
+        }
+        return QuotaManager(adapters, QuotaPolicy(state_ttl=timedelta(seconds=3600)), clock=lambda: now)
+
+    def _selector(self):
+        from orchestrator.worker_selector import WorkerSelector
+
+        registry = WorkerRegistry.load(Path("config/workers.yaml"))
+        return WorkerSelector(registry.enabled_workers(), self._quota_manager())
+
+    def test_real_workers_declare_the_canonical_review_capability(self) -> None:
+        from orchestrator.mvp_manager import REVIEW_CAPABILITY
+
+        registry = WorkerRegistry.load(Path("config/workers.yaml"))
+        for worker in registry.all_workers():
+            assert REVIEW_CAPABILITY in worker.capabilities, (
+                f"{worker.worker_id!r} does not declare {REVIEW_CAPABILITY!r} — "
+                "review selection would find zero eligible workers for it"
+            )
+        # And the stale/legacy string must not be lurking anywhere as a
+        # residual capability (it was never valid config, but this keeps
+        # the invariant explicit and future-proof).
+        for worker in registry.all_workers():
+            assert "reviewer" not in worker.capabilities
+
+    def test_review_request_finds_a_real_eligible_worker(self) -> None:
+        import asyncio
+
+        from orchestrator.mvp_manager import REVIEW_CAPABILITY
+        from orchestrator.worker_selector import WorkerSelectionRequest
+
+        selector = self._selector()
+        chosen = asyncio.run(
+            selector.select(
+                WorkerSelectionRequest(
+                    required_capabilities=frozenset({REVIEW_CAPABILITY}),
+                    author_worker_id="alice",
+                )
+            )
+        )
+        assert chosen.worker_id == "victor"  # only other candidate; also cross-provider
+
+    def test_author_cannot_review_their_own_work(self) -> None:
+        import asyncio
+
+        from orchestrator.mvp_manager import REVIEW_CAPABILITY
+        from orchestrator.worker_selector import NoEligibleWorkerError, WorkerSelectionRequest
+
+        selector = self._selector()
+        # Excluding the only other real worker leaves nothing but the
+        # author herself — proves there is no same-worker review fallback,
+        # even though "alice" genuinely declares code_review.
+        with pytest.raises(NoEligibleWorkerError):
+            asyncio.run(
+                selector.select(
+                    WorkerSelectionRequest(
+                        required_capabilities=frozenset({REVIEW_CAPABILITY}),
+                        author_worker_id="alice",
+                        excluded_worker_ids=frozenset({"victor"}),
+                    )
+                )
+            )
+
+    def test_review_selection_prefers_cross_provider(self) -> None:
+        import asyncio
+
+        from orchestrator.mvp_manager import REVIEW_CAPABILITY
+        from orchestrator.worker_selector import WorkerSelectionRequest
+
+        registry = WorkerRegistry.load(Path("config/workers.yaml"))
+        alice = next(w for w in registry.all_workers() if w.worker_id == "alice")
+        victor = next(w for w in registry.all_workers() if w.worker_id == "victor")
+        assert alice.provider != victor.provider  # precondition for this test to mean anything
+
+        selector = self._selector()
+        for author_id, expected_reviewer in (("alice", "victor"), ("victor", "alice")):
+            chosen = asyncio.run(
+                selector.select(
+                    WorkerSelectionRequest(
+                        required_capabilities=frozenset({REVIEW_CAPABILITY}),
+                        author_worker_id=author_id,
+                    )
+                )
+            )
+            assert chosen.worker_id == expected_reviewer
+
+    def test_no_fallback_to_a_worker_without_code_review(self) -> None:
+        import asyncio
+
+        from orchestrator.worker_selector import (
+            NoEligibleWorkerError,
+            Worker,
+            WorkerSelectionRequest,
+            WorkerSelector,
+        )
+
+        # A worker that mirrors victor but deliberately lacks code_review —
+        # selection must never fall back to it, even though it is the only
+        # other worker available and would otherwise be a plausible
+        # candidate by provider/priority.
+        no_review_victor = Worker.with_single_profile(
+            worker_id="victor", display_name="Victor", provider="openai",
+            backend="codex", model="gpt-5.6-terra", capabilities=frozenset({"development"}),
+        )
+        registry = WorkerRegistry.load(Path("config/workers.yaml"))
+        alice = next(w for w in registry.all_workers() if w.worker_id == "alice")
+        selector = WorkerSelector([alice, no_review_victor], self._quota_manager())
+
+        from orchestrator.mvp_manager import REVIEW_CAPABILITY
+
+        with pytest.raises(NoEligibleWorkerError):
+            asyncio.run(
+                selector.select(
+                    WorkerSelectionRequest(
+                        required_capabilities=frozenset({REVIEW_CAPABILITY}),
+                        author_worker_id="alice",
+                    )
+                )
+            )
