@@ -893,7 +893,7 @@ testable offline, et documenter explicitement ses dépendances.
   partiellement incohérente
 - Aucune opération Git runtime (`add`/`commit`/`push`/merge) — cette slice
   ne modifie que le fichier de travail ; gouvernance Git/PR/merge reste
-  Slice 15
+  Slice 19
 - Tests : `tests/test_roadmap_application.py` (100% offline, sqlite3 réel
   + vrai fichier `ROADMAP.md` sous `tmp_path`, horloge/`id_factory`
   injectables, `MVPManager` simulé par un stub — aucun réseau/subprocess/
@@ -901,11 +901,86 @@ testable offline, et documenter explicitement ses dépendances.
 - Dépend de : Slice 12 (RoadmapProposal) et Slice 13 (décision
   APPROVED/AUTO_APPROVED)
 
-**Slice 15 — Git/PR/merge governance si toujours nécessaire**
+> **Adaptive execution (Slices 15-18)** — étudiée en détail dans
+> `docs/ADAPTIVE_EXECUTION.md` (findings Ralph, frontière Ralph/
+> orchestrateur, Worker Registry, Execution Profiles, quality tiers,
+> complexity pre-flight, séquence de sélection retenue). Aucune de ces
+> slices n'est DONE — cette section documente uniquement le découpage
+> retenu pour les implémenter une par une, dans l'ordre.
+>
+> Justification du découpage en 4 slices plutôt qu'une seule grosse
+> slice « adaptive execution » : chacune touche un sous-ensemble distinct
+> et indépendamment testable du système (config/chargement, puis
+> estimation pure, puis câblage development, puis câblage review/planning)
+> — un découpage plus fin réduit le risque (chaque slice reste petite,
+> offline, review-able seule) au prix de quelques dépendances séquentielles
+> explicites ; fusionner 17/18 aurait mélangé deux frontières de risque
+> différentes (WorkerSelector/MVPManager d'un côté, review/planning de
+> l'autre) dans un seul diff.
+
+**Slice 15 — Configurable Worker Registry + Execution Profiles**
+- `config/workers.yaml` (déclaratif, pas de secret) charge des `Worker`
+  enrichis (`enabled`, `profiles` — chacun avec `quality_tier`/`model`/
+  `reasoning_effort`) via un nouveau `WorkerRegistry.load(...)` — répond
+  enfin à AC-2 de `MVP_SPEC.yaml`, jamais satisfait jusqu'ici
+- `Worker` reste l'agent logique ; un nouveau type `ExecutionProfile`
+  porte la configuration concrète (`profile_id`, `quality_tier`, `model`,
+  `reasoning_effort`) — voir `docs/ADAPTIVE_EXECUTION.md` section 4-5
+- Aucun changement de comportement par défaut : `WorkerSelector`/
+  `RalphExecutionEngine`/`ExecutionRecord` continuent de fonctionner
+  exactement comme aujourd'hui tant qu'aucun appelant ne demande un
+  profil — pur ajout, jamais une réécriture
+- Ne développe aucun estimator, aucun routage adaptatif (Slices 16/17)
+- Dépend de : Slice 4 (`WorkerSelector`/`Worker` existants)
+
+**Slice 16 — Complexity pre-flight + recommendations**
+- Un hat Ralph "estimator" (capability `complexity_estimation`), exécuté
+  via `RalphExecutionEngine` exactement comme un planner/synthesizer
+  (Slice 12) — jamais un nouveau mécanisme d'exécution
+- Émet un événement structuré unique (`execution.profile_recommended`) :
+  `complexity`, `minimum_quality_tier`, `recommended_reasoning`, `reasons`
+  — recommande un niveau, ne choisit jamais un modèle/provider concret
+- Estimation **role-specific** : development/review/planning/roadmap
+  synthesis du même WorkItem peuvent recevoir des tiers différents,
+  jamais un tier recopié automatiquement d'un rôle à l'autre
+- Étudie et documente (sans l'implémenter) le fingerprint déterministe
+  (SHA-256) permettant d'éviter un pre-flight redondant
+- N'intègre encore rien dans `WorkerSelector`/`MVPManager` — produit
+  seulement l'événement/la recommandation, fail-closed comme
+  `planning.py` (payload invalide -> jamais traité comme un succès)
+- Dépend de : Slice 15 (les tiers/profils doivent exister pour qu'une
+  recommandation ait un sens)
+
+**Slice 17 — Adaptive Worker/Profile selection integration (development)**
+- L'orchestrateur (jamais un event LLM directement) choisit le profil le
+  moins coûteux satisfaisant `minimum_quality_tier`, en respectant l'ordre
+  existant capability > gouvernance > quota/disponibilité > coût/priorité
+  — jamais un tier minimum silencieusement dégradé faute de quota :
+  chercher un autre worker/profil au tier suffisant, sinon `WAITING`
+  (mécanisme Slice 11 existant, jamais dupliqué)
+- Câblé uniquement côté développement dans `MVPManager` (opt-in, comme
+  chaque capacité Slice 8/9/11 précédente) ; review/planning restent
+  inchangés jusqu'à Slice 18
+- Un événement d'estimation invalide ou absent ne bloque jamais le
+  fonctionnement existant : comportement Slice 7-14 inchangé quand
+  l'adaptive execution n'est pas activée (`adaptive_execution.enabled`)
+- Dépend de : Slice 16 (recommandation) et Slice 15 (profils)
+
+**Slice 18 — Adaptive review/planning integration**
+- Étend le pre-flight/l'sélection adaptative aux rôles review, release
+  planning et roadmap synthesis — chacun avec son propre tier (jamais le
+  tier development réutilisé tel quel)
+- `WorkerSelector`/`ReviewPolicy` (indépendance author≠reviewer) et
+  `PlanningPolicy` (Slice 12) restent la seule source de vérité de leurs
+  garanties respectives ; l'adaptive execution ne les contourne jamais
+- Dépend de : Slice 17 (le mécanisme d'intégration doit déjà exister côté
+  développement avant d'être étendu)
+
+**Slice 19 — Git/PR/merge governance si toujours nécessaire**
 - Recoupe l'ancienne Phase 2 (« GitHub : branches et Pull Requests »)
   ci-dessous — `GitHubWorkspace`, CLI `gh`, politique de merge
 - Positionnée en dernier dans ce découpage incrémental : à ré-évaluer une
-  fois Slices 7-14 en place (peut-être partiellement anticipée si un
+  fois Slices 7-18 en place (peut-être partiellement anticipée si un
   besoin concret apparaît avant)
 
 **Éléments non re-séquencés explicitement** (restent valables, à intégrer
@@ -914,7 +989,7 @@ quand le besoin se précise, sans rang fixe) :
 - Abstraction `Workspace` (`prepare(task)`/`finalize(task, result)`) :
   `RalphExecutionEngine` (Slice 6) fait aujourd'hui du `git rev-parse HEAD`
   en lecture seule directement, sans cette abstraction — suffisant tant
-  que Slice 15 (Git/PR/merge) n'est pas requise ; l'abstraction complète
+  que Slice 19 (Git/PR/merge) n'est pas requise ; l'abstraction complète
   n'est réintroduite que si/quand ce besoin devient concret
 - CLI minimale (`python -m orchestrator ...`) : utile dès que Slice 7
   expose des commandes stables (`mvp create`, `workitem run`, `handoff
@@ -960,7 +1035,7 @@ Ce résumé sert de repère rapide ; le détail vérifiable est dans
 
 ### Phase 2 — GitHub : branches et Pull Requests
 
-> Recoupée par **Slice 15** (« Git/PR/merge governance si toujours
+> Recoupée par **Slice 19** (« Git/PR/merge governance si toujours
 > nécessaire ») dans le découpage incrémental sous Phase 1 — le contenu
 > ci-dessous reste le détail de référence.
 
@@ -1121,8 +1196,10 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     déterministe et idempotente, section `ROADMAP.md` gérée/régénérée
     entre marqueurs dédiés, reconciliation explicite après crash, et les
     tests associés. Ferme la boucle autonome Release N -> MVP N+1.
-- **Next** : Slice 15 — Git/PR/merge governance, à ré-évaluer (rien dans
-  les slices 7-14 ne l'a rendue bloquante jusqu'ici).
+- **Next** : Slice 15 — Configurable Worker Registry + Execution Profiles
+  (adaptive execution, étudiée dans `docs/ADAPTIVE_EXECUTION.md` ; voir
+  « Découpage incrémental » ci-dessus pour Slices 15-18, Git/PR/merge
+  governance décalée en Slice 19).
 
 ## Comment reprendre ce projet à froid
 
