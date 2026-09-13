@@ -15,6 +15,11 @@ from pathlib import Path
 
 import pytest
 
+from orchestrator.adaptive_execution import AdaptiveExecutionDecision, AdaptiveSelection
+from orchestrator.complexity_estimation import (
+    ComplexityEstimationRequest,
+    NoReliableRecommendationError,
+)
 from orchestrator.execution_store import ExecutionRecord, ExecutionStatus, ExecutionStore
 from orchestrator.handoff import HandoffStore
 from orchestrator.mvp_manager import REVIEW_CAPABILITY, MVPManager
@@ -28,10 +33,11 @@ from orchestrator.validation import (
     ValidationKind,
     ValidationStore,
 )
-from orchestrator.wait import WaitPhase, WaitStatus, WaitStore
+from orchestrator.wait import WaitPhase, WaitReason, WaitStatus, WaitStore
 from orchestrator.worker_selector import (
     NoEligibleWorkerError,
     ProviderSelectionDiagnostic,
+    QualityTier,
     Worker,
     WorkerSelectionRequest,
 )
@@ -1673,3 +1679,535 @@ class TestExecutionRecoveryReviewPhase:
         assert result.work_item.status is WorkItemStatus.COMPLETED
         assert result.gate_result is None  # never re-evaluated during a review-only resume
         assert result.handoff.test_results == "quality_gate=PASSED (unit-tests=passed)"
+
+
+# --- Slice 17: adaptive development/rework selection ------------------------
+
+
+class FakeAdaptiveSelector:
+    """A minimal AdaptiveExecutionSelector-shaped fake: scripted worker +
+    decision, or a scripted error — never actually estimates/selects."""
+
+    def __init__(self, *, worker: Worker | None = None, decision: AdaptiveExecutionDecision | None = None, error: Exception | None = None) -> None:
+        self._worker = worker
+        self._decision = decision
+        self._error = error
+        self.calls: list = []
+
+    async def select(self, *, estimation_request, required_capabilities, excluded_worker_ids=frozenset(), force_refresh=False):
+        self.calls.append(estimation_request)
+        if self._error is not None:
+            raise self._error
+        return AdaptiveSelection(worker=self._worker, decision=self._decision)
+
+
+def _decision(**overrides) -> AdaptiveExecutionDecision:
+    fields = dict(
+        decision_id="decision-1", recommendation_id="rec-1", project_id="proj-1", role="developer",
+        worker_id="codex_dev_01", provider="openai", backend="codex", profile_id="deep",
+        quality_tier=QualityTier.COMPLEX, model="gpt-5.6-terra-deep", reasoning_effort="high",
+        created_at=UTC_NOW,
+    )
+    fields.update(overrides)
+    return AdaptiveExecutionDecision(**fields)
+
+
+def _adaptive_manager(project_store, handoff_store, engine, adaptive_selector, *, wait_store=None) -> MVPManager:
+    # A plain WorkerSelector is never consulted for development when
+    # adaptive_execution_selector is configured — a scripted error proves
+    # this if it were ever (wrongly) called.
+    dead_selector = FakeWorkerSelector(error=AssertionError("plain WorkerSelector must not be used for adaptive development"))
+    return MVPManager(
+        project_store, handoff_store, dead_selector, engine,
+        adaptive_execution_selector=adaptive_selector, wait_store=wait_store,
+        clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+    )
+
+
+class TestAdaptiveDevelopmentSelection:
+    def test_development_calls_preflight(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing", "acceptance_criteria": ("works",)}})
+        decision = _decision()
+        victor = _victor()
+        adaptive = FakeAdaptiveSelector(worker=victor, decision=decision)
+        engine = FakeExecutionEngine(
+            result=_execution_result(execution_id="e1", task_id="wi-a", worker_id=victor.worker_id, status=ExecutionStatus.SUCCEEDED)
+        )
+        manager = _adaptive_manager(project_store, handoff_store, engine, adaptive)
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert len(adaptive.calls) == 1
+        assert adaptive.calls[0].objective == "Do the thing"
+        assert adaptive.calls[0].acceptance_criteria == ("works",)
+        assert adaptive.calls[0].role == "developer"
+
+    def test_rework_calls_preflight_with_review_findings(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
+        from orchestrator.review import ReviewFinding, ReviewRecord
+
+        project_store.mark_work_item_reviewing("wi-a")
+        review_store.record(ReviewRecord(
+            review_id="rev-1", project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
+            author_execution_id="e0", author_worker_id="claude_dev_01", started_at=UTC_NOW, finished_at=UTC_NOW,
+            status=ReviewStatus.REJECTED, findings=(ReviewFinding(finding_id="f1", summary="off by one", severity="major"),),
+        ))
+        project_store.mark_work_item_needs_rework("wi-a")
+
+        decision = _decision()
+        victor = _victor()
+        adaptive = FakeAdaptiveSelector(worker=victor, decision=decision)
+        engine = FakeExecutionEngine(
+            result=_execution_result(execution_id="e1", task_id="wi-a", worker_id=victor.worker_id, status=ExecutionStatus.SUCCEEDED)
+        )
+        manager = MVPManager(
+            project_store, handoff_store, FakeWorkerSelector(worker=_alice()), engine,
+            adaptive_execution_selector=adaptive, review_store=review_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert len(adaptive.calls) == 1
+        findings = adaptive.calls[0].review_findings
+        assert len(findings) == 1 and findings[0].summary == "off by one"
+
+    def test_execution_request_uses_decision_model_not_default_profile(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        victor = _victor()  # default_profile model would be "gpt-5.6-terra", not the decision's
+        decision = _decision(model="gpt-5.6-terra-deep", reasoning_effort="high")
+        adaptive = FakeAdaptiveSelector(worker=victor, decision=decision)
+        engine = FakeExecutionEngine(
+            result=_execution_result(execution_id="e1", task_id="wi-a", worker_id=victor.worker_id, status=ExecutionStatus.SUCCEEDED)
+        )
+        manager = _adaptive_manager(project_store, handoff_store, engine, adaptive)
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        dev_request = engine.requests[0]
+        assert dev_request.model == "gpt-5.6-terra-deep"
+        assert dev_request.reasoning_effort == "high"
+
+    def test_quality_gate_and_review_still_run_after_adaptive_development(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        victor = _victor()
+        decision = _decision()
+        adaptive = FakeAdaptiveSelector(worker=victor, decision=decision)
+        engine = FakeExecutionEngine(
+            result=_execution_result(execution_id="e1", task_id="wi-a", worker_id=victor.worker_id, status=ExecutionStatus.SUCCEEDED)
+        )
+        gate_runner = _gate_runner(
+            tmp_path, [ValidationCommand(validation_id="t", kind=ValidationKind.UNIT_TEST, argv=(PY, "-c", "pass"))]
+        )
+        review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
+
+        class _ReviewWorkerSelector:
+            async def select(self, request):
+                return _alice()
+
+        manager = MVPManager(
+            project_store, handoff_store, _ReviewWorkerSelector(), engine,
+            adaptive_execution_selector=adaptive, quality_gate_runner=gate_runner, review_store=review_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.gate_result is not None and result.gate_result.passed
+        assert result.review_result is not None  # the existing review step still ran unchanged
+
+    def test_no_development_on_preflight_failure(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        adaptive = FakeAdaptiveSelector(error=NoReliableRecommendationError("no event"))
+        engine = FakeExecutionEngine()
+        manager = _adaptive_manager(project_store, handoff_store, engine, adaptive)
+
+        with pytest.raises(NoReliableRecommendationError):
+            asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert engine.requests == []
+        assert project_store.get_work_item("wi-a").status is WorkItemStatus.READY
+
+    def test_insufficient_capability_is_fail_closed_not_waiting(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: UTC_NOW)
+        # No worker configured reaches the required tier at all: WorkerSelector
+        # would report this with EMPTY diagnostics (never diagnosable as quota).
+        adaptive = FakeAdaptiveSelector(error=NoEligibleWorkerError(WorkerSelectionRequest(), diagnostics=()))
+        engine = FakeExecutionEngine()
+        manager = _adaptive_manager(project_store, handoff_store, engine, adaptive, wait_store=wait_store)
+
+        with pytest.raises(NoEligibleWorkerError):
+            asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert project_store.get_work_item("wi-a").status is WorkItemStatus.READY  # never WAITING
+        assert wait_store.list_pending() == []
+
+    def test_quota_exhaustion_still_yields_waiting(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: UTC_NOW)
+        reset_at = UTC_NOW + timedelta(hours=2)
+        diagnostics = (ProviderSelectionDiagnostic(provider="openai", available=False, reason="quota_exhausted", reset_at=(reset_at,)),)
+        adaptive = FakeAdaptiveSelector(error=NoEligibleWorkerError(WorkerSelectionRequest(), diagnostics=diagnostics))
+        engine = FakeExecutionEngine()
+        manager = _adaptive_manager(project_store, handoff_store, engine, adaptive, wait_store=wait_store)
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.WAITING
+        assert result.wait is not None
+
+
+class TestReviewSelectionIsNotAdaptive:
+    def test_reviewer_selection_request_has_no_minimum_quality_tier(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        victor = _victor()
+        decision = _decision()
+        adaptive = FakeAdaptiveSelector(worker=victor, decision=decision)
+
+        class _RecordingReviewSelector:
+            def __init__(self):
+                self.requests = []
+
+            async def select(self, request):
+                self.requests.append(request)
+                return _alice()
+
+        review_selector = _RecordingReviewSelector()
+        engine = FakeExecutionEngine(
+            result=_execution_result(execution_id="e1", task_id="wi-a", worker_id=victor.worker_id, status=ExecutionStatus.SUCCEEDED)
+        )
+        review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
+        manager = MVPManager(
+            project_store, handoff_store, review_selector, engine,
+            adaptive_execution_selector=adaptive, review_store=review_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert len(review_selector.requests) == 1
+        assert review_selector.requests[0].minimum_quality_tier is None
+
+
+# --- Slice 17 correction: adaptive resume (wait + recovery) -----------------
+
+
+class ScriptedAdaptiveSelector:
+    """Replays a fixed sequence of outcomes (AdaptiveSelection or Exception),
+    in order — mirrors ScriptedWorkerSelector, but at the adaptive layer."""
+
+    def __init__(self, script: list) -> None:
+        self._script = list(script)
+        self.calls: list[ComplexityEstimationRequest] = []
+
+    async def select(self, *, estimation_request, required_capabilities, excluded_worker_ids=frozenset(), force_refresh=False):
+        self.calls.append(estimation_request)
+        outcome = self._script.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _resume_decision(**overrides) -> AdaptiveExecutionDecision:
+    fields = dict(
+        decision_id="decision-resume-1", recommendation_id="rec-resume-1", project_id="proj-1",
+        role="developer", worker_id="codex_dev_09", provider="openai", backend="codex",
+        profile_id="deep", quality_tier=QualityTier.COMPLEX, model="gpt-5.6-terra-deep",
+        reasoning_effort="high", created_at=UTC_NOW,
+    )
+    fields.update(overrides)
+    return AdaptiveExecutionDecision(**fields)
+
+
+class TestAdaptiveWaitResume:
+    def test_resume_waiting_development_uses_recommendation_and_adaptive_selector(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        clock_box = {"now": UTC_NOW}
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: clock_box["now"])
+        reset_at = UTC_NOW + timedelta(hours=3)
+        quota_error = NoEligibleWorkerError(
+            WorkerSelectionRequest(minimum_quality_tier=QualityTier.COMPLEX),
+            diagnostics=(_quota_diag(provider="openai", reset_at=reset_at),),
+        )
+        victor = _victor()  # default profile model is "gpt-5.6-terra", never used here
+        decision = _resume_decision()
+        adaptive = ScriptedAdaptiveSelector([quota_error, AdaptiveSelection(worker=victor, decision=decision)])
+        engine = FakeExecutionEngine(
+            result=_execution_result(execution_id="whatever", task_id="wi-a", worker_id=victor.worker_id, status=ExecutionStatus.SUCCEEDED)
+        )
+        manager = MVPManager(
+            project_store, handoff_store, FakeWorkerSelector(error=AssertionError("plain selector must not be used")), engine,
+            adaptive_execution_selector=adaptive, wait_store=wait_store,
+            clock=lambda: clock_box["now"], id_factory=_counting_id_factory(),
+        )
+
+        first = asyncio.run(manager.run_next_work_item("mvp-1"))
+        assert first.work_item.status is WorkItemStatus.WAITING
+
+        clock_box["now"] = reset_at + timedelta(minutes=5)
+        second = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert second.work_item.status is WorkItemStatus.COMPLETED
+        assert len(adaptive.calls) == 2  # pre-flight ran again on resume, never skipped
+        assert engine.requests[0].model == "gpt-5.6-terra-deep"  # decision.model, never default_profile
+        assert engine.requests[0].reasoning_effort == "high"
+
+    def test_resume_never_uses_default_profile(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        clock_box = {"now": UTC_NOW}
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: clock_box["now"])
+        reset_at = UTC_NOW + timedelta(hours=3)
+        quota_error = NoEligibleWorkerError(
+            WorkerSelectionRequest(minimum_quality_tier=QualityTier.COMPLEX),
+            diagnostics=(_quota_diag(reset_at=reset_at),),
+        )
+        # victor's OWN default profile model differs from the decision's —
+        # proves the request never falls back to Worker.profile().
+        victor = _victor()
+        assert victor.profile().model != "gpt-5.6-terra-deep"
+        decision = _resume_decision(model="gpt-5.6-terra-deep", reasoning_effort="high")
+        adaptive = ScriptedAdaptiveSelector([quota_error, AdaptiveSelection(worker=victor, decision=decision)])
+        engine = FakeExecutionEngine(
+            result=_execution_result(execution_id="whatever", task_id="wi-a", worker_id=victor.worker_id, status=ExecutionStatus.SUCCEEDED)
+        )
+        manager = MVPManager(
+            project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
+            adaptive_execution_selector=adaptive, wait_store=wait_store,
+            clock=lambda: clock_box["now"], id_factory=_counting_id_factory(),
+        )
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+        clock_box["now"] = reset_at + timedelta(minutes=5)
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert engine.requests[0].model == "gpt-5.6-terra-deep"
+
+    def test_resume_still_unavailable_requeues_never_executes(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        clock_box = {"now": UTC_NOW}
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: clock_box["now"])
+        reset_at_1 = UTC_NOW + timedelta(hours=3)
+        reset_at_2 = UTC_NOW + timedelta(hours=6)
+        error1 = NoEligibleWorkerError(WorkerSelectionRequest(), diagnostics=(_quota_diag(reset_at=reset_at_1),))
+        error2 = NoEligibleWorkerError(WorkerSelectionRequest(), diagnostics=(_quota_diag(reset_at=reset_at_2),))
+        adaptive = ScriptedAdaptiveSelector([error1, error2])
+        engine = FakeExecutionEngine()
+        manager = MVPManager(
+            project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
+            adaptive_execution_selector=adaptive, wait_store=wait_store,
+            clock=lambda: clock_box["now"], id_factory=_counting_id_factory(),
+        )
+
+        first = asyncio.run(manager.run_next_work_item("mvp-1"))
+        clock_box["now"] = reset_at_1 + timedelta(minutes=1)
+        second = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert second.work_item.status is WorkItemStatus.WAITING
+        assert second.wait.eligible_at == reset_at_2
+        assert engine.requests == []
+
+    def test_resume_with_structural_incapacity_fails_closed_not_waiting_again(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        clock_box = {"now": UTC_NOW}
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: clock_box["now"])
+        reset_at = UTC_NOW + timedelta(hours=3)
+        quota_error = NoEligibleWorkerError(WorkerSelectionRequest(), diagnostics=(_quota_diag(reset_at=reset_at),))
+        # On resume: config changed, no worker anywhere reaches the tier —
+        # never diagnosable as quota (empty diagnostics).
+        structural_error = NoEligibleWorkerError(WorkerSelectionRequest(), diagnostics=())
+        adaptive = ScriptedAdaptiveSelector([quota_error, structural_error])
+        engine = FakeExecutionEngine()
+        manager = MVPManager(
+            project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
+            adaptive_execution_selector=adaptive, wait_store=wait_store,
+            clock=lambda: clock_box["now"], id_factory=_counting_id_factory(),
+        )
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+        clock_box["now"] = reset_at + timedelta(minutes=1)
+        second = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert second.work_item.status is WorkItemStatus.BLOCKED
+        assert wait_store.list_pending() == []
+
+
+class TestAdaptiveRecoveryResume:
+    def test_recovery_development_calls_preflight_and_adaptive_selector(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        execution_store = _execution_store(tmp_path)
+        execution_store.create(
+            execution_id="exec-old", task_id="wi-a", worker_id="claude_dev_01",
+            provider="anthropic", backend="claude_code", model="sonnet", role="developer",
+        )
+        victor = _victor()
+        decision = _resume_decision()
+        adaptive = ScriptedAdaptiveSelector([AdaptiveSelection(worker=victor, decision=decision)])
+        engine = FakeExecutionEngine(
+            result=_execution_result(execution_id="whatever", task_id="wi-a", worker_id=victor.worker_id, status=ExecutionStatus.SUCCEEDED)
+        )
+        manager = MVPManager(
+            project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
+            adaptive_execution_selector=adaptive, execution_store=execution_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert len(adaptive.calls) == 1
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert engine.requests[0].model == decision.model
+        assert engine.requests[0].reasoning_effort == decision.reasoning_effort
+        assert engine.requests[0].worker.worker_id == victor.worker_id
+        assert execution_store.get("exec-old").status is ExecutionStatus.RECOVERY_REQUIRED
+        assert all(req.execution_id != "exec-old" for req in engine.requests)  # never reused
+
+    def test_recovery_changed_facts_can_produce_new_fingerprint(self, tmp_path: Path) -> None:
+        # A real ExecutionRecommendationStore/cache: the fingerprint is
+        # recomputed from current facts on every pre-flight call — proven
+        # here directly at the fingerprint level (already exercised
+        # end-to-end via ScriptedAdaptiveSelector's call count elsewhere).
+        from orchestrator.complexity_estimation import compute_task_fingerprint
+
+        base = ComplexityEstimationRequest(
+            project_id="proj-1", role="developer", workspace=tmp_path, objective="Do the thing",
+            work_item_id="wi-a", git_sha="sha-before",
+        )
+        after_recovery = ComplexityEstimationRequest(
+            project_id="proj-1", role="developer", workspace=tmp_path, objective="Do the thing",
+            work_item_id="wi-a", git_sha="sha-after-recovery-handoff",
+        )
+        assert compute_task_fingerprint(base) != compute_task_fingerprint(after_recovery)
+
+    def test_recovery_unchanged_facts_produce_same_fingerprint(self, tmp_path: Path) -> None:
+        from orchestrator.complexity_estimation import compute_task_fingerprint
+
+        def _make():
+            return ComplexityEstimationRequest(
+                project_id="proj-1", role="developer", workspace=tmp_path, objective="Do the thing",
+                work_item_id="wi-a", git_sha="sha-1",
+            )
+
+        assert compute_task_fingerprint(_make()) == compute_task_fingerprint(_make())
+
+    def test_recovery_no_development_on_preflight_failure(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "Do the thing"}})
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        execution_store = _execution_store(tmp_path)
+        execution_store.create(
+            execution_id="exec-old", task_id="wi-a", worker_id="claude_dev_01",
+            provider="anthropic", backend="claude_code", model="sonnet", role="developer",
+        )
+        adaptive = ScriptedAdaptiveSelector([NoReliableRecommendationError("no event")])
+        engine = FakeExecutionEngine()
+        manager = MVPManager(
+            project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
+            adaptive_execution_selector=adaptive, execution_store=execution_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        with pytest.raises(NoReliableRecommendationError):
+            asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert engine.requests == []
+
+
+
+
+class TestAdaptiveReviewResumeUnaffected:
+    """Anti-regression: WaitPhase.REVIEW resume and review-phase recovery
+    resume must stay entirely non-adaptive until Slice 18 — no
+    minimum_quality_tier, no complexity estimator involved at all."""
+
+    def test_review_wait_resume_does_not_use_adaptive_selector(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        project_store.mark_work_item_reviewing("wi-a")
+        project_store.mark_work_item_waiting("wi-a")
+        handoff_store.create(
+            handoff_id="h1", project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
+            objective="A", execution_id="exec-dev-1", worker_id="claude_dev_01",
+            created_at=UTC_NOW, test_results="quality_gate=PASSED",
+        )
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: UTC_NOW)
+        wait_store.create(
+            wait_id="w1", project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
+            phase=WaitPhase.REVIEW, reason=WaitReason.QUOTA_RESET, eligible_at=UTC_NOW,
+        )
+        adaptive = ScriptedAdaptiveSelector([])  # must never be called
+        review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
+        reviewer_selector = FakeWorkerSelector(worker=_victor())
+        engine = FakeExecutionEngine(
+            result=_execution_result(execution_id="whatever", task_id="wi-a", worker_id="codex_dev_01", status=ExecutionStatus.SUCCEEDED)
+        )
+        manager = MVPManager(
+            project_store, handoff_store, reviewer_selector, engine,
+            adaptive_execution_selector=adaptive, wait_store=wait_store, review_store=review_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert adaptive.calls == []
+        assert reviewer_selector.requests[0].minimum_quality_tier is None
+
+    def test_review_phase_recovery_resume_does_not_use_adaptive_selector(self, tmp_path: Path) -> None:
+        project_store, handoff_store = _stores(tmp_path)
+        _seed(project_store, tmp_path, **{"wi-a": {"title": "A"}})
+        execution_store = _execution_store(tmp_path)
+        execution_store.create(
+            execution_id="exec-dev-1", task_id="wi-a", worker_id="claude_dev_01",
+            provider="anthropic", backend="claude_code", model="sonnet", role="developer",
+        )
+        execution_store.mark_succeeded("exec-dev-1")
+        handoff_store.create(
+            handoff_id="h1", project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
+            objective="A", execution_id="exec-dev-1", worker_id="claude_dev_01",
+            created_at=UTC_NOW, test_results="quality_gate=PASSED",
+        )
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        project_store.mark_work_item_reviewing("wi-a")
+        execution_store.create(
+            execution_id="exec-review-old", task_id="wi-a", worker_id="codex_dev_01",
+            provider="openai", backend="codex", model="terra", role="reviewer",
+        )  # orphaned mid-review
+
+        adaptive = ScriptedAdaptiveSelector([])  # must never be called
+        review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
+        reviewer_selector = FakeWorkerSelector(worker=_victor())
+        engine = FakeExecutionEngine(
+            result=_execution_result(execution_id="whatever", task_id="wi-a", worker_id="codex_dev_01", status=ExecutionStatus.SUCCEEDED)
+        )
+        manager = MVPManager(
+            project_store, handoff_store, reviewer_selector, engine,
+            adaptive_execution_selector=adaptive, execution_store=execution_store, review_store=review_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert adaptive.calls == []
+        assert reviewer_selector.requests[0].minimum_quality_tier is None

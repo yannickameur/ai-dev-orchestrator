@@ -12,9 +12,15 @@
 # ~/projects/ralph-spike) — never invented.
 #
 # quality_tier: one of SIMPLE, STANDARD, COMPLEX, CRITICAL (see
-# orchestrator.worker_selector.QualityTier). Used only from Slice 16/17
-# onward — Slice 15 loads and validates this data but does not act on
-# quality_tier yet.
+# orchestrator.worker_selector.QualityTier) — the minimum capability level
+# a profile satisfies, used by adaptive selection (Slice 17) to filter out
+# profiles too weak for a recommendation, never to rank workers.
+#
+# cost_rank: a configured, relative economic preference (lower = prefer
+# this profile) — never a real provider price, never inferred from model/
+# reasoning_effort. profile_id names (economy/standard/deep) are plain
+# labels with no special meaning to the engine; cost_rank is what
+# adaptive selection (Slice 17) actually reads.
 
 workers:
   - worker_id: alice
@@ -38,14 +44,17 @@ workers:
       economy:
         quality_tier: SIMPLE
         model: haiku
+        cost_rank: 10
 
       standard:
         quality_tier: STANDARD
         model: sonnet
+        cost_rank: 20
 
       deep:
         quality_tier: COMPLEX
         model: sonnet
+        cost_rank: 30
 
   - worker_id: victor
     display_name: Victor
@@ -69,13 +78,16 @@ workers:
         quality_tier: SIMPLE
         model: gpt-5.6-terra
         reasoning_effort: low
+        cost_rank: 10
 
       standard:
         quality_tier: STANDARD
         model: gpt-5.6-terra
         reasoning_effort: medium
+        cost_rank: 20
 
       deep:
         quality_tier: COMPLEX
         model: gpt-5.6-terra
         reasoning_effort: high
+        cost_rank: 30

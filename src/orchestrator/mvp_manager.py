@@ -111,6 +111,57 @@ selection (possibly a different worker/provider) and a **brand-new**
 applies symmetrically to a review execution: it stays in `REVIEWING` (no
 fantom `APPROVED`/`REJECTED` `ReviewRecord` is ever fabricated for an
 interruption), and resuming selects a fresh, still-independent reviewer.
+
+ADAPTIVE DEVELOPMENT/REWORK SELECTION (Slice 17):
+
+Supplying an optional ``adaptive_execution_selector`` enables a fifth
+opt-in capability, composed the same way as the ones before it: every
+DEVELOPMENT/REWORK path that resolves a developer —  the fresh-candidate
+path in `run_next_work_item`, the quota-wait resume
+(`_try_resume_due_wait`), and the execution-recovery resume
+(`_try_resume_recovery_required`) — shares one helper,
+`_select_dev_worker`, so a *resumed* attempt is held to exactly the same
+rules as a fresh one. Each call runs a complexity pre-flight
+(`orchestrator.complexity_estimation`, Slice 16) from *current* persisted
+facts (latest handoff, latest review findings, git SHA — re-read every
+time, never cached in a `WaitRecord`/recovery handoff) and resolves a
+concrete `Worker`/`ExecutionProfile` (`orchestrator.adaptive_execution`,
+Slice 17) instead of a plain `WorkerSelector.select(...)` +
+`Worker.profile()` default. A resume is NEVER allowed to reason "it's
+just a resume, use the default profile" — that would silently violate
+the no-downgrade invariant (e.g. a COMPLEX-tier wait must never resume
+into a STANDARD-only worker just because it happens to be available).
+Because the pre-flight is rebuilt from current facts on every resume, the
+Slice 16 fingerprint/cache does the right thing automatically: unchanged
+facts reuse the existing recommendation (no new Ralph estimator call, no
+tier drift), while a changed handoff/git SHA/review findings naturally
+produce a fresh fingerprint and a fresh recommendation — this module
+never forces or forbids that either way.
+
+Every invariant from Slices 15/16/17 stays enforced end to end: no silent
+downgrade below the recommended quality tier, no fallback to a default
+profile on any pre-flight/selection failure (those exceptions propagate
+unchanged — this module never catches
+`NoReliableRecommendationError`/`EstimatorProfileNotConfiguredError`/
+`InvalidRecommendationPayloadError`/`NoCapableProfileError` to paper over
+them with a default), and the resulting `AdaptiveExecutionDecision` is
+what actually parameterizes the `ExecutionRequest` (`model`/
+`reasoning_effort`), never `Worker.profile()`'s own default. A worker can
+freely differ between the original attempt and a resume (e.g. Victor/deep
+timed out, Alice/deep resumes) — no worker-continuity affinity is ever
+assumed or enforced.
+
+Deliberately NOT extended to review resumption
+(`_resume_review_wait`/the review branch of
+`_try_resume_recovery_required`) in this slice — review stays entirely
+non-adaptive until Slice 18, exactly as before: no `minimum_quality_tier`,
+no complexity estimator, plain `WorkerSelector.select(...)` +
+`Worker.profile()`'s default, unchanged.
+
+Review, release planning, and roadmap synthesis are NOT made adaptive by
+this slice either — only development/rework. `ReviewPolicy`'s author!=
+reviewer guarantee is completely unaffected: the adaptive selector never
+receives an `author_worker_id` and never touches review at all.
 """
 
 from __future__ import annotations
@@ -120,6 +171,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
+from orchestrator.adaptive_execution import AdaptiveExecutionSelector
+from orchestrator.complexity_estimation import ComplexityEstimationRequest
 from orchestrator.execution_store import ExecutionStatus, ExecutionStore, UnknownExecutionError
 from orchestrator.handoff import HandoffRecord, HandoffStore
 from orchestrator.project_state import MVP, Project, ProjectStateStore, WorkItem, WorkItemStatus
@@ -306,6 +359,7 @@ class MVPManager:
         review_policy: ReviewPolicy | None = None,
         wait_store: WaitStore | None = None,
         execution_store: ExecutionStore | None = None,
+        adaptive_execution_selector: AdaptiveExecutionSelector | None = None,
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
@@ -321,6 +375,7 @@ class MVPManager:
         self._id_factory = id_factory or _default_id_factory
         self._timeout_seconds = timeout_seconds
         self._wait_store = wait_store
+        self._adaptive_execution_selector = adaptive_execution_selector
         self._wait_coordinator = (
             WaitCoordinator(wait_store, clock=self._clock, id_factory=self._id_factory)
             if wait_store is not None
@@ -385,9 +440,13 @@ class MVPManager:
         # Resolve a developer before recording anything as RUNNING: if no
         # worker is eligible right now, the WorkItem must stay in its
         # current state, not be marked as an attempt that never happened.
+        # Adaptive selection (Slice 17) may raise complexity-estimation/
+        # profile-resolution errors here too — those are never caught for
+        # a wait conversion (they are not a quota condition) and simply
+        # propagate: no development happens this attempt.
         try:
-            dev_worker = await self._worker_selector.select(
-                WorkerSelectionRequest(required_capabilities=work_item.required_capabilities)
+            dev_worker, dev_model, dev_reasoning_effort = await self._select_dev_worker(
+                mvp=mvp, work_item=work_item, is_rework=is_rework,
             )
         except NoEligibleWorkerError as exc:
             if self._wait_coordinator is not None:
@@ -403,6 +462,71 @@ class MVPManager:
         return await self._execute_work_item(
             mvp_id=mvp_id, mvp=mvp, work_item=work_item, dev_worker=dev_worker,
             is_rework=is_rework, resume_context=resume_context,
+            dev_model=dev_model, dev_reasoning_effort=dev_reasoning_effort,
+        )
+
+    async def _select_dev_worker(
+        self, *, mvp: MVP, work_item: WorkItem, is_rework: bool,
+    ) -> tuple[Worker, str | None, str | None]:
+        """Resolves the developer for one DEVELOPMENT/REWORK attempt.
+
+        Shared by the fresh-candidate path (``run_next_work_item``) *and*
+        both resume paths (``_try_resume_due_wait``,
+        ``_try_resume_recovery_required``) — a resumed attempt is held to
+        exactly the same rules as a fresh one, never a weaker
+        ``Worker.profile()`` default "because it's just a resume" (that
+        would silently violate the no-downgrade invariant: see module
+        docstring). When ``adaptive_execution_selector`` is configured,
+        this reruns the pre-flight from *current* persisted facts every
+        time — the Slice 16 fingerprint/cache naturally reuses the
+        existing recommendation when nothing relevant changed, and
+        naturally produces a fresh one when it did (new handoff/git SHA/
+        review findings) — never forced either way here.
+
+        Returns ``(worker, model, reasoning_effort)``; ``model``/
+        ``reasoning_effort`` are ``None`` when adaptive execution is not
+        configured (caller then falls back to ``Worker.profile()``'s
+        default in ``_execute_work_item``, exactly as pre-Slice-17).
+        """
+        if self._adaptive_execution_selector is not None:
+            project = self._project_state_store.get_project(mvp.project_id)
+            estimation_request = self._build_estimation_request(
+                project=project, mvp_id=mvp.mvp_id, work_item=work_item, is_rework=is_rework,
+            )
+            selection = await self._adaptive_execution_selector.select(
+                estimation_request=estimation_request,
+                required_capabilities=work_item.required_capabilities,
+            )
+            return selection.worker, selection.decision.model, selection.decision.reasoning_effort
+        worker = await self._worker_selector.select(
+            WorkerSelectionRequest(required_capabilities=work_item.required_capabilities)
+        )
+        return worker, None, None
+
+    def _build_estimation_request(
+        self, *, project: Project, mvp_id: str, work_item: WorkItem, is_rework: bool,
+    ) -> ComplexityEstimationRequest:
+        """Facts available right now for a development/rework pre-flight.
+
+        REWORK includes the latest review's findings (never for a first
+        attempt); both include the latest handoff/git SHA if one already
+        exists. The Slice 16 fingerprint decides on its own whether an
+        existing recommendation is still reusable — this method never
+        second-guesses that by forcing ``force_refresh``, whether called
+        fresh or from a resume path.
+        """
+        latest_handoff = self._handoff_store.latest_for_work_item(work_item.work_item_id)
+        review_findings: tuple[ReviewFinding, ...] = ()
+        if is_rework and self._review_store is not None:
+            previous_review = self._review_store.latest_for_work_item(work_item.work_item_id)
+            if previous_review is not None:
+                review_findings = previous_review.findings
+        git_sha = latest_handoff.git_sha_after if latest_handoff is not None else None
+        return ComplexityEstimationRequest(
+            project_id=project.project_id, role=DEFAULT_WORK_ITEM_ROLE, workspace=project.workspace,
+            objective=work_item.title, acceptance_criteria=work_item.acceptance_criteria,
+            mvp_id=mvp_id, work_item_id=work_item.work_item_id,
+            latest_handoff=latest_handoff, review_findings=review_findings, git_sha=git_sha,
         )
 
     def _build_resume_context(self, work_item_id: str) -> str | None:
@@ -488,8 +612,8 @@ class MVPManager:
 
         is_rework = due.phase is WaitPhase.REWORK
         try:
-            dev_worker = await self._worker_selector.select(
-                WorkerSelectionRequest(required_capabilities=work_item.required_capabilities)
+            dev_worker, dev_model, dev_reasoning_effort = await self._select_dev_worker(
+                mvp=mvp, work_item=work_item, is_rework=is_rework,
             )
         except NoEligibleWorkerError as exc:
             return self._requeue_or_give_up(
@@ -507,6 +631,7 @@ class MVPManager:
         return await self._execute_work_item(
             mvp_id=mvp_id, mvp=mvp, work_item=work_item, dev_worker=dev_worker,
             is_rework=is_rework, resume_context=resume_context,
+            dev_model=dev_model, dev_reasoning_effort=dev_reasoning_effort,
         )
 
     async def _try_resume_recovery_required(self, mvp_id: str) -> WorkItemRunResult | None:
@@ -561,13 +686,14 @@ class MVPManager:
                 project=project, mvp_id=mvp_id, work_item=work_item, handoff=handoff
             )
 
-        dev_worker = await self._worker_selector.select(
-            WorkerSelectionRequest(required_capabilities=work_item.required_capabilities)
+        dev_worker, dev_model, dev_reasoning_effort = await self._select_dev_worker(
+            mvp=mvp, work_item=work_item, is_rework=False,
         )
         resume_context = self._build_resume_context(work_item.work_item_id)
         return await self._execute_work_item(
             mvp_id=mvp_id, mvp=mvp, work_item=work_item, dev_worker=dev_worker,
             is_rework=False, resume_context=resume_context,
+            dev_model=dev_model, dev_reasoning_effort=dev_reasoning_effort,
         )
 
     async def _resume_review_wait(
@@ -681,6 +807,8 @@ class MVPManager:
         dev_worker: Worker,
         is_rework: bool,
         resume_context: str | None,
+        dev_model: str | None = None,
+        dev_reasoning_effort: str | None = None,
     ) -> WorkItemRunResult:
         """Runs one development execution through to its handoff.
 
@@ -688,6 +816,13 @@ class MVPManager:
         (development/rework) so a resumed WorkItem goes through the exact
         same gate/review/handoff pipeline as a first attempt — the only
         difference is ``resume_context`` and possibly a different worker.
+
+        ``dev_model``/``dev_reasoning_effort``, when supplied (Slice 17
+        adaptive selection), are used as-is — the actual snapshot an
+        ``AdaptiveExecutionDecision`` already resolved and persisted. When
+        omitted (the wait-resume/recovery-resume paths, and any caller
+        without adaptive execution configured), ``dev_worker.profile()``'s
+        default is used, exactly as before Slice 17.
         """
         self._project_state_store.mark_mvp_running(mvp_id)
         work_item = self._project_state_store.mark_work_item_running(work_item.work_item_id)
@@ -702,7 +837,10 @@ class MVPManager:
                     f"Previous review findings: {_summarize_findings(previous_review.findings)}"
                 )
 
-        dev_profile = dev_worker.profile()
+        if dev_model is None:
+            dev_profile = dev_worker.profile()
+            dev_model = dev_profile.model
+            dev_reasoning_effort = dev_profile.reasoning_effort
         dev_request = ExecutionRequest(
             execution_id=self._id_factory(),
             task_id=work_item.work_item_id,
@@ -714,8 +852,8 @@ class MVPManager:
             success_topics=frozenset({SUCCESS_TOPIC}),
             failure_topics=frozenset({FAILURE_TOPIC}),
             timeout_seconds=self._timeout_seconds,
-            model=dev_profile.model,
-            reasoning_effort=dev_profile.reasoning_effort,
+            model=dev_model,
+            reasoning_effort=dev_reasoning_effort,
         )
         dev_result = await self._execution_engine.execute(dev_request)
 
