@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OmniRoute Opportunity Report — Claude (independent audit)</title>
+<style>
+body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; margin: 0; padding: 16px;
+       background: #f6f8fa; color: #1f2328; line-height: 1.5; }
+.container { max-width: 1080px; margin: 0 auto; }
+h1 { font-size: 1.5em; margin-bottom: 4px; }
+h2 { font-size: 1.15em; margin-top: 32px; border-bottom: 1px solid #d0d7de; padding-bottom: 4px; }
+h3 { font-size: 1.0em; margin-top: 20px; }
+.meta { color: #57606a; font-size: 0.85em; }
+.badge { display: inline-block; padding: 4px 12px; border-radius: 6px; color: #fff; font-weight: 700;
+         font-size: 1.05em; }
+.summary-box { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 14px 18px; margin: 14px 0; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0 20px 0; background: #fff; font-size: 0.88em; }
+th, td { border: 1px solid #d0d7de; padding: 6px 8px; text-align: left; vertical-align: top; word-break: break-word; }
+th { background: #eef1f4; }
+tr:nth-child(even) td { background: #fafbfc; }
+code { background: #eef1f4; padding: 1px 5px; border-radius: 4px; font-size: 0.92em; }
+pre { background: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 0.82em; }
+.decision-block { background: #fff8e1; border: 1px solid #e8c766; border-radius: 6px; padding: 14px 18px; margin: 14px 0; }
+.decision-primary { font-size: 1.3em; font-weight: 700; color: #7a5b00; }
+.toc { columns: 2; column-gap: 24px; font-size: 0.88em; background: #fff; border: 1px solid #d0d7de;
+       border-radius: 6px; padding: 14px 20px; }
+.toc a { color: #0969da; text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+.stop-no { color: #1a7f37; font-weight: 700; }
+.scorecard-total { font-weight: 700; }
+@media (max-width: 700px) {
+  .toc { columns: 1; }
+  table, thead, tbody, th, td, tr { display: block; }
+  th { display: none; }
+  td { border: none; border-bottom: 1px solid #e8e8e8; padding: 4px 0; }
+  td::before { content: attr(data-label) ": "; font-weight: 600; }
+}
+</style>
+</head>
+<body><div class="container">
+
+<h1>OmniRoute Opportunity Report — Claude (independent audit)</h1>
+<p class="meta">Date: 2026-09-13 · Author: Claude (this session) · Written and finalized
+<strong>before</strong> reading any Codex report content.</p>
+
+<div class="summary-box">
+<p><strong>Scope:</strong> does <code>OmniRoute</code>
+(github.com/diegosouzapw/OmniRoute) change whether
+<code>ai-dev-orchestrator</code> and/or Ralph Orchestrator should keep
+existing? Per explicit instruction, prior investment in
+<code>ai-dev-orchestrator</code> is <strong>not</strong> treated as a reason
+to keep it — sunk cost is not evidence.</p>
+</div>
+
+<div class="decision-block">
+<p>Primary decision: <span class="decision-primary">KEEP_CURRENT_ARCHITECTURE</span></p>
+<p>Second best: <strong>ADD_OMNIROUTE_OPTIONALLY</strong> (narrow, future, opt-in only)</p>
+<p>STOP_AI_DEV_ORCHESTRATOR? <span class="stop-no">NO</span> &nbsp;·&nbsp;
+STOP_RALPH? <span class="stop-no">NO</span></p>
+</div>
+
+<h2>Scorecard summary (/100, see §30 for full breakdown)</h2>
+<table>
+<thead><tr><th>Architecture</th><th>Total /100</th></tr></thead>
+<tbody>
+<tr><td data-label="Architecture">OUR_STACK (current)</td><td data-label="Total" class="scorecard-total">92</td></tr>
+<tr><td data-label="Architecture">OUR_STACK_PLUS_OMNIROUTE (optional/future)</td><td data-label="Total" class="scorecard-total">92</td></tr>
+<tr><td data-label="Architecture">NO_RALPH (hypothetical)</td><td data-label="Total" class="scorecard-total">58</td></tr>
+<tr><td data-label="Architecture">THIN_ORCHESTRATOR</td><td data-label="Total" class="scorecard-total">38</td></tr>
+<tr><td data-label="Architecture">OMNIROUTE_ONLY</td><td data-label="Total" class="scorecard-total">30</td></tr>
+</tbody>
+</table>
+
+<div class="toc">
+<p><strong>Contents</strong></p>
+<a href="#s1">1. Executive summary</a><br>
+<a href="#s2">2. OmniRoute version studied</a><br>
+<a href="#s3">3. Licence</a><br>
+<a href="#s4">4. Current architecture</a><br>
+<a href="#s5">5. OmniRoute architecture</a><br>
+<a href="#s6">6. Ralph architecture</a><br>
+<a href="#s7">7. Capability matrix</a><br>
+<a href="#s8">8. OmniRoute vs orchestrator</a><br>
+<a href="#s9">9. OmniRoute vs Ralph</a><br>
+<a href="#s10">10. OmniRoute vs both</a><br>
+<a href="#s11">11. Functional overlap</a><br>
+<a href="#s12">12. Components KEEP</a><br>
+<a href="#s13">13. Components EXTEND</a><br>
+<a href="#s14">14. Components REPLACE</a><br>
+<a href="#s15">15. Components REMOVE</a><br>
+<a href="#s16">16. New capabilities</a><br>
+<a href="#s17">17. Routing analysis</a><br>
+<a href="#s18">18. Quality / no-downgrade</a><br>
+<a href="#s19">19. Quota strategy</a><br>
+<a href="#s20">20. Resilience</a><br>
+<a href="#s21">21. Context / handoff</a><br>
+<a href="#s22">22. Reports / audit</a><br>
+<a href="#s23">23. Cost / token</a><br>
+<a href="#s24">24. Security</a><br>
+<a href="#s25">25. Maintainability</a><br>
+<a href="#s26">26. Operations</a><br>
+<a href="#s27">27. Build-vs-adopt (S1–S7)</a><br>
+<a href="#s28">28. Minimum custom differentiator</a><br>
+<a href="#s29">29. Component-by-component</a><br>
+<a href="#s30">30. Scorecard /100</a><br>
+<a href="#s31">31. Migration plan</a><br>
+<a href="#s32">32. Rollback plan</a><br>
+<a href="#s33">33. Risks</a><br>
+<a href="#s34">34. POC needed (not executed)</a><br>
+<a href="#s35">35. Final decision</a><br>
+</div>
+
+<h2 id="s1">1. Executive summary</h2>
+<p>OmniRoute is a mature, professionally engineered <strong>AI model
+gateway/router</strong> (TypeScript/Next.js, MIT licence, npm package
+<code>omniroute@3.8.51</code>). It solves "send this chat-completion
+request through the cheapest/most-available of 356 providers, with
+quota-aware fallback and up to ~89% token compression." It does
+<strong>not</strong> solve the problem <code>ai-dev-orchestrator</code>
+exists for: driving a multi-step software-delivery lifecycle (WorkItem →
+adaptive worker/profile selection → TDD execution via Ralph → quality gate →
+independent review → durable cross-worker/cold-restart handoff → release →
+realization/activity reporting → roadmap synthesis/approval) with
+governance guarantees (no silent quality downgrade, author≠reviewer,
+fail-closed everywhere, full audit trail).</p>
+<p>OmniRoute operates <strong>one layer below</strong> where our
+orchestrator operates: it is a thing Claude Code/Codex CLIs can be pointed
+at as their model backend, or a launcher (<code>omniroute run claude</code>).
+It has no WorkItem, MVP, quality gate, independent-review policy, or durable
+crash-resumable handoff. Its "cloud agent" integration (Jules/Devin/Codex
+Cloud/Cursor Cloud) and "issue agent" are thin, single-shot delegations to
+external agents — not a replacement for our WorkItem state machine.</p>
+<p>Where OmniRoute is genuinely stronger: breadth of provider/model
+coverage and free-tier aggregation; a more mature token-level quota/routing
+engine (fair-share, burn-rate, subscription-vs-metered billing
+classification, reset-aware ladders); request-level prompt compression;
+and test/CI maturity (mutation testing, nightly resilience/security
+suites, CodeQL, Semgrep).</p>
+<p><strong>This is not a close call.</strong> OmniRoute and
+<code>ai-dev-orchestrator</code> answer different questions. Neither Ralph
+nor our orchestrator is threatened by OmniRoute's existence; if anything,
+OmniRoute is a candidate <em>provider underneath</em> our stack, never a
+candidate <em>replacement</em> of any orchestration layer.</p>
+
+<h2 id="s2">2. OmniRoute version studied</h2>
+<ul>
+<li>Repository: <code>github.com/diegosouzapw/OmniRoute</code>, cloned
+shallow to a disposable <code>/tmp</code> directory (never inside this
+repo; removed after use).</li>
+<li>Commit: <code>152d95108c9c3d557562311ffed63240a511eb31</code>
+(2026-09-11 22:29:29 -0300). Branch: <code>release/v3.8.51</code> (the
+repository's only branch/HEAD).</li>
+<li><code>package.json</code> version: <code>3.8.51</code>, npm package
+<code>omniroute</code>.</li>
+<li>Distribution: npm global install, Docker Hub image, Electron desktop
+builds, source (pnpm workspace).</li>
+</ul>
+
+<h2 id="s3">3. Licence</h2>
+<p><strong>MIT</strong> (copyright 2026 diegosouzapw). Permissive:
+dependency use, code copy, modification, and vendoring are all allowed
+under the licence text (attribution notice preserved). A
+<code>THIRD_PARTY_NOTICES.md</code> (17KB) shows the project tracks its own
+dependency licence obligations. No CLA-only restriction or field-of-use
+restriction found.</p>
+
+<h2 id="s4">4. Current architecture (ai-dev-orchestrator)</h2>
+<pre>Project (workspace, roadmap, current MVP)
+  -&gt; MVPManager (WorkItems, dependencies, durable handoff)
+  -&gt; WorkerSelector (capability &gt; governance &gt; quota &gt; cost; adaptive tier since Slice 17)
+  -&gt; RalphExecutionEngine (real `ralph` subprocess: hats, TDD, review)
+  -&gt; ExecutionRecord + HandoffRecord (audit + durable resume)
+  -&gt; ValidationStore / QualityGateRunner (real commands, fail-closed)
+  -&gt; ReviewStore (independent review, author != reviewer enforced)
+  -&gt; ReleaseManager -&gt; ActivityReport (MVP/release-level)
+  -&gt; PlanningCoordinator -&gt; RoadmapProposal -&gt; ApprovalCoordinator -&gt; RoadmapApplicationService
+  -&gt; RealizationReport (WorkItem-level, deterministic, non-LLM aggregation)</pre>
+<p>Underneath <code>WorkerSelector</code>: <code>ProviderAdapter.probe()</code>
+(ClaudeCodeAdapter, CodexAdapter — read-only CLI-quota probes) →
+<code>QuotaManager</code> (freshness/TTL cache over multi-window
+<code>ProviderState</code>, e.g. Claude's 5h/7d windows). This is a
+<strong>CLI-subscription quota model</strong>, not an API-key/token-billing
+model.</p>
+<p>12,069 lines of Python across <code>src/orchestrator/</code>, 25
+modules, ~29 test files, 766 tests passing at last count. Real, versioned
+proof of a genuine cross-worker (Claude Code → Codex), cold-restart-safe
+handoff exists:
+<code>docs/reports/real-cross-worker-resume-2026-09-13.html</code>.</p>
+
+<h2 id="s5">5. OmniRoute architecture</h2>
+<pre>Any OpenAI/Anthropic-compatible client (Claude Code, Codex, Cursor, Cline,
+  raw HTTP, LangChain/CrewAI/AutoGen via A2A, MCP clients)
+    -&gt; POST /v1/chat/completions (or /v1/responses, A2A JSON-RPC, MCP tool call)
+    -&gt; OmniRoute Smart Router
+         - capability/combo selection (356 providers / 1312+ model ids)
+         - RTK + "Caveman" prompt compression (documented 15-95%, ~89% avg)
+         - 19 routing strategies (auto/cheapest, auto/quality,
+           auto/subscription, auto/thrifty, ...)
+         - allocation -&gt; quota telemetry (healthy/approaching_limit/
+           exhausted/unavailable/unknown) -&gt; circuit breaker
+           (closed/open/half_open) -&gt; provider dispatch
+    -&gt; one of 356 upstream providers</pre>
+<p>Separately: <code>omniroute run &lt;cli&gt;</code> launches a supported
+coding CLI as a child process with its model backend redirected — a
+convenience launcher, not a task/workflow orchestrator.
+<code>cloudAgent/</code> is a thin registry+adapter (<code>jules</code>,
+<code>devin</code>, <code>codex-cloud</code>, <code>cursor-cloud</code>)
+submitting a single <code>CloudAgentTask</code> (status:
+queued/running/awaiting_approval/completed/failed/cancelled) to an
+external hosted agent — no WorkItem dependency graph, no quality gate, no
+independent-review policy. <code>issueAgent/</code> triages a GitHub issue
+via one chat-completion call.</p>
+<p>Node/TypeScript, Next.js app router, ~82 top-level <code>src/lib/*</code>
+modules, 5000+ test files, nightly mutation/resilience/security CI suites.</p>
+
+<h2 id="s6">6. Ralph architecture (recap)</h2>
+<p>Ralph Orchestrator (Rust, MIT, ~158k LOC — studied previously in
+<code>docs/ECOSYSTEM.md</code>/<code>docs/SPIKE_RALPH.md</code>): hats/roles
+with per-hat backend/model config, event bus, completion promises, git
+auto-commit, worktrees + parallel loops/waves, a review preset. No
+QuotaManager for CLI subscription windows, no cost/governance-ranked
+WorkerSelector, no structural (only configurable) author≠reviewer
+guarantee — exactly the gap <code>ai-dev-orchestrator</code> closes.
+OmniRoute does not change this: it has no hats/event-bus/TDD-loop concept
+at all — not a Ralph competitor, a different kind of system entirely.</p>
+
+<h2 id="s7">7. Capability matrix</h2>
+<table>
+<thead><tr><th>Capability</th><th>ai-dev-orchestrator</th><th>Ralph</th><th>OmniRoute</th></tr></thead>
+<tbody>
+<tr><td data-label="Capability">WorkItem lifecycle (deps, statuses, MVP grouping)</td><td data-label="orchestrator">YES</td><td data-label="Ralph">NO</td><td data-label="OmniRoute">NO</td></tr>
+<tr><td data-label="Capability">TDD/hats execution loop</td><td data-label="orchestrator">Delegates to Ralph</td><td data-label="Ralph">YES</td><td data-label="OmniRoute">NO</td></tr>
+<tr><td data-label="Capability">Worker/Profile selection (capability+governance+quota+cost+tier)</td><td data-label="orchestrator">YES</td><td data-label="Ralph">Partial (static)</td><td data-label="OmniRoute">NO (per-request routing only)</td></tr>
+<tr><td data-label="Capability">Structural author≠reviewer guarantee</td><td data-label="orchestrator">YES</td><td data-label="Ralph">Configurable only</td><td data-label="OmniRoute">N/A</td></tr>
+<tr><td data-label="Capability">CLI-subscription multi-window quota (Claude Code Max/Codex Plus)</td><td data-label="orchestrator">YES</td><td data-label="Ralph">NO</td><td data-label="OmniRoute">PARTIAL — models "subscription" billing for OAuth chat connections, not CLI-worker governance</td></tr>
+<tr><td data-label="Capability">Durable cold-restart cross-process handoff</td><td data-label="orchestrator">YES (real smoke-tested)</td><td data-label="Ralph">Partial (single-process)</td><td data-label="OmniRoute">NOT_FOUND</td></tr>
+<tr><td data-label="Capability">Independent code review</td><td data-label="orchestrator">YES</td><td data-label="Ralph">Preset exists, not enforced</td><td data-label="OmniRoute">NOT_FOUND</td></tr>
+<tr><td data-label="Capability">Quality gate (real command execution)</td><td data-label="orchestrator">YES</td><td data-label="Ralph">YES</td><td data-label="OmniRoute">NOT_FOUND</td></tr>
+<tr><td data-label="Capability">Release/activity reporting</td><td data-label="orchestrator">YES</td><td data-label="Ralph">NOT_FOUND</td><td data-label="OmniRoute">NOT_FOUND</td></tr>
+<tr><td data-label="Capability">Roadmap synthesis + approval</td><td data-label="orchestrator">YES</td><td data-label="Ralph">NOT_FOUND</td><td data-label="OmniRoute">NOT_FOUND</td></tr>
+<tr><td data-label="Capability">Multi-provider model routing (cost/latency/free-tier)</td><td data-label="orchestrator">NOT_FOUND (out of scope)</td><td data-label="Ralph">NOT_FOUND</td><td data-label="OmniRoute">YES, extensively</td></tr>
+<tr><td data-label="Capability">Prompt/token compression</td><td data-label="orchestrator">NOT_FOUND</td><td data-label="Ralph">NOT_FOUND</td><td data-label="OmniRoute">YES (doc/code confirmed)</td></tr>
+<tr><td data-label="Capability">MCP server</td><td data-label="orchestrator">NOT_FOUND</td><td data-label="Ralph">NOT_FOUND</td><td data-label="OmniRoute">YES</td></tr>
+<tr><td data-label="Capability">A2A server</td><td data-label="orchestrator">NOT_FOUND</td><td data-label="Ralph">NOT_FOUND</td><td data-label="OmniRoute">YES (self as agent, opposite direction)</td></tr>
+<tr><td data-label="Capability">Cloud-agent triggering</td><td data-label="orchestrator">NOT_FOUND</td><td data-label="Ralph">NOT_FOUND</td><td data-label="OmniRoute">YES (thin, single-shot)</td></tr>
+<tr><td data-label="Capability">Git/PR/merge governance</td><td data-label="orchestrator">Planned (Slice 20)</td><td data-label="Ralph">Partial (no gh/API confirmed)</td><td data-label="OmniRoute">NOT_FOUND</td></tr>
+</tbody>
+</table>
+
+<h2 id="s8">8. OmniRoute vs our orchestrator</h2>
+<p>Different problem classes. Ours answers "did this WorkItem get built
+correctly, safely, and auditably, across possibly-crashing processes and
+possibly-different workers?" OmniRoute answers "which of 356 providers
+should serve this one HTTP chat-completion request, at what cost, with how
+much of the prompt trimmed?" No meaningful overlap at the orchestration
+level. The only genuine overlap is quota-awareness as a concept — but the
+unit of governance differs: ours governs which <em>worker (CLI identity)</em>
+may run a WorkItem; OmniRoute governs which <em>provider connection</em>
+may serve a request.</p>
+
+<h2 id="s9">9. OmniRoute vs Ralph</h2>
+<p>No meaningful overlap. Ralph is an execution-loop engine; OmniRoute is a
+request router. <code>omniroute run claude</code> merely launches Claude
+Code with its model backend redirected — Ralph is not involved and is not
+replaced.</p>
+
+<h2 id="s10">10. OmniRoute vs both combined</h2>
+<p>Even summing Ralph's and our orchestrator's capabilities, OmniRoute does
+not cover the union: no WorkItem/MVP concept, no quality gate, no
+independent review, no durable cold-restart handoff, no release/roadmap
+governance, no TDD execution loop. It adds things neither of us has
+(356-provider routing, compression, free-tier aggregation, MCP/A2A
+surfaces) but nothing that substitutes for either's core responsibilities.</p>
+
+<h2 id="s11">11. Functional overlap</h2>
+<ol>
+<li><strong>Quota-awareness</strong> — moderate overlap, different unit of
+governance (see §19).</li>
+<li><strong>Provider abstraction</strong> — weak overlap; different scale
+and purpose (2 CLI probes vs 356 request-serving connections).</li>
+<li><strong>CLI launching</strong> — superficially similar, but OmniRoute's
+launch has no ExecutionRecord, no quality tier, no verdict parsing, no
+audit trail; it is a convenience wrapper, not an execution engine.</li>
+</ol>
+<p>Everything else (WorkItem lifecycle, review, quality gates, handoff,
+reporting, roadmap/approval) has zero overlap.</p>
+
+<h2 id="s12">12. Components to KEEP (as-is)</h2>
+<p>All WorkItem-lifecycle and governance components: <code>ProjectStateStore</code>,
+<code>MVPManager</code>, <code>HandoffStore</code>/<code>HandoffRecord</code>,
+<code>WaitCoordinator</code>, <code>RecoveryCoordinator</code>,
+<code>QualityGateRunner</code>/<code>ValidationStore</code>,
+<code>ReviewStore</code>, <code>ReleaseManager</code>/<code>ActivityReport</code>,
+<code>PlanningCoordinator</code>/<code>RoadmapProposal</code>,
+<code>ApprovalCoordinator</code>, <code>RoadmapApplicationService</code>,
+<code>RealizationReport</code>/<code>Service</code>/<code>Store</code>,
+<code>ExecutionStore</code>/<code>ExecutionRecord</code>,
+<code>WorkerSelector</code>, <code>WorkerRegistry</code>,
+<code>ExecutionProfile</code>/<code>QualityTier</code>,
+<code>ComplexityEstimation*</code>, <code>AdaptiveExecutionSelector</code>/
+<code>Decision</code>/<code>DecisionStore</code>,
+<code>RalphExecutionEngine</code>/<code>ExecutionRequest</code>.</p>
+
+<h2 id="s13">13. Components to EXTEND</h2>
+<p>None required by OmniRoute today. One optional, low-priority future
+idea: an additional, clearly-labeled <code>OmniRouteRoutingAdapter</code>
+used only if a Worker's backend is ever a raw HTTP-API call (not a CLI
+subprocess) — additive, never replacing the existing CLI-subscription
+probes for <code>alice</code>/<code>victor</code>.</p>
+
+<h2 id="s14">14. Components to REPLACE</h2>
+<p>None. No component in <code>src/orchestrator/</code> has an OmniRoute
+equivalent that is both functionally comparable and semantically compatible
+with our governance model.</p>
+
+<h2 id="s15">15. Components to REMOVE</h2>
+<p>None. Nothing in our stack becomes redundant by OmniRoute's existence.</p>
+
+<h2 id="s16">16. New capabilities worth knowing about (not adopting now)</h2>
+<ul>
+<li><strong>Free-tier aggregation/catalog</strong> — useful only for a
+future non-CLI-subscription worker.</li>
+<li><strong>Prompt compression</strong> (RTK + "Caveman") — potentially
+interesting for token-cost reduction on a future API-key worker; figures
+not independently verified this session, so treated as
+<code>MARKETING_ONLY</code> until measured; not applicable to our current
+CLI-subprocess workers.</li>
+<li><strong>Subscription-vs-metered billing classification</strong> —
+conceptually validates our own principle, not directly reusable (governs
+request dispatch, not worker selection).</li>
+<li><strong>MCP server</strong> — could matter later for exposing our own
+orchestrator to other agents; unrelated to today's need.</li>
+<li><strong>Circuit breaker pattern</strong> — clean design, INSPIRE-only;
+our retry/recovery needs are already narrower and handled elsewhere.</li>
+</ul>
+
+<h2 id="s17">17. Routing analysis</h2>
+<p>Three candidates considered:</p>
+<ul>
+<li><strong>A — CURRENT (recommended)</strong>: WorkerSelector/AdaptiveExecutionSelector
+remain sole routing authority; OmniRoute, if ever used, sits strictly below
+a Worker's backend call.</li>
+<li><strong>B — OmniRoute controls routing (rejected)</strong>: would
+usurp WorkerSelector's job; OmniRoute has no WorkItem/quality-tier/
+author≠reviewer concept and its "subscription" rung governs OAuth chat
+connections, not our CLI worker identities.</li>
+<li><strong>C — constrained hybrid (possible future POC only)</strong>:
+WorkerSelector keeps full authority; only a chosen Worker's own backend
+implementation could, if ever changed to an HTTP-API call, use an
+OmniRoute endpoint as transport — with <code>auto/*</code> disabled/pinned
+to prevent silent model substitution.</li>
+</ul>
+
+<h2 id="s18">18. Quality-tier / no-downgrade guarantee feasibility</h2>
+<p><strong>Verdict: NO.</strong> OmniRoute's <code>auto/*</code> routing
+optimizes for cost/latency/quota across interchangeable candidates — it
+has no notion of "this WorkItem requires at least COMPLEX and must never
+silently receive SIMPLE," and no equivalent of our
+<code>NoCapableProfileError</code> fail-closed filter. If ever used
+underneath a Worker (Candidate C), the model id would have to be pinned
+explicitly, never delegated to OmniRoute's own scoring, to preserve the
+guarantee.</p>
+
+<h2 id="s19">19. Quota strategy</h2>
+<p><strong>Decision: KEEP</strong> our <code>QuotaManager</code>/
+<code>ProviderAdapter</code> design unchanged — not REPLACE, not naively
+AGGREGATE. Our model must never conflate Claude Code subscription quota,
+Codex subscription quota, Anthropic API budget, OpenAI API budget,
+third-party budgets, or local-model budgets. OmniRoute's quota engine
+(fair-share, burn-rate, plan registry, connection recovery) is a
+per-request/per-connection billing ledger for providers it proxies — a
+different governance unit than our per-CLI-subscription-window probes.
+Feeding <code>alice</code>/<code>victor</code> through it would add
+indirection with no governance benefit.</p>
+
+<h2 id="s20">20. Resilience</h2>
+<p>Confirmed: OmniRoute delivers <strong>infra-level resilience</strong>
+(circuit breakers, classified transient-vs-permanent failures, bounded
+probe/cooldown re-entry). Our orchestrator delivers <strong>business-level
+recovery</strong> (<code>RecoveryCoordinator</code> distinguishing "still
+RUNNING after a crash" from "INTERRUPTED but WorkItem never transitioned
+out"; <code>WaitCoordinator</code> translating diagnosed quota exhaustion
+into scheduled resume). Complementary in principle, not substitutable.</p>
+
+<h2 id="s21">21. Context / handoff</h2>
+<p><strong>No — NOT_FOUND</strong> equivalent to our durable cold-restart
+handoff. OmniRoute's <code>src/lib/memory/*</code> is RAG-style
+conversational memory for chat continuity, not a structured, insert-only,
+WorkItem-scoped fact record proven to survive a genuinely separate OS
+process picking up work (as our real smoke test demonstrates for
+alice→victor). OmniRoute's A2A task manager is a JSON-RPC lifecycle for
+routing requests <em>through</em> OmniRoute as an agent skill provider, not
+a durable handoff mechanism for a third-party WorkItem — confirming the
+warning "A2A != durable handoff." <strong>Decision: KEEP</strong>
+<code>HandoffStore</code>/<code>HandoffRecord</code> unchanged.</p>
+
+<h2 id="s22">22. Reports / audit</h2>
+<p><strong>Decision: KEEP.</strong> No OmniRoute feature resembles our
+<code>RealizationReport</code> (deterministic, non-LLM, insert-only,
+per-WorkItem aggregation). OmniRoute's dashboards are operational
+telemetry for the router itself — a different audience and fact kind.
+REPLACE/EXTEND/MERGE are inapplicable — nothing to replace/extend/merge
+with.</p>
+
+<h2 id="s23">23. Cost / token optimization opportunities</h2>
+<ul>
+<li>Prompt compression — <strong>MEDIUM_TERM</strong> (documented and
+coded, but figures unverified this session; not usable while workers run
+as full CLI subprocesses).</li>
+<li>Free-tier aggregation — <strong>LOW_VALUE</strong> today,
+<strong>MEDIUM_TERM</strong> if a non-CLI worker is added.</li>
+<li>Subscription-vs-metered ladder — <strong>AVOID</strong> for our
+current architecture (re-modeling CLI workers as OmniRoute "connections"
+adds complexity with no governance benefit).</li>
+<li>Adopting OmniRoute wholesale for cost reasons — <strong>AVOID</strong>
+(no measured cost problem justifies the migration risk).</li>
+</ul>
+
+<h2 id="s24">24. Security</h2>
+<p><strong>LOW risk if ever adopted narrowly (Candidate C); MEDIUM if
+exposed as a shared network service.</strong> OmniRoute has its own
+auth/authz/CORS/origin layers, a <code>SECURITY.md</code>, a
+<code>docs/security/</code> directory (WAF, ban detection, CLI token
+handling, compliance, egress policy, error sanitization, and MITM/TLS-
+stealth documentation — the last being a provider-terms-of-service
+evasion feature worth flagging as an operational/legal risk category, not
+a vulnerability in OmniRoute itself). CI includes CodeQL, Semgrep, a
+security scorecard, gitleaks, nightly LLM-security tests. Mitigation if
+ever adopted: run network-isolated, minimal credentials, never let
+<code>auto/*</code> routing touch a governed WorkItem execution path.</p>
+
+<h2 id="s25">25. Maintainability</h2>
+<p>OmniRoute: very actively maintained, large contributor base, heavy CI,
+but a very large fast-moving surface (82 <code>src/lib/*</code> modules,
+132KB README, 2.6MB CHANGELOG) — a real burden risk if depended upon:
+breaking changes, provider deprecations, and a Node/TS/Next.js/Docker/
+Electron stack foreign to our Python/sqlite3/stdlib-only codebase (12,069
+lines, 25 modules, 766 tests, deliberately small and auditable).</p>
+
+<h2 id="s26">26. Operations (Linux target)</h2>
+<p>OmniRoute runs as a persistent network service (Docker/fly.toml/nix),
+with a documented memory-sizing gotcha for coding-agent-sized contexts —
+meaningfully different from our fully-local, no-daemon,
+subprocess-per-execution model. Adopting it, even narrowly, adds an
+always-on service to operate/monitor/patch.</p>
+
+<h2 id="s27">27. Build-vs-adopt scenarios (S1–S7)</h2>
+<table>
+<thead><tr><th>Scenario</th><th>Functional coverage</th><th>Migration effort</th><th>Vendor risk</th></tr></thead>
+<tbody>
+<tr><td data-label="Scenario">S1 — Keep current architecture</td><td data-label="Coverage">Full</td><td data-label="Migration">None</td><td data-label="Vendor risk">None</td></tr>
+<tr><td data-label="Scenario">S2 — Add OmniRoute optionally (future, non-CLI worker)</td><td data-label="Coverage">Full + optional</td><td data-label="Migration">Low, additive</td><td data-label="Vendor risk">Low, isolated</td></tr>
+<tr><td data-label="Scenario">S3 — Adopt OmniRoute, simplify our stack</td><td data-label="Coverage">Severe loss</td><td data-label="Migration">Very high</td><td data-label="Vendor risk">High</td></tr>
+<tr><td data-label="Scenario">S4 — Replace Ralph with OmniRoute</td><td data-label="Coverage">Infeasible (no exec-loop concept)</td><td data-label="Migration">Infeasible</td><td data-label="Vendor risk">N/A</td></tr>
+<tr><td data-label="Scenario">S5 — Reduce orchestrator to thin layer</td><td data-label="Coverage">Severe loss</td><td data-label="Migration">High</td><td data-label="Vendor risk">High</td></tr>
+<tr><td data-label="Scenario">S6 — Stop ai-dev-orchestrator, use OmniRoute only</td><td data-label="Coverage">Total loss</td><td data-label="Migration">N/A (destructive)</td><td data-label="Vendor risk">N/A</td></tr>
+<tr><td data-label="Scenario">S7 — Stop both, use OmniRoute only</td><td data-label="Coverage">Total loss + Ralph loop lost</td><td data-label="Migration">N/A</td><td data-label="Vendor risk">N/A</td></tr>
+</tbody>
+</table>
+<p>S1 dominates every axis relevant to our actual need. S2 is the only
+scenario that adds without subtracting, and only for a hypothetical future
+worker type — hence optional/future, not adopted now.</p>
+
+<h2 id="s28">28. Minimum custom differentiator</h2>
+<p>Not warranted. OmniRoute covers none of our differentiating functional
+surface, so there is nothing to hand off and no reduced "thin governance"
+layer to retain.</p>
+
+<h2 id="s29">29. Component-by-component decision</h2>
+<table>
+<thead><tr><th>Component</th><th>Decision</th></tr></thead>
+<tbody>
+<tr><td data-label="Component">ProviderAdapters</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">QuotaManager</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">WorkerRegistry</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">ExecutionProfile / QualityTier</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">WorkerSelector</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">ComplexityEstimator</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">AdaptiveExecutionSelector</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">RalphExecutionEngine</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">ExecutionStore</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">HandoffStore</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">WaitCoordinator</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">RecoveryCoordinator</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">QualityGateRunner</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">Review orchestration</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">Planning orchestration</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">ReleaseManager</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">RealizationReport</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+<tr><td data-label="Component">RoadmapApplicationService</td><td data-label="Decision">KEEP_AS_IS</td></tr>
+</tbody>
+</table>
+
+<h2 id="s30">30. Weighted scorecard (/100)</h2>
+<p class="meta">Weights: Functional coverage 20, Reliability/recovery 15,
+Quality/governance 15, Maintainability 10, Routing/quota/cost 10,
+Auditability 10, Operational simplicity 10, Extensibility 5, Provider
+independence 5.</p>
+<table>
+<thead><tr><th>Architecture</th><th>Func.</th><th>Reliab.</th><th>Quality/gov</th><th>Maint.</th><th>Routing/quota</th><th>Audit</th><th>Op. simpl.</th><th>Ext.</th><th>Provider indep.</th><th>Total</th></tr></thead>
+<tbody>
+<tr><td data-label="Architecture">OUR_STACK</td><td data-label="Func.">20</td><td data-label="Reliab.">14</td><td data-label="Quality/gov">15</td><td data-label="Maint.">9</td><td data-label="Routing/quota">6</td><td data-label="Audit">10</td><td data-label="Op. simpl.">9</td><td data-label="Ext.">4</td><td data-label="Provider indep.">5</td><td data-label="Total" class="scorecard-total">92</td></tr>
+<tr><td data-label="Architecture">OUR_STACK_PLUS_OMNIROUTE</td><td data-label="Func.">20</td><td data-label="Reliab.">14</td><td data-label="Quality/gov">15</td><td data-label="Maint.">8</td><td data-label="Routing/quota">8</td><td data-label="Audit">10</td><td data-label="Op. simpl.">7</td><td data-label="Ext.">5</td><td data-label="Provider indep.">5</td><td data-label="Total" class="scorecard-total">92</td></tr>
+<tr><td data-label="Architecture">NO_RALPH</td><td data-label="Func.">12</td><td data-label="Reliab.">6</td><td data-label="Quality/gov">10</td><td data-label="Maint.">4</td><td data-label="Routing/quota">6</td><td data-label="Audit">7</td><td data-label="Op. simpl.">5</td><td data-label="Ext.">3</td><td data-label="Provider indep.">5</td><td data-label="Total" class="scorecard-total">58</td></tr>
+<tr><td data-label="Architecture">THIN_ORCHESTRATOR</td><td data-label="Func.">4</td><td data-label="Reliab.">3</td><td data-label="Quality/gov">3</td><td data-label="Maint.">6</td><td data-label="Routing/quota">8</td><td data-label="Audit">3</td><td data-label="Op. simpl.">6</td><td data-label="Ext.">3</td><td data-label="Provider indep.">2</td><td data-label="Total" class="scorecard-total">38</td></tr>
+<tr><td data-label="Architecture">OMNIROUTE_ONLY</td><td data-label="Func.">2</td><td data-label="Reliab.">2</td><td data-label="Quality/gov">1</td><td data-label="Maint.">6</td><td data-label="Routing/quota">9</td><td data-label="Audit">2</td><td data-label="Op. simpl.">5</td><td data-label="Ext.">2</td><td data-label="Provider indep.">1</td><td data-label="Total" class="scorecard-total">30</td></tr>
+</tbody>
+</table>
+<p>OMNIROUTE_ONLY/THIN_ORCHESTRATOR score near-zero on Functional/
+Reliability/Quality-governance/Auditability (60 of 100 points) because
+OmniRoute has no WorkItem, quality gate, review policy, or durable
+cross-worker handoff. NO_RALPH scores low because Ralph's validated TDD/hats
+loop would need risky rebuilding. OUR_STACK and OUR_STACK_PLUS_OMNIROUTE tie
+at 92 because the optional addition is additive and narrowly scoped — net
+neutral, and not adopted now.</p>
+
+<h2 id="s31">31. Migration plan</h2>
+<p><strong>Not applicable</strong> — no migration is recommended. If the
+optional S2 addition is ever pursued: (1) confirm a genuine non-CLI,
+API-key-based worker need exists; (2) build an isolated
+<code>OmniRouteRoutingAdapter</code> implementing the existing
+<code>ProviderAdapter</code> interface, pinned to an explicit non-<code>auto</code>
+model id; (3) add it to <code>config/workers.yaml</code> as a new profile,
+never replacing existing CLI-subscription profiles; (4) run the existing
+offline suite plus a new adapter-specific suite; (5) one cost-bounded real
+smoke test before trusting it in the loop. Pure addition — no existing
+component modified.</p>
+
+<h2 id="s32">32. Rollback plan</h2>
+<p>Not applicable — no change is made this session. If the optional S2
+addition is ever implemented: remove the adapter/profile from
+<code>config/workers.yaml</code> and delete the adapter module; purely
+additive, so no data migration or backfill is needed to roll back.</p>
+
+<h2 id="s33">33. Risks</h2>
+<ul>
+<li>Status quo: no new risk identified beyond already-tracked remaining
+roadmap work (Slice 19/20).</li>
+<li>Narrow S2 adoption (not done now): adds an always-on external
+dependency for a currently-hypothetical benefit.</li>
+<li>Broad adoption (S3–S7): total loss of this project's functional
+purpose; not recommended.</li>
+<li>This audit's own limits: read broadly (README, key docs, module
+structure, representative source, quota/routing/resilience/security
+subsystems, test/CI config) but did not execute OmniRoute's test suite or
+benchmark its compression claims — flagged explicitly rather than
+asserted as fact.</li>
+</ul>
+
+<h2 id="s34">34. POC needed (proposed, NOT executed this session)</h2>
+<p>No POC is required to support the primary decision — the
+functional-coverage gap is not close. A POC would only matter if the
+optional S2 addition is ever seriously considered:</p>
+<ol>
+<li>Add a throwaway <code>omniroute</code> worker profile pointed at a
+local OmniRoute instance, pinned to one explicit non-<code>auto</code>
+model id.</li>
+<li>Run one disposable WorkItem through the real
+<code>RalphExecutionEngine</code> with this worker as developer.</li>
+<li>Verify: ExecutionRecord/quality gate still work unchanged; OmniRoute's
+own quota/circuit-breaker state never overrides WorkerSelector's decision;
+killing the OmniRoute process mid-execution produces the same
+<code>RECOVERY_REQUIRED</code> handling as any other backend failure.</li>
+<li>Explicitly do not wire <code>auto/*</code> routing into this POC — pin
+the model id.</li>
+</ol>
+
+<h2 id="s35">35. Final decision</h2>
+<div class="decision-block">
+<p><strong>DECISION:</strong> <span class="decision-primary">KEEP_CURRENT_ARCHITECTURE</span></p>
+<p><strong>SECOND_BEST_OPTION:</strong> ADD_OMNIROUTE_OPTIONALLY — narrowly,
+as a future opt-in routing/cost backend underneath a hypothetical non-CLI
+worker. Not adopted this session.</p>
+<p><strong>WHAT_WOULD_CHANGE_MY_MIND:</strong></p>
+<ul>
+<li>A future OmniRoute version adding a genuine WorkItem/task-dependency/
+quality-gate/independent-review model (none exists in commit
+<code>152d951</code>).</li>
+<li>A real, measured cost problem in our current architecture that
+OmniRoute's routing/compression could concretely and safely reduce,
+re-evaluated through the POC in §34 rather than assumed from marketing
+claims.</li>
+<li>Ralph itself becoming unmaintained/abandoned — would motivate
+re-running the ecosystem study, but OmniRoute still would not be a Ralph
+replacement candidate (no execution-loop concept at all).</li>
+</ul>
+<p><strong>STOP PROJECT:</strong></p>
+<ul>
+<li>Can OmniRoute replace ai-dev-orchestrator? <span class="stop-no">NO</span></li>
+<li>Can OmniRoute replace Ralph? <span class="stop-no">NO</span></li>
+<li>Can OmniRoute replace both? <span class="stop-no">NO</span></li>
+<li>STOP_AI_DEV_ORCHESTRATOR? <span class="stop-no">NO</span></li>
+<li>STOP_RALPH? <span class="stop-no">NO</span></li>
+</ul>
+<p>No migration plan is given for a stop-decision because none is
+warranted by the evidence gathered.</p>
+</div>
+
+<h2>Process note (independence)</h2>
+<p>This report was fully drafted, including the Final decision section,
+<strong>before</strong> any Codex report's content was read. Only
+filenames were checked in advance (never content), to avoid an accidental
+overwrite. The resulting <code>CODEX_REPORT_NOT_AVAILABLE</code> or
+arbitration outcome is recorded separately in the session's final response
+and, if applicable, in <code>docs/OMNIROUTE_ARBITRATION.md</code> — never
+edited into this file, to keep it an honest, unedited record of Claude's
+independent conclusion.</p>
+
+</div></body></html>

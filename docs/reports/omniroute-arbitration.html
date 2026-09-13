@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OmniRoute Arbitration — Claude vs Codex</title>
+<style>
+body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; margin: 0; padding: 16px;
+       background: #f6f8fa; color: #1f2328; line-height: 1.5; }
+.container { max-width: 1080px; margin: 0 auto; }
+h1 { font-size: 1.5em; margin-bottom: 4px; }
+h2 { font-size: 1.15em; margin-top: 32px; border-bottom: 1px solid #d0d7de; padding-bottom: 4px; }
+h3 { font-size: 1.0em; margin-top: 20px; }
+.meta { color: #57606a; font-size: 0.85em; }
+.summary-box { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 14px 18px; margin: 14px 0; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0 20px 0; background: #fff; font-size: 0.86em; }
+th, td { border: 1px solid #d0d7de; padding: 6px 8px; text-align: left; vertical-align: top; word-break: break-word; }
+th { background: #eef1f4; }
+tr:nth-child(even) td { background: #fafbfc; }
+code { background: #eef1f4; padding: 1px 5px; border-radius: 4px; font-size: 0.92em; }
+.decision-block { background: #fff8e1; border: 1px solid #e8c766; border-radius: 6px; padding: 14px 18px; margin: 14px 0; }
+.conf-high { color: #1a7f37; font-weight: 700; }
+.conf-medium { color: #9a6700; font-weight: 700; }
+.conf-med-high { color: #57606a; font-weight: 700; }
+.stop-no { color: #1a7f37; font-weight: 700; }
+@media (max-width: 700px) {
+  table, thead, tbody, th, td, tr { display: block; }
+  th { display: none; }
+  td { border: none; border-bottom: 1px solid #e8e8e8; padding: 4px 0; }
+  td::before { content: attr(data-label) ": "; font-weight: 600; }
+}
+</style>
+</head>
+<body><div class="container">
+
+<h1>OmniRoute Arbitration — Claude vs Codex</h1>
+<p class="meta">Date: 2026-09-13. Compares two independent audits of the same
+question, each written without reading the other first.</p>
+
+<div class="summary-box">
+<p>Claude: <code>docs/OMNIROUTE_OPPORTUNITY_REPORT_CLAUDE.md</code> /
+<code>docs/reports/omniroute-opportunity-report-claude.html</code></p>
+<p>Codex: <code>docs/OMNIROUTE_OPPORTUNITY_REPORT.md</code> /
+<code>docs/reports/omniroute-opportunity-report.html</code></p>
+<p><strong>Goal: surface disagreements, not confirm agreement.</strong> A
+decision is never made by vote — "2 models against 1" is not evidence; the
+better-substantiated technical claim wins, with an explicit confidence
+level.</p>
+</div>
+
+<h2>1. Headline recommendations, side by side</h2>
+<table>
+<thead><tr><th></th><th>Claude</th><th>Codex</th></tr></thead>
+<tbody>
+<tr><td data-label="">Primary decision</td><td data-label="Claude"><code>KEEP_CURRENT_ARCHITECTURE</code></td><td data-label="Codex"><code>GO_INCREMENTALLY</code> (mapped in §4)</td></tr>
+<tr><td data-label="">Architecture</td><td data-label="Claude">A (status quo); C noted as future/POC-gated</td><td data-label="Codex">C ("hybride sous contraintes")</td></tr>
+<tr><td data-label="">Timing</td><td data-label="Claude">Wait for a proven real need</td><td data-label="Codex">Start a gated spike now (OR-0), before a proven need</td></tr>
+<tr><td data-label="">Stop ai-dev-orchestrator?</td><td data-label="Claude">NO</td><td data-label="Codex">NO (implicit)</td></tr>
+<tr><td data-label="">Stop Ralph?</td><td data-label="Claude">NO</td><td data-label="Codex">NO (explicit)</td></tr>
+<tr><td data-label="">Component replacements</td><td data-label="Claude">None</td><td data-label="Codex">None</td></tr>
+</tbody>
+</table>
+
+<h2>2. Where the two audits agree <span class="conf-high">(HIGH confidence)</span></h2>
+<ul>
+<li>OmniRoute has no WorkItem/MVP/quality-gate/independent-review/
+durable-cold-restart-handoff/roadmap-approval equivalent.</li>
+<li>OmniRoute is not a Ralph substitute — no hats/event-bus/TDD-loop
+concept exists in it.</li>
+<li>No orchestrator component should be FULLY_REPLACE'd or REMOVE'd by
+OmniRoute today.</li>
+<li>Our CLI-subscription quota model must never be naively merged into
+OmniRoute's connection/API quota ledger.</li>
+<li>OmniRoute's context/session features are conversational, not
+business-fact handoff — no substitute for <code>HandoffRecord</code>.</li>
+<li><code>auto/*</code> routing must never silently choose the executed
+model for a governed WorkItem.</li>
+<li>OmniRoute's engineering/CI maturity is real, but not a reason by
+itself to adopt it structurally.</li>
+<li>MIT licence permits dependency use, but not an unconditional green
+light to redistribute the full bundle (asset/notice provenance
+incomplete — traced in detail by Codex).</li>
+<li>Neither audit executed OmniRoute's test suite, started its gateway,
+performed a live probe, or consumed a reset credit.</li>
+</ul>
+
+<h2>3. Where the two audits differ</h2>
+
+<h3>3.1 Depth of source coverage (methodology gap)</h3>
+<p>Codex's audit reads and cites dozens of specific files under
+<code>open-sse/services/*</code>, <code>open-sse/executors/*</code>,
+<code>open-sse/translator/*</code> with commit-pinned links and line
+numbers. Claude's audit explored <code>src/lib/*</code>,
+<code>src/app/*</code>, <code>docs/*</code>, and representative source
+files, but <strong>never opened the <code>open-sse/</code>
+directory</strong> — a real, material blind spot surfaced here rather than
+hidden.</p>
+<table>
+<thead><tr><th>Claim</th><th>Claude's report</th><th>Codex's report</th><th>Better substantiated</th></tr></thead>
+<tbody>
+<tr><td data-label="Claim">Circuit breaker states</td><td data-label="Claude">3 states (doc-sourced)</td><td data-label="Codex">4 states: CLOSED/DEGRADED/OPEN/HALF_OPEN (code-sourced, <code>circuitBreaker.ts</code>)</td><td data-label="Better">Codex</td></tr>
+<tr><td data-label="Claim">Reset-credit consumption</td><td data-label="Claude">Described only as idempotent status/read concept</td><td data-label="Codex">Concrete POST consume endpoint with idempotency key identified</td><td data-label="Better">Codex</td></tr>
+<tr><td data-label="Claim">Context/session handoff persistence</td><td data-label="Claude">RAG-style memory only (<code>src/lib/memory/*</code>)</td><td data-label="Codex">Separate SQLite <code>contextHandoffs</code> table, 5h default TTL (<code>contextHandoff.ts</code>) — still not a HandoffRecord substitute</td><td data-label="Better">Codex (more complete; same eventual conclusion)</td></tr>
+<tr><td data-label="Claim">Number of routing strategies</td><td data-label="Claude">Accepted README's "19" at face value</td><td data-label="Codex">Counted code registry: 20, plus internal quota-share; flagged README as stale</td><td data-label="Better">Codex</td></tr>
+</tbody>
+</table>
+<p class="conf-high">Confidence: HIGH that Codex's OmniRoute-side evidence
+is more complete on these four points.</p>
+
+<h3>3.2 Depth of source coverage on OUR OWN codebase (the reverse gap)</h3>
+<p>Codex also corrected claims about our own code, independently
+re-verified this session directly against the working tree:</p>
+<table>
+<thead><tr><th>Codex's claim</th><th>Independent re-verification this session</th><th>Verdict</th></tr></thead>
+<tbody>
+<tr><td data-label="Claim"><code>config/workers.yaml</code> declares <code>code_review</code>, but <code>MVPManager.REVIEW_CAPABILITY = "reviewer"</code> — a naming mismatch</td><td data-label="Verification">grep confirms both facts; no alias/mapping exists anywhere in <code>src/orchestrator/</code></td><td data-label="Verdict" class="conf-high">CONFIRMED — as configured, reviewer selection would find zero eligible workers. Real, pre-existing, unrelated to OmniRoute; worth a future fix.</td></tr>
+<tr><td data-label="Claim">No CRITICAL-tier profile configured for either worker</td><td data-label="Verification">grep confirms only SIMPLE/STANDARD/COMPLEX exist</td><td data-label="Verdict" class="conf-high">CONFIRMED — consistent with fail-closed design, not a defect.</td></tr>
+</tbody>
+</table>
+
+<h3>3.3 The real strategic disagreement: timing and formality, not direction</h3>
+<p>Both audits land in the same category of the 8-option list once Codex's
+vocabulary is mapped (§4) — neither recommends broad adoption, replacing
+Ralph, or stopping either project. The actual disagreement:</p>
+<ul>
+<li><strong>Claude</strong>: do nothing now; wait for a concrete, proven
+non-CLI worker need before even a POC.</li>
+<li><strong>Codex</strong>: start a gated, reversible qualification spike
+now (<code>OR-0</code>), because the capabilities are costly to rebuild
+and the investigation cost is low and bounded if validation gates are
+respected.</li>
+</ul>
+<p class="conf-medium">Confidence: MEDIUM on which timing is better.
+Missing evidence in both reports: a concrete trigger event, or a
+build-cost estimate for just the narrow pieces we'd actually want.</p>
+
+<h3>3.4 Secondary disagreements</h3>
+<table>
+<thead><tr><th>Topic</th><th>Claude</th><th>Codex</th><th>Agreement?</th><th>Arbitration</th></tr></thead>
+<tbody>
+<tr><td data-label="Topic">Claude Code reasoning-effort transport (native)</td><td data-label="Claude">Not examined</td><td data-label="Codex"><code>_build_backend_args</code> only passes <code>--model</code>; effort not transmitted for Claude Code backend today</td><td data-label="Agreement?">No — not checked by Claude</td><td data-label="Arbitration">Codex, plausible, MEDIUM confidence (not re-verified this session)</td></tr>
+<tr><td data-label="Topic">WorkerSelector economic ranking</td><td data-label="Claude">"capability &gt; governance &gt; quota &gt; cost" (module docstring, aggregate)</td><td data-label="Codex">Priority-desc then worker_id lexical; cost_rank only within a chosen worker, no global optimum</td><td data-label="Agreement?">Not contradictory, Codex more precise</td><td data-label="Arbitration">Codex's formulation should be treated as accurate going forward</td></tr>
+<tr><td data-label="Topic">OmniRoute historical-outcome/eval routing</td><td data-label="Claude">Not investigated in depth</td><td data-label="Codex">Detailed (EWMA signal, evalRouting) with a concrete safe-cooperation proposal</td><td data-label="Agreement?">Depth difference</td><td data-label="Arbitration">Codex's treatment more usable if ever pursued</td></tr>
+</tbody>
+</table>
+
+<h2>4. Mapping Codex's vocabulary onto the required 8-option list</h2>
+<p>Codex uses its own <code>GO_INCREMENTALLY</code> / "Architecture C
+hybride" / "Scénario HYBRID (MINIMAL first)" language, not the canonical
+8-label vocabulary. Based on what it actually recommends (no component
+replacement, native path fully available as fallback, OmniRoute only ever
+underneath and only for a certified, pinned, non-<code>auto</code>
+candidate set), the closest canonical label is
+<strong><code>ADD_OMNIROUTE_OPTIONALLY</code></strong> — with the caveat
+that Codex wants the spike started now, a timing distinction the 8-label
+vocabulary doesn't itself capture.</p>
+
+<h2>5. Confidence summary</h2>
+<table>
+<thead><tr><th>Decision point</th><th>Confidence</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td data-label="Decision">No WorkItem/MVP/review/gate/handoff/roadmap equivalent in OmniRoute</td><td data-label="Confidence" class="conf-high">HIGH</td><td data-label="Why">Both audits searched independently and broadly; absence consistent across two searches.</td></tr>
+<tr><td data-label="Decision">OmniRoute is not a Ralph substitute</td><td data-label="Confidence" class="conf-high">HIGH</td><td data-label="Why">No hats/event-bus/TDD-loop concept found by either.</td></tr>
+<tr><td data-label="Decision">No FULLY_REPLACE/REMOVE today</td><td data-label="Confidence" class="conf-high">HIGH</td><td data-label="Why">Unanimous via different reasoning paths.</td></tr>
+<tr><td data-label="Decision">Quota models must not be naively merged</td><td data-label="Confidence" class="conf-high">HIGH</td><td data-label="Why">Same root cause found via non-overlapping evidence.</td></tr>
+<tr><td data-label="Decision">Start gated spike now vs. wait for proven need</td><td data-label="Confidence" class="conf-medium">MEDIUM</td><td data-label="Why">Real disagreement; missing a concrete trigger event in both reports.</td></tr>
+<tr><td data-label="Decision">Exact internal capability detail of OmniRoute subsystems</td><td data-label="Confidence" class="conf-med-high">MEDIUM-HIGH favoring Codex</td><td data-label="Why">Code-level citations, more complete; not all re-fetched this session.</td></tr>
+<tr><td data-label="Decision"><code>workers.yaml</code>/<code>REVIEW_CAPABILITY</code> mismatch is real</td><td data-label="Confidence" class="conf-high">HIGH</td><td data-label="Why">Independently re-verified via grep against the current working tree.</td></tr>
+</tbody>
+</table>
+
+<h2>6. Final arbitration</h2>
+<div class="decision-block">
+<p><strong>CLAUDE_RECOMMENDATION:</strong> <code>KEEP_CURRENT_ARCHITECTURE</code>
+(do nothing now; revisit on a concrete need).</p>
+<p><strong>CODEX_RECOMMENDATION:</strong> closest mapping
+<code>ADD_OMNIROUTE_OPTIONALLY</code>, with an immediate gated
+qualification spike (OR-0) rather than a deferred one.</p>
+</div>
+
+<p>Both reports agree on every structural question that actually decides
+whether either project should stop, be replaced, or be reduced (§2) — not
+used here as a tie-breaker, it is simply the independently-reached,
+evidence-backed shape of the problem: <strong>OmniRoute does not threaten
+ai-dev-orchestrator or Ralph, and no component should be replaced or
+removed today.</strong> There is no real disagreement to arbitrate on the
+question this audit exists to answer.</p>
+
+<p>The one substantive disagreement (timing of a spike, §3.3) is resolved
+as follows, on the evidence presented rather than by preferring either
+author: <strong><code>ADD_OMNIROUTE_OPTIONALLY</code>, deferred until a
+concrete trigger, remains the better-supported position — but the bar for
+"concrete trigger" should explicitly include a low-cost, bounded
+qualification step like Codex's OR-0</strong> (a throwaway, isolated,
+non-<code>auto</code>, upstream-pinned instance, no production
+credentials, no integration into <code>WorkerSelector</code>). OR-0 is
+cheap and reversible enough not to require waiting for a "real" production
+need — specifically to convert today's honestly-labeled UNKNOWNs (real
+p50/p95 latency overhead, real compression benefit on our workload, real
+operational cost) into measured facts. Everything past OR-0 (actually
+wiring OmniRoute into <code>WorkerSelector</code>/
+<code>AdaptiveExecutionSelector</code>/<code>QuotaManager</code>) should
+stay gated on a proven need, exactly as Claude's report argues and exactly
+as Codex's own validation gates already require.</p>
+
+<p>This synthesizes the two reports into a narrower position than either
+stated alone: <strong>run the smallest possible OR-0-style measurement
+spike opportunistically, in a future session, with no code in
+<code>src/orchestrator/</code> touched and no credentials exposed; do not
+commit to OR-1 or beyond without a concrete need.</strong> This is not a
+new 9th option — it collapses onto <code>ADD_OMNIROUTE_OPTIONALLY</code> in
+the 8-option vocabulary, with the qualification-spike detail preserved as
+an implementation note.</p>
+
+<p class="conf-med-high"><strong>Confidence in this synthesis:
+MEDIUM-HIGH.</strong> High on the "no replacement, no removal, no stop"
+core; medium on the exact trigger threshold for even the narrow spike,
+because neither audit measured OmniRoute's actual overhead/benefit on our
+real workload — the single largest piece of missing evidence in both
+reports.</p>
+
+<h2>STOP PROJECT — arbitrated final answer</h2>
+<ul>
+<li>Can OmniRoute replace ai-dev-orchestrator? <span class="stop-no">NO</span> (both audits, HIGH confidence)</li>
+<li>Can OmniRoute replace Ralph? <span class="stop-no">NO</span> (both audits, HIGH confidence)</li>
+<li>Can OmniRoute replace both? <span class="stop-no">NO</span> (both audits, HIGH confidence)</li>
+<li>STOP_AI_DEV_ORCHESTRATOR? <span class="stop-no">NO</span></li>
+<li>STOP_RALPH? <span class="stop-no">NO</span></li>
+</ul>
+<p>No migration or stop plan is given, because none is warranted by either
+audit's evidence, independently or combined.</p>
+
+<h2>Process note</h2>
+<p>This arbitration was written after, and only after, both Claude's report
+(finalized first, before any Codex content was read) and Codex's
+pre-existing report (discovered by filename check, read for the first time
+only after Claude's own report was already complete) existed on disk.
+Disagreement-hunting, not agreement-confirming, was the explicit goal;
+agreement is reported as what the evidence actually showed, not smoothed
+over to manufacture false balance, and disagreement is preserved rather
+than resolved by simple majority.</p>
+
+</div></body></html>
