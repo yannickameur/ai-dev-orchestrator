@@ -1,0 +1,81 @@
+# Worker Registry (Slice 15) — declarative, no code changes required to
+# add/adjust a worker or its execution profiles. See
+# docs/ADAPTIVE_EXECUTION.md sections 4-5 for the design behind this file,
+# and src/orchestrator/worker_registry.py for the loader/validator.
+#
+# No secrets here: authentication stays with the Claude Code / Codex CLIs
+# themselves (already logged in outside this project) — never an API key,
+# token, or credential in this file.
+#
+# Model names below are the ones already confirmed in this project's own
+# tests/docs (docs/SPIKE_RALPH.md, ralph.yml/ralph-codex.yml in
+# ~/projects/ralph-spike) — never invented.
+#
+# quality_tier: one of SIMPLE, STANDARD, COMPLEX, CRITICAL (see
+# orchestrator.worker_selector.QualityTier). Used only from Slice 16/17
+# onward — Slice 15 loads and validates this data but does not act on
+# quality_tier yet.
+
+workers:
+  - worker_id: alice
+    display_name: Alice
+    enabled: true
+    provider: anthropic
+    backend: claude_code
+    priority: 100
+
+    capabilities:
+      - development
+      - code_review
+      - release_planning
+      - roadmap_synthesis
+      - complexity_estimation
+
+    default_profile_id: standard
+    estimator_profile_id: economy
+
+    profiles:
+      economy:
+        quality_tier: SIMPLE
+        model: haiku
+
+      standard:
+        quality_tier: STANDARD
+        model: sonnet
+
+      deep:
+        quality_tier: COMPLEX
+        model: sonnet
+
+  - worker_id: victor
+    display_name: Victor
+    enabled: true
+    provider: openai
+    backend: codex
+    priority: 100
+
+    capabilities:
+      - development
+      - code_review
+      - release_planning
+      - roadmap_synthesis
+      - complexity_estimation
+
+    default_profile_id: standard
+    estimator_profile_id: economy
+
+    profiles:
+      economy:
+        quality_tier: SIMPLE
+        model: gpt-5.6-terra
+        reasoning_effort: low
+
+      standard:
+        quality_tier: STANDARD
+        model: gpt-5.6-terra
+        reasoning_effort: medium
+
+      deep:
+        quality_tier: COMPLEX
+        model: gpt-5.6-terra
+        reasoning_effort: high

@@ -29,9 +29,12 @@ from orchestrator.providers.contracts import (
 )
 from orchestrator.quota_manager import QuotaManager, QuotaPolicy
 from orchestrator.worker_selector import (
+    ExecutionProfile,
     NoEligibleWorkerError,
     ProviderSelectionDiagnostic,
+    QualityTier,
     ReviewIndependenceError,
+    UnknownExecutionProfileError,
     UnknownWorkerError,
     Worker,
     WorkerSelectionPolicy,
@@ -96,7 +99,7 @@ def _alice(**overrides) -> Worker:
         priority=100,
     )
     fields.update(overrides)
-    return Worker(**fields)
+    return Worker.with_single_profile(**fields)
 
 
 def _victor(**overrides) -> Worker:
@@ -111,16 +114,16 @@ def _victor(**overrides) -> Worker:
         priority=90,
     )
     fields.update(overrides)
-    return Worker(**fields)
+    return Worker.with_single_profile(**fields)
 
 
 class TestWorkerModel:
     def test_two_workers_may_share_a_provider_with_different_models(self) -> None:
-        fast = Worker(
+        fast = Worker.with_single_profile(
             worker_id="codex_fast", display_name="Fast", provider="openai", backend="codex",
             model="gpt-5.6-terra", reasoning_effort="low", capabilities=frozenset({"developer"}),
         )
-        careful = Worker(
+        careful = Worker.with_single_profile(
             worker_id="codex_careful", display_name="Careful", provider="openai", backend="codex",
             model="gpt-5.6-terra", reasoning_effort="high", capabilities=frozenset({"developer"}),
         )
@@ -128,15 +131,15 @@ class TestWorkerModel:
         assert fast.worker_id != careful.worker_id
 
     def test_reasoning_effort_is_optional(self) -> None:
-        worker = Worker(
+        worker = Worker.with_single_profile(
             worker_id="claude_dev_01", display_name="Alice", provider="anthropic",
             backend="claude_code", model="sonnet", capabilities=frozenset({"developer"}),
         )
-        assert worker.reasoning_effort is None
+        assert worker.profile().reasoning_effort is None
 
     def test_empty_worker_id_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="non-empty"):
-            Worker(
+            Worker.with_single_profile(
                 worker_id="", display_name="Alice", provider="anthropic",
                 backend="claude_code", model="sonnet",
             )
@@ -145,6 +148,101 @@ class TestWorkerModel:
         manager = _quota_manager({"anthropic": FakeAdapter(_state("anthropic"))})
         with pytest.raises(ValueError, match="duplicate"):
             WorkerSelector([_alice(), _alice()], manager)
+
+
+class TestExecutionProfilesOnWorker:
+    def _multi_profile_worker(self, **overrides) -> Worker:
+        fields = dict(
+            worker_id="victor", display_name="Victor", provider="openai", backend="codex",
+            capabilities=frozenset({"developer"}),
+            profiles=(
+                ExecutionProfile(profile_id="economy", quality_tier=QualityTier.SIMPLE, model="gpt-5.6-terra", reasoning_effort="low"),
+                ExecutionProfile(profile_id="deep", quality_tier=QualityTier.COMPLEX, model="gpt-5.6-terra", reasoning_effort="high"),
+            ),
+            default_profile_id="economy",
+        )
+        fields.update(overrides)
+        return Worker(**fields)
+
+    def test_worker_requires_at_least_one_profile(self) -> None:
+        with pytest.raises(ValueError, match="at least one execution profile"):
+            Worker(
+                worker_id="w1", display_name="W", provider="openai", backend="codex",
+                capabilities=frozenset({"developer"}), profiles=(),
+            )
+
+    def test_single_profile_default_is_auto_resolved(self) -> None:
+        worker = Worker.with_single_profile(
+            worker_id="w1", display_name="W", provider="openai", backend="codex", model="gpt-5.6-terra",
+        )
+        assert worker.default_profile_id == "default"
+        assert worker.profile().model == "gpt-5.6-terra"
+
+    def test_multiple_profiles_require_explicit_default(self) -> None:
+        with pytest.raises(ValueError, match="default_profile_id"):
+            self._multi_profile_worker(default_profile_id=None)
+
+    def test_duplicate_profile_id_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="duplicate profile_id"):
+            Worker(
+                worker_id="w1", display_name="W", provider="openai", backend="codex",
+                capabilities=frozenset({"developer"}),
+                profiles=(
+                    ExecutionProfile(profile_id="p", quality_tier=QualityTier.SIMPLE, model="m1"),
+                    ExecutionProfile(profile_id="p", quality_tier=QualityTier.STANDARD, model="m2"),
+                ),
+                default_profile_id="p",
+            )
+
+    def test_default_profile_id_must_reference_a_real_profile(self) -> None:
+        with pytest.raises(ValueError, match="default_profile_id"):
+            self._multi_profile_worker(default_profile_id="nonexistent")
+
+    def test_estimator_profile_id_must_reference_a_real_profile(self) -> None:
+        with pytest.raises(ValueError, match="estimator_profile_id"):
+            self._multi_profile_worker(estimator_profile_id="nonexistent")
+
+    def test_estimator_profile_id_is_optional(self) -> None:
+        worker = self._multi_profile_worker()
+        assert worker.estimator_profile_id is None
+
+    def test_profile_lookup_by_id(self) -> None:
+        worker = self._multi_profile_worker()
+        assert worker.profile("deep").quality_tier is QualityTier.COMPLEX
+        assert worker.profile("deep").reasoning_effort == "high"
+
+    def test_profile_lookup_defaults_to_default_profile_id(self) -> None:
+        worker = self._multi_profile_worker()
+        assert worker.profile().profile_id == "economy"
+
+    def test_unknown_profile_id_raises(self) -> None:
+        worker = self._multi_profile_worker()
+        with pytest.raises(UnknownExecutionProfileError):
+            worker.profile("nope")
+
+    def test_profiles_and_worker_are_immutable(self) -> None:
+        worker = self._multi_profile_worker()
+        assert isinstance(worker.profiles, tuple)
+        with pytest.raises(AttributeError):
+            worker.profiles = ()
+        with pytest.raises(AttributeError):
+            worker.profile("deep").model = "changed"
+
+    def test_enabled_defaults_true_and_is_settable(self) -> None:
+        assert self._multi_profile_worker().enabled is True
+        assert self._multi_profile_worker(enabled=False).enabled is False
+
+    def test_invalid_quality_tier_type_is_rejected(self) -> None:
+        with pytest.raises(TypeError):
+            ExecutionProfile(profile_id="p", quality_tier=3, model="m")
+
+    def test_reasoning_effort_none_is_supported_on_profile(self) -> None:
+        profile = ExecutionProfile(profile_id="p", quality_tier=QualityTier.STANDARD, model="m")
+        assert profile.reasoning_effort is None
+
+    def test_reasoning_effort_value_is_supported_on_profile(self) -> None:
+        profile = ExecutionProfile(profile_id="p", quality_tier=QualityTier.STANDARD, model="m", reasoning_effort="high")
+        assert profile.reasoning_effort == "high"
 
 
 class TestBasicSelection:
@@ -246,12 +344,12 @@ class TestPriorityAndTieBreak:
     def test_two_workers_on_the_same_provider_use_only_priority_no_provider_logic(self) -> None:
         adapter = FakeAdapter(_state("openai"))
         manager = _quota_manager({"openai": adapter})
-        fast = Worker(
+        fast = Worker.with_single_profile(
             worker_id="codex_fast", display_name="Fast", provider="openai", backend="codex",
             model="gpt-5.6-terra", reasoning_effort="low", capabilities=frozenset({"developer"}),
             priority=10,
         )
-        careful = Worker(
+        careful = Worker.with_single_profile(
             worker_id="codex_careful", display_name="Careful", provider="openai", backend="codex",
             model="gpt-5.6-terra", reasoning_effort="high", capabilities=frozenset({"developer"}),
             priority=20,
@@ -264,6 +362,37 @@ class TestPriorityAndTieBreak:
 
         assert selected.worker_id == "codex_careful"
         assert adapter.probe_count == 1  # single provider probed once, not per worker
+
+
+class TestEnabledFiltering:
+    def test_disabled_worker_is_never_selected(self) -> None:
+        manager = _quota_manager({"anthropic": FakeAdapter(_state("anthropic"))})
+        selector = WorkerSelector([_alice(enabled=False)], manager)
+
+        with pytest.raises(NoEligibleWorkerError):
+            asyncio.run(
+                selector.select(WorkerSelectionRequest(required_capabilities=frozenset({"developer"})))
+            )
+
+    def test_enabled_worker_is_selected_even_alongside_a_disabled_one(self) -> None:
+        manager = _quota_manager(
+            {"anthropic": FakeAdapter(_state("anthropic")), "openai": FakeAdapter(_state("openai"))}
+        )
+        selector = WorkerSelector([_alice(enabled=False), _victor()], manager)
+
+        selected = asyncio.run(
+            selector.select(WorkerSelectionRequest(required_capabilities=frozenset({"developer"})))
+        )
+
+        assert selected.worker_id == "codex_dev_01"
+
+    def test_disabled_worker_is_still_a_known_worker_for_author_resolution(self) -> None:
+        # enabled=False only removes a worker as a *candidate*; it must
+        # still be resolvable by worker_id (e.g. as a historical author
+        # reference), never simply absent from the registry.
+        manager = _quota_manager({"anthropic": FakeAdapter(_state("anthropic"))})
+        selector = WorkerSelector([_alice(enabled=False)], manager)
+        assert selector._resolve_author("claude_dev_01").worker_id == "claude_dev_01"
 
 
 class TestNoHardcodedProvider:
@@ -342,7 +471,7 @@ class TestAuthorReviewerIndependence:
 
     def test_require_distinct_provider_with_only_same_provider_reviewer_raises(self) -> None:
         alice = _alice()
-        second_claude = Worker(
+        second_claude = Worker.with_single_profile(
             worker_id="claude_dev_02", display_name="Bob", provider="anthropic",
             backend="claude_code", model="haiku", capabilities=frozenset({"developer", "reviewer"}),
             priority=50,
@@ -364,7 +493,7 @@ class TestAuthorReviewerIndependence:
     def test_prefer_distinct_provider_picks_cross_provider_when_available(self) -> None:
         alice = _alice()
         victor = _victor()
-        second_claude = Worker(
+        second_claude = Worker.with_single_profile(
             worker_id="claude_dev_02", display_name="Bob", provider="anthropic",
             backend="claude_code", model="haiku", capabilities=frozenset({"developer", "reviewer"}),
             priority=999,  # would win on priority alone, but same provider as author
@@ -391,7 +520,7 @@ class TestAuthorReviewerIndependence:
 
     def test_prefer_distinct_provider_falls_back_to_same_provider_when_necessary(self) -> None:
         alice = _alice()
-        second_claude = Worker(
+        second_claude = Worker.with_single_profile(
             worker_id="claude_dev_02", display_name="Bob", provider="anthropic",
             backend="claude_code", model="haiku", capabilities=frozenset({"developer", "reviewer"}),
             priority=50,
@@ -424,7 +553,7 @@ class TestAuthorReviewerIndependence:
         # raising, since require_distinct_provider_for_review is False.
         alice = _alice()
         victor = _victor()
-        second_claude = Worker(
+        second_claude = Worker.with_single_profile(
             worker_id="claude_dev_02", display_name="Bob", provider="anthropic",
             backend="claude_code", model="haiku", capabilities=frozenset({"developer", "reviewer"}),
             priority=50,
@@ -657,7 +786,7 @@ class TestSelectionFailureDiagnostics:
 
     def test_review_independence_diagnostic_reports_all_candidate_providers(self, tmp_path) -> None:
         alice = _alice()
-        second_claude = Worker(
+        second_claude = Worker.with_single_profile(
             worker_id="claude_dev_02", display_name="Bob", provider="anthropic",
             backend="claude_code", model="haiku", capabilities=frozenset({"developer", "reviewer"}),
             priority=50,

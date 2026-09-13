@@ -7,7 +7,7 @@ name = "orchestrator"
 version = "0.1.0"
 description = "AI Dev Orchestrator — governance/quota/selection layer above Ralph Orchestrator"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["PyYAML>=6.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

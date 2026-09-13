@@ -1,26 +1,26 @@
 # Status
 
-Dernière mise à jour : après Slice 14, étude adaptive execution (2026-09-13).
+Dernière mise à jour : Slice 15 (2026-09-13).
 
 - **Slice 14 — Apply decided RoadmapProposal + create/start next MVP :
   DONE, publiée sur `origin/main`** (commit `a5430227c623138fc8e3498378247f489e658083`).
-  Voir `src/orchestrator/roadmap_application.py`. Ferme la boucle autonome
-  Release N -> ActivityReport -> planning -> RoadmapProposal ->
-  approbation -> MVP N+1.
-- **Étude d'architecture (cette session, documentaire uniquement, aucun
-  code fonctionnel modifié)** : capacités réelles de Ralph
-  (NATIVE/PARTIAL/ORCHESTRATOR) confirmées par preuves (`docs/SPIKE_RALPH.md`
-  + inspection CLI locale), architecture cible pour Worker Registry
-  configurable, Execution Profiles, quality tiers, complexity pre-flight,
-  et séquence de sélection adaptative (Option C retenue). Voir
+- **Étude adaptive execution : DONE, publiée sur `origin/main`** (commit
+  `bc869dbc5ef01d44293eed9815face14299316fe`). Voir
   `docs/ADAPTIVE_EXECUTION.md`.
-- Aucune implémentation adaptive encore réalisée : `Worker`,
-  `WorkerSelector`, `RalphExecutionEngine`, `MVPManager`,
-  `RoadmapApplicationService` restent strictement inchangés.
-- Prochaine étape attendue : **Slice 15 — Configurable Worker Registry +
-  Execution Profiles** (voir `ROADMAP.md`, « Découpage incrémental » —
-  Slices 15 à 18 pour l'adaptive execution, Git/PR/merge governance
-  décalée en Slice 19).
+- **Slice 15 — Configurable Worker Registry + Execution Profiles : DONE**
+  (offline, tests verts). Voir `src/orchestrator/worker_registry.py`
+  (nouveau) et `src/orchestrator/worker_selector.py` (`Worker` = agent
+  logique seul, nouveaux `ExecutionProfile`/`QualityTier`). `Worker`
+  n'a plus de `model`/`reasoning_effort` fixes — ceux-ci vivent sur un ou
+  plusieurs `ExecutionProfile` par worker, déclarés dans
+  `config/workers.yaml` (exemple réel, sans secret). `PyYAML` ajoutée
+  comme première dépendance runtime déclarée du projet.
+  `RalphExecutionEngine`/`mvp_manager.py`/`planning.py` adaptés au
+  minimum nécessaire (résolution du profil par défaut avant construction
+  de l'`ExecutionRequest`) — aucune sélection adaptative de profil,
+  aucun estimator (Slices 16/17).
+- Prochaine étape attendue : **Slice 16 — Complexity pre-flight +
+  recommendations** (voir `ROADMAP.md`, « Découpage incrémental »).
 
 Détail complet des slices, de la vision cible et du découpage incrémental :
 voir `ROADMAP.md` (source de vérité fonctionnelle).
