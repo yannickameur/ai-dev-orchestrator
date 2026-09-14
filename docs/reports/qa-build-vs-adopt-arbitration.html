@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QA Build-vs-Adopt Arbitration — Claude vs Codex</title>
+<style>
+body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; margin: 0; padding: 16px;
+       background: #f6f8fa; color: #1f2328; line-height: 1.5; }
+.container { max-width: 1080px; margin: 0 auto; }
+h1 { font-size: 1.5em; margin-bottom: 4px; }
+h2 { font-size: 1.15em; margin-top: 32px; border-bottom: 1px solid #d0d7de; padding-bottom: 4px; }
+h3 { font-size: 1.0em; margin-top: 20px; }
+.meta { color: #57606a; font-size: 0.85em; }
+.summary-box { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 14px 18px; margin: 14px 0; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0 20px 0; background: #fff; font-size: 0.88em; }
+th, td { border: 1px solid #d0d7de; padding: 6px 8px; text-align: left; vertical-align: top; word-break: break-word; }
+th { background: #eef1f4; }
+tr:nth-child(even) td { background: #fafbfc; }
+code { background: #eef1f4; padding: 1px 5px; border-radius: 4px; font-size: 0.92em; }
+.decision-block { background: #fff8e1; border: 1px solid #e8c766; border-radius: 6px; padding: 14px 18px; margin: 14px 0; }
+.decision-primary { font-size: 1.3em; font-weight: 700; color: #7a5b00; }
+.table-wrap { overflow-x: auto; }
+ul { padding-left: 22px; }
+li { margin: 4px 0; }
+a { color: #0969da; }
+@media (max-width: 700px) {
+  table, thead, tbody, th, td, tr { display: block; }
+  th { display: none; }
+  td { border: none; border-bottom: 1px solid #e8e8e8; padding: 4px 0; }
+  td::before { content: attr(data-label) ": "; font-weight: 600; }
+}
+</style>
+</head>
+<body><div class="container">
+
+<h1>QA Build-vs-Adopt Arbitration — Claude vs Codex</h1>
+
+<div class="decision-block">
+<p>TARGET ARCHITECTURE: <span class="decision-primary">HYBRID-READY</span></p>
+<p>IMMEDIATE IMPLEMENTATION: <strong>BUILD_INTERNAL_MINIMAL</strong></p>
+<p>Slice 23 decided (not started this session): <strong>InternalQAEngine MVP, minimal, Python/pytest first</strong>.
+No external provider approved as a mandatory final QA gate today — see §5.</p>
+</div>
+
+<p>User arbitration session, 2026-09-14. Both studies (<code>docs/QA_BUILD_VS_ADOPT_REPORT_CLAUDE.md</code> and <code>docs/QA_BUILD_VS_ADOPT_REPORT.md</code>) were written independently — Codex's report explicitly confirms it did not read Claude's report as a source, only preserved it untouched on disk (see its own "Publication roadmap et provenance" section). This document records the <strong>user's decision</strong>, grounded in the facts both studies actually establish — never decided by a vote between the two scores.</p>
+<h2 id="s1">1. Headline recommendations, side by side</h2>
+<div class="table-wrap"><table>
+<thead><tr>
+<th></th>
+<th>Claude</th>
+<th>Codex</th>
+</tr></thead><tbody>
+<tr>
+<td data-label="">PRIMARY</td>
+<td data-label="Claude"><code>HYBRID</code> (80/100)</td>
+<td data-label="Codex"><code>BUILD_INTERNAL</code> (75/100)</td>
+</tr>
+<tr>
+<td data-label="">SECOND_BEST</td>
+<td data-label="Claude"><code>BUILD_INTERNAL</code> (76/100)</td>
+<td data-label="Codex"><code>HYBRID</code> (74/100)</td>
+</tr>
+<tr>
+<td data-label="">Gap between primary and second</td>
+<td data-label="Claude">4 points</td>
+<td data-label="Codex">1 point</td>
+</tr>
+<tr>
+<td data-label="">Direct external possible architecturally</td>
+<td data-label="Claude">Yes, no candidate approved as sole final gate today</td>
+<td data-label="Codex">Yes, no candidate approved as sole final gate today</td>
+</tr>
+<tr>
+<td data-label="">Best general external, autonomous web/API</td>
+<td data-label="Claude">TestSprite (best-evidenced SHA/diff scoping)</td>
+<td data-label="Codex">TestSprite, <strong>explicitly conditional</strong> — blocked on documented V3 target/healing gaps</td>
+</tr>
+<tr>
+<td data-label="">Best repo-centric web challenger</td>
+<td data-label="Claude">Momentic (close second)</td>
+<td data-label="Codex">Momentic — SHA/recovery/policies still to qualify</td>
+</tr>
+<tr>
+<td data-label="">Best real browser/mobile</td>
+<td data-label="Claude">BrowserStack</td>
+<td data-label="Codex">BrowserStack</td>
+</tr>
+<tr>
+<td data-label="">Best Java unit-test generation</td>
+<td data-label="Claude">Diffblue Cover</td>
+<td data-label="Codex">Diffblue Cover</td>
+</tr>
+<tr>
+<td data-label="">Slice 23 proposal</td>
+<td data-label="Claude"><code>InternalQAEngine</code> first, <code>TestSpriteQAEngine</code> adapter once POC 1 confirms feasibility — PENDING USER ARBITRATION</td>
+<td data-label="Codex"><code>InternalQAEngine</code> MVP mince — PENDING USER APPROVAL</td>
+</tr>
+</tbody></table></div>
+<p><strong>The rule for this document, explicit per the user's instruction: "Ne pas arbitrer par les scores."</strong> An 80-vs-75 or 76-vs-75 gap on a self-constructed, non-standardized 100-point rubric is not evidence of anything — it reflects each model's own weighting choices on axes like "Maintainability" or "Cost" that neither study treats as decision-critical for the actual question at hand (which engine, if any, becomes the mandatory final QA gate today).</p>
+<h2 id="s2">2. What both studies actually establish, independently, with different evidence</h2>
+<p>Despite the headline PRIMARY differing (<code>HYBRID</code> vs <code>BUILD_INTERNAL</code>), the two studies converge on every fact that is actually load-bearing for this arbitration:</p>
+<p>1. <strong>No external candidate — TestSprite, BrowserStack, Momentic, or Diffblue — passes all elimination gates to become the sole, mandatory final QA gate today.</strong> Both reports state this explicitly (Claude §31, Codex §29). Neither treats this as a close call. 2. <strong><code>InternalQAEngine</code> is the only candidate that passes every gate today, by construction</strong> — because this project controls its own contract, and the existing substrate (<code>QualityGateRunner</code>, <code>GitGovernanceService</code> SHA-binding, <code>ExecutionStore</code>/audit patterns) already covers most of what a mandatory gate needs (Claude §3/§10, Codex §2's capability table). Both reports independently estimate this substrate at roughly 70% built. 3. <strong>Every external candidate has a genuine, real reason it cannot be the sole gate right now</strong> — not a vague "needs more research" hedge:</p>
+<ul>
+<li>TestSprite: Codex's audit went further and found the sharper evidence — pinned to a specific public commit (<code>125872fd1b19e948528177b6f6a2ac25c83dfd89</code>) of <code>testsprite-cli</code>, it documents explicit V3 advisory code paths where the requested target URL is not honored and a healing-disable request is not respected (Codex §6, citing <code>src/lib/v3-advisory.ts</code>, <code>src/lib/runs.types.ts</code>, <code>src/commands/test.ts</code> — <code>CODE_CONFIRMED</code>). Claude's study reached the same practical conclusion (<code>PARTIAL</code>, not a standalone Phase 2 gate) from public documentation alone, without finding this specific code-level confirmation.</li>
+<li>BrowserStack: a documented, named self-healing risk (assertion repair instead of defect detection) — found independently by both studies (Claude §7/§16 citing an independent analysis; Codex §15 citing the same class of risk against its own gating criteria).</li>
+<li>Momentic: promising (repo-friendly YAML tests, runs inside the customer's network) but SHA-binding depth and a guaranteed read-only mode are unconfirmed in both studies — <code>UNKNOWN</code>, not a negative finding, in both.</li>
+<li>Diffblue: both studies independently flag the same structural concern — its "unit regression tests… reflect the current behavior of your code" design principle is the same shape as the semantic self-healing pattern this project's invariants forbid, when pointed at pre-existing human-authored tests. Both classify it as usable only as a human-gated generator for genuinely new/legacy code, never as an autonomous gate. 4. <strong>Both studies independently identified that this project's own internal evidence/SHA-binding guarantees had real gaps before they could safely host a mandatory QA gate at all.</strong> Codex's audit is the one that named the four concrete technical findings (empty mandatory manifest, policy/manifest replay drift, no read-only/ref-invariance check, merge TOCTOU on work-branch head) — each independently reread and reproduced against the real code in this same session (see Slice 21.5, <code>ROADMAP.md</code>) before being trusted or fixed. This materially strengthens the case for <code>BUILD_INTERNAL_MINIMAL</code> as the immediate next step: the mandatory-gate primitives needed hardening regardless of which engine ends up behind them. 5. <strong>Neither study recommends committing to a specific external vendor today.</strong> Both explicitly defer that decision behind a POC.</li>
+</ul>
+<h2 id="s3">3. Provider-by-provider arbitration</h2>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>Provider</th>
+<th>Claude's status</th>
+<th>Codex's status</th>
+<th>Arbitration</th>
+</tr></thead><tbody>
+<tr>
+<td data-label="Provider"><strong>TestSprite</strong></td>
+<td data-label="Claude&#x27;s status"><code>PARTIAL</code> — strongest SHA/diff-scoping evidence of the four, but read-only mode and job persistence unconfirmed, does not appear to run this project's own test suite</td>
+<td data-label="Codex&#x27;s status"><code>PARTIAL</code>, but explicitly <strong>blocked for the final gate on documented V3 target/healing gaps</strong>, code-cited against a pinned commit</td>
+<td data-label="Arbitration"><strong>Direct challenger, currently non-admissible as final gate.</strong> Codex's code-level citation is the stronger, more specific evidence — adopted as the operative status. A POC is only worth running <strong>after</strong> documentation or a vendor attestation confirms these V3 gaps are resolved; re-discovering an already-documented blocker is not a useful spike.</td>
+</tr>
+<tr>
+<td data-label="Provider"><strong>Momentic</strong></td>
+<td data-label="Claude&#x27;s status"><code>PARTIAL</code> — best privacy/repo-friendliness story of the three web generalists (YAML tests in-repo, runs in customer's own network); SHA-binding/read-only depth unconfirmed</td>
+<td data-label="Codex&#x27;s status"><code>PARTIAL</code> — repo-centric web challenger, SHA/recovery/policies still to qualify</td>
+<td data-label="Arbitration"><strong>Serious repo-centric challenger; replacement POC candidate if TestSprite stays blocked.</strong> Both studies agree it is <code>PARTIAL</code> for the same underlying reason (unconfirmed SHA/read-only depth), not a disagreement — kept as the second POC candidate specifically because its position (customer-network execution, versioned YAML tests) is architecturally the best fit for this project's SHA-bound, repo-durable evidence model if TestSprite's blockers are not lifted.</td>
+</tr>
+<tr>
+<td data-label="Provider"><strong>BrowserStack</strong></td>
+<td data-label="Claude&#x27;s status"><code>PARTIAL</code> — strongest real browser/device/visual E2E evidence and the only one that runs <em>existing</em> Selenium/Playwright suites, but self-healing risk disqualifies it as sole gate</td>
+<td data-label="Codex&#x27;s status"><code>PARTIAL</code> against the same gating criteria, same self-healing concern</td>
+<td data-label="Arbitration"><strong>Browser/mobile/device specialist, not a general QA gate.</strong> Both agree. Held in reserve, to be activated specifically when a real target project needs browser/device/visual coverage — never as this project's own default gate, since <code>ai-dev-orchestrator</code> itself is a Python CLI/library with no browser surface today.</td>
+</tr>
+<tr>
+<td data-label="Provider"><strong>Diffblue Cover</strong></td>
+<td data-label="Claude&#x27;s status"><code>NO</code> (general) / <code>CONDITIONAL</code> (Java-only, human-gated)</td>
+<td data-label="Codex&#x27;s status"><code>NO</code> (general), same structural self-healing-shaped concern</td>
+<td data-label="Arbitration"><strong>Java-unit specialist only, strictly human-gated.</strong> Full agreement. Never a general engine; useful only inside a future <code>MULTI_ENGINE_BY_STACK</code> scenario for a Java target project, and only with every generated/regenerated assertion routed through human review before being trusted as regression protection.</td>
+</tr>
+</tbody></table></div>
+<h2 id="s4">4. Confidence levels</h2>
+<ul>
+<li><strong>HIGH</strong> — no external candidate passes all elimination gates today. Both studies reach this independently, via non-overlapping evidence chains (Claude via public docs, Codex via public docs <em>and</em> pinned-commit code reading). This is the single most decision-relevant fact in both reports and it is not in dispute.</li>
+<li><strong>HIGH</strong> — <code>BUILD_INTERNAL_MINIMAL</code> is the correct immediate next step, regardless of which PRIMARY label each report chose. Codex's PRIMARY literally is <code>BUILD_INTERNAL</code>; Claude's <code>HYBRID</code> PRIMARY, read past the label, also starts with "build the small, engine-independent governance core… as the mandatory internal Phase 2 gate" (Claude §37) before any external engine contributes anything — i.e. Claude's own recommended <em>first build step</em> is the same internal core Codex recommends outright. The apparent disagreement is about where to draw the Slice boundary (Claude folds "optional external complement, later" into the same headline label; Codex keeps it out of the headline label and defers it explicitly) — not about what to build first.</li>
+<li><strong>MEDIUM</strong> — TestSprite's specific V3 target/healing blocker as the reason it's inadmissible today. Codex's citation is code-level and commit-pinned, which is stronger evidence than Claude's public-docs-only research reached — but this document has not independently re-fetched and re-verified that commit's exact file contents this session (the category of finding is adopted; the byte-for-byte code detail is Codex-reported, matching this project's own established standard for citing a source without re-verifying it live — see <code>docs/OMNIROUTE_ARBITRATION.md</code> §"Process note" for the same convention used previously).</li>
+<li><strong>MEDIUM</strong> — Momentic as the designated second/replacement POC candidate over BrowserStack or Diffblue for that role. Both studies rate it <code>PARTIAL</code> for genuinely unconfirmed (not negative) reasons; the designation as "second POC" is this arbitration's own synthesis of an architectural-fit argument (repo-durable YAML, customer-network execution) that neither individual report stated as a ranked recommendation in those exact terms — flagged here as synthesis, not as a fact either study independently confirmed.</li>
+<li><strong>LOW-MEDIUM</strong> — the exact numeric scorecard gap (4 points vs. 1 point) between PRIMARY and SECOND_BEST in each report. As stated in §1, this is not treated as evidence of anything by this arbitration — explicitly not used to break the tie, per the user's instruction.</li>
+</ul>
+<h2 id="s5">5. Final arbitration</h2>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>Element</th>
+<th>Decision</th>
+</tr></thead><tbody>
+<tr>
+<td data-label="Element"><strong>TARGET ARCHITECTURE</strong></td>
+<td data-label="Decision"><code>HYBRID-READY</code> — the QA core stays engine-independent by contract (<code>QAEngine</code>/<code>QARequest</code>/<code>QAResult</code>, Slice 22); <code>ExternalQAEngine</code> is a first-class extension point from day one, never a later bolt-on requiring a contract rewrite.</td>
+</tr>
+<tr>
+<td data-label="Element"><strong>IMMEDIATE IMPLEMENTATION</strong></td>
+<td data-label="Decision"><code>BUILD_INTERNAL_MINIMAL</code> — <code>InternalQAEngine</code> is the first (and, for now, only) concrete engine built. No external provider is required, or approved, for the initial mandatory gate.</td>
+</tr>
+<tr>
+<td data-label="Element"><strong>Why not <code>HYBRID</code> as the immediate implementation</strong></td>
+<td data-label="Decision">Both studies agree no external candidate is admissible as a final-gate contributor <em>today</em> — a Hybrid architecture with no qualified external leg to plug in is, in practice, <code>BUILD_INTERNAL</code> wearing a different label. Building the internal engine first, behind a contract that stays Hybrid-ready, captures Claude's own recommended first step without prematurely committing engineering effort to an external adapter for a candidate (TestSprite) with a documented, unresolved blocker.</td>
+</tr>
+<tr>
+<td data-label="Element"><strong>Why not <code>BUILD_INTERNAL</code> (closed, no external ever)</strong></td>
+<td data-label="Decision">External providers bring genuinely specialized capabilities this project has no reason to reconstruct from scratch — real browser/device farms and visual regression (BrowserStack), a mature Java unit-generation engine (Diffblue), and a repo-native, customer-network-executed web E2E model (Momentic) that fits this project's evidence philosophy unusually well. Closing the door architecturally would guarantee a future rewrite the moment any of those becomes genuinely needed.</td>
+</tr>
+<tr>
+<td data-label="Element"><strong>Slice 23 (decided, not started this session)</strong></td>
+<td data-label="Decision"><code>InternalQAEngine</code> MVP, minimal, <strong>Python/pytest first</strong> — reusing <code>QualityGateRunner</code>/<code>AdaptiveExecutionSelector</code>/the Slice 21.5 hardening primitives, never a second implementation of what already exists.</td>
+</tr>
+<tr>
+<td data-label="Element"><strong>External providers</strong></td>
+<td data-label="Decision">Remain <strong>future optional adapters</strong> behind the <code>QAEngine</code> contract. None approved today as a mandatory final gate. TestSprite/Momentic are the two POC-worthy candidates, if and when a POC is actually run (not this session) — TestSprite first, contingent on its documented V3 blockers being independently confirmed resolved; Momentic as the designated fallback/second candidate. BrowserStack and Diffblue are held in reserve for their specialized domains (browser/mobile/visual; Java units), to be activated only when a real target project's need is established — never speculatively.</td>
+</tr>
+<tr>
+<td data-label="Element"><strong>POC policy</strong></td>
+<td data-label="Decision">No POC executed this or a prior session. At most one baseline (<code>InternalQAEngine</code>) and one external challenger POC, per both studies' own recommendation (Claude §32, Codex §30) — conditional, not scheduled here.</td>
+</tr>
+</tbody></table></div>
+<h2>Process note</h2>
+<p>Per the same standard already used for <code>docs/OMNIROUTE_ARBITRATION.md</code>: this document does not re-run either study's underlying research. It reads both reports as given, cross-checks them against each other and against this project's own real code (independently reread this session for the Slice 21.5 hardening, see <code>ROADMAP.md</code>), and arbitrates on facts and evidence quality — never on the numeric scorecards, and never by treating "2 conclusions agree" as proof by headcount where the underlying evidence does not actually establish the same thing.</p>
+</div></body></html>

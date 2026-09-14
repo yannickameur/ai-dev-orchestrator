@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QA Build-vs-Adopt Report — Claude (Slice 21)</title>
+<style>
+body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; margin: 0; padding: 16px;
+       background: #f6f8fa; color: #1f2328; line-height: 1.5; }
+.container { max-width: 1080px; margin: 0 auto; }
+h1 { font-size: 1.5em; margin-bottom: 4px; }
+h2 { font-size: 1.15em; margin-top: 32px; border-bottom: 1px solid #d0d7de; padding-bottom: 4px; }
+h3 { font-size: 1.0em; margin-top: 20px; }
+.meta { color: #57606a; font-size: 0.85em; }
+.badge { display: inline-block; padding: 4px 12px; border-radius: 6px; color: #fff; font-weight: 700;
+         font-size: 1.05em; }
+.summary-box { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 14px 18px; margin: 14px 0; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0 20px 0; background: #fff; font-size: 0.88em; }
+th, td { border: 1px solid #d0d7de; padding: 6px 8px; text-align: left; vertical-align: top; word-break: break-word; }
+th { background: #eef1f4; }
+tr:nth-child(even) td { background: #fafbfc; }
+code { background: #eef1f4; padding: 1px 5px; border-radius: 4px; font-size: 0.92em; }
+pre { background: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 0.82em; }
+.decision-block { background: #fff8e1; border: 1px solid #e8c766; border-radius: 6px; padding: 14px 18px; margin: 14px 0; }
+.decision-primary { font-size: 1.3em; font-weight: 700; color: #7a5b00; }
+.table-wrap { overflow-x: auto; }
+.scorecard-total { font-weight: 700; }
+ul { padding-left: 22px; }
+li { margin: 4px 0; }
+a { color: #0969da; }
+@media (max-width: 700px) {
+  table, thead, tbody, th, td, tr { display: block; }
+  th { display: none; }
+  td { border: none; border-bottom: 1px solid #e8e8e8; padding: 4px 0; }
+  td::before { content: attr(data-label) ": "; font-weight: 600; }
+}
+</style>
+</head>
+<body><div class="container">
+
+<h1>QA Build-vs-Adopt Report — Claude (Slice 21)</h1>
+<p>Independent architecture study, written before any comparison with a Codex audit (none was consulted, none was searched for, per explicit instruction for this session). Documentation/research only — no code under <code>src/</code>/<code>tests/</code>/<code>config/</code>, no dependency installed, no external service actually invoked, zero reset credit consumed beyond this session's own reasoning/research.</p>
+<p>Date: 2026-09-13. Author: Claude (this session), independent of any Codex QA study.</p>
+
+<div class="decision-block">
+<p>Primary decision: <span class="decision-primary">HYBRID</span> (80/100)</p>
+<p>Second best: <strong>BUILD_INTERNAL</strong> (76/100)</p>
+<p>No external candidate (TestSprite/BrowserStack/Momentic/Diffblue) passes
+every elimination gate to become the sole, mandatory final QA gate today —
+see §31/§37. Slice 23 recommendation is <strong>PENDING USER
+ARBITRATION</strong> (§35) — not an approved decision.</p>
+</div>
+
+<h2>Scorecard preview (/100, see §30 for the full weighted breakdown)</h2>
+<table>
+<thead><tr><th>Architecture</th><th>Total /100</th></tr></thead>
+<tbody>
+<tr><td data-label="Architecture">HYBRID</td><td data-label="Total" class="scorecard-total">80</td></tr>
+<tr><td data-label="Architecture">BUILD_INTERNAL</td><td data-label="Total" class="scorecard-total">76</td></tr>
+<tr><td data-label="Architecture">MULTI_ENGINE_BY_STACK</td><td data-label="Total" class="scorecard-total">75</td></tr>
+<tr><td data-label="Architecture">MOMENTIC</td><td data-label="Total" class="scorecard-total">67</td></tr>
+<tr><td data-label="Architecture">TESTSPRITE</td><td data-label="Total" class="scorecard-total">66</td></tr>
+<tr><td data-label="Architecture">BROWSERSTACK</td><td data-label="Total" class="scorecard-total">64</td></tr>
+<tr><td data-label="Architecture">DIFFBLUE</td><td data-label="Total" class="scorecard-total">48</td></tr>
+</tbody>
+</table>
+
+<h2 id="s1">1. Executive summary</h2>
+<p><code>ai-dev-orchestrator</code> needs a QA/regression-testing layer that sits between "Independent Code Review" and "Merge Eligibility" (Slice 20) and answers, with executable proof, whether a change is correct and regression-free. This report audits five options — an internal QA agent, four external products (TestSprite, BrowserStack AI Agents, Momentic, Diffblue Cover), and two composite architectures (Hybrid, Multi-engine-by-stack) — against 13 non-negotiable invariants (§4) and a weighted 100-point scorecard (§30).</p>
+<p><strong>No external candidate cleanly passes every elimination gate (§31) to become the sole, mandatory final QA gate today.</strong> TestSprite and Momentic are the most promising general-purpose candidates (diff/commit-aware, CI-integrable, repo-friendly) but neither has a *documented* strict read-only verification mode or a fully confirmed base_sha/head_sha binding contract — both are currently <code>UNKNOWN</code>, not <code>NO</code>, and both deserve a POC (§32). BrowserStack is the clear leader for real browser/device/visual E2E but its self-healing agent has a <strong>documented, named risk of repairing assertions instead of flagging a real defect</strong> (§16) — unacceptable as the *sole* final gate without a strict technical-only self-heal policy. Diffblue Cover is Java-only and its core design principle — tests "reflect the current behavior of your code" (regenerated on every change) — is structurally close to the *semantic self-healing* pattern this project explicitly forbids (§17); it is usable only as a human-reviewed, gated component, never autonomously as a final gate.</p>
+<p><strong>Primary recommendation: <code>HYBRID</code></strong> (score 80/100, §30) — build the small, engine-independent governance core that is already ~70% present in this codebase (<code>QualityGateRunner</code>, <code>ExecutionStore</code>, <code>GitGovernance</code>, Slice 20's SHA-binding), use it with our own <code>pytest</code>/lint/mypy suite as the mandatory internal Phase 2 gate (§9 of <code>docs/QA_STRATEGY.md</code>), and treat one external engine (TestSprite first, per its diff/SHA-scoping evidence) as an <strong>optional Phase 1 complement</strong> for target projects with a real web surface — never as the sole authority for PASS. <strong>Second best: <code>BUILD_INTERNAL</code></strong> alone (76/100) — deferring external QA entirely remains fully viable since most of the mandatory internal core already exists. See §37 for the full decision block.</p>
+<h2 id="s2">2. Scope and method</h2>
+<ul>
+<li>Internal base: full re-read of <code>README.md</code>, <code>ROADMAP.md</code>, <code>docs/status.md</code>, <code>docs/QA_STRATEGY.md</code>, <code>docs/ADAPTIVE_EXECUTION.md</code>, <code>docs/GIT_GOVERNANCE.md</code>, <code>docs/SPIKE_RALPH.md</code>, plus source inspection of <code>validation.py</code>, <code>review.py</code>, <code>mvp_manager.py</code>, <code>git_governance.py</code>, <code>realization_report.py</code>, <code>release_manager.py</code>, <code>worker_selector.py</code>, <code>adaptive_execution.py</code>, <code>execution_store.py</code>, <code>handoff.py</code>, <code>recovery.py</code>, <code>wait.py</code>, <code>complexity_estimation.py</code> (class inventories only — this report never proposes rebuilding something already present).</li>
+<li>External research: <code>WebSearch</code>/<code>WebFetch</code> against official documentation, npm/GitHub packages, official pricing pages, and the vendors' own blogs where no other source existed. Independent secondary sources (Pure AI, SiliconANGLE, Bug0, Sacra) used only to corroborate, never as the primary basis for a technical capability claim.</li>
+<li>Every capability claim below carries a classification: <code>CODE_CONFIRMED</code> (verified in a real repo/package), <code>DOC_CONFIRMED</code> (stated in official docs), <code>MARKETING_ONLY</code> (stated only on a marketing/landing page, unconfirmed elsewhere), <code>NOT_FOUND</code> (actively searched for, absent), <code>UNKNOWN</code> (not enough public information either way — never defaulted to a favorable assumption).</li>
+<li><strong>No account was created, no API key was requested, no MCP server was connected, no test was actually executed against any of these products.</strong> All findings are from public documentation as of 2026-09-13.</li>
+<li><strong>No Codex QA report was searched for or read</strong> before this document was finalized, per explicit instruction.</li>
+</ul>
+<h2 id="s3">3. Current orchestrator capabilities (do not rebuild)</h2>
+<p>Already built and tested (876/876 passing) — any QA architecture must reuse these, never duplicate them:</p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>Component</th>
+<th>Role</th>
+<th>Reuse for QA</th>
+</tr></thead><tbody>
+<tr>
+<td data-label="Component"><code>QualityGateRunner</code>/<code>ValidationStore</code> (<code>validation.py</code>)</td>
+<td data-label="Role">Runs deterministic commands (pytest, lint, etc.), persists <code>ValidationResult</code>/<code>QualityGateResult</code> keyed to a git SHA</td>
+<td data-label="Reuse for QA">This <strong>is</strong> the executable-evidence backbone (invariant §4.1) — a QA engine's "PASS" must ultimately reduce to gate results here, never a parallel mechanism</td>
+</tr>
+<tr>
+<td data-label="Component"><code>ReviewStore</code>/<code>ReviewPolicy</code> (<code>review.py</code>)</td>
+<td data-label="Role">Independent human/AI code review, author≠reviewer enforced</td>
+<td data-label="Reuse for QA">QA is a distinct concept from code review — never merged into one record type</td>
+</tr>
+<tr>
+<td data-label="Component"><code>GitGovernanceService</code>/<code>GitWorkItemStore</code> (<code>git_governance.py</code>)</td>
+<td data-label="Role">Governed branch, immutable <code>base_sha</code>, tracked <code>current_head_sha</code>, <code>MergeEligibilityResult</code>, ff-only merge</td>
+<td data-label="Reuse for QA">The exact SHA-binding mechanism QA must extend (§8 of <code>docs/QA_STRATEGY.md</code>) — never reimplemented</td>
+</tr>
+<tr>
+<td data-label="Component"><code>WorkerSelector</code>/<code>AdaptiveExecutionSelector</code> (<code>worker_selector.py</code>, <code>adaptive_execution.py</code>)</td>
+<td data-label="Role">Capability/governance/quota-based worker choice, <code>QualityTier</code>-adaptive profile resolution</td>
+<td data-label="Reuse for QA">Reusable <strong>only</strong> for an <code>InternalQAEngine</code>'s own LLM-driven steps (test authoring) — never for external-engine selection, which is capability/stack-based (§3.3 <code>QA_STRATEGY.md</code>)</td>
+</tr>
+<tr>
+<td data-label="Component"><code>ExecutionStore</code>/<code>RecoveryCoordinator</code> (<code>execution_store.py</code>, <code>recovery.py</code>)</td>
+<td data-label="Role">Durable execution audit, cold-restart recovery</td>
+<td data-label="Reuse for QA">Pattern to reuse for a future <code>QARun</code>/<code>QAResultStore</code> — never a new parallel recovery mechanism</td>
+</tr>
+<tr>
+<td data-label="Component"><code>RealizationReport</code> (<code>realization_report.py</code>)</td>
+<td data-label="Role">Deterministic, insert-only, non-LLM WorkItem projection</td>
+<td data-label="Reuse for QA">Extension point for QA facts (§16 <code>QA_STRATEGY.md</code>), not a new report type</td>
+</tr>
+<tr>
+<td data-label="Component"><code>ReleaseManager</code> (<code>release_manager.py</code>)</td>
+<td data-label="Role">MVP-level release checks, incl. <code>governed-work-items-merged</code> (Slice 20)</td>
+<td data-label="Reuse for QA">Extension point for a future <code>qa-verdict-pass</code> check</td>
+</tr>
+</tbody></table></div>
+<p><strong>Conclusion</strong>: the "internal minimum differentiator" (§27) is not a green-field build — the durable-evidence, SHA-binding, and audit substrate already exists. What's actually missing is QA-specific: <code>QAEngine</code>/<code>QARequest</code>/<code>QAResult</code>, <code>FailureClassification</code>, Test Impact Analysis, and the <code>.qa/</code> knowledge base.</p>
+<h2 id="s4">4. QA invariants (evaluation baseline)</h2>
+<p>The 13 invariants from the user's brief, unmodified, used verbatim as the evaluation grid for every candidate in §6-10:</p>
+<p>1. PASS relies on real test execution. 2. An LLM verdict alone can never produce PASS. 3. Existing regression tests are protected. 4. No existing test can be automatically weakened/deleted/skipped/semantically rewritten/adjusted to accept new behavior just to go green. 5. An expected test change requires versioned justification. 6. QA PASS is bound to the exact HEAD SHA. 7. PASS on SHA A never authorizes merging SHA B. 8. QA FAIL is persistent and auditable. 9. INCONCLUSIVE != PASS. 10. External QA unavailable != PASS. 11. No silent fallback to a weaker QA engine. 12. Final QA Verification must be able to be READ-ONLY. 13. Durable regression knowledge must travel with the repository.</p>
+<h2 id="s5">5. Candidates</h2>
+<p>TestSprite, BrowserStack AI Agents, Momentic, Diffblue Cover, Internal QA Agent, Hybrid, Multi-engine-by-stack. No <code>OTHER_RELEVANT_CANDIDATE</code> was added — none surfaced during research as objectively more relevant than these seven within the time available; this is a finding of this session's research depth, not a claim that no such product exists.</p>
+<h2 id="s6">6. TestSprite audit</h2>
+<p><strong>Version/freshness</strong>: no version number published; "Spring Release (May 2026)" and CLI "now live as open source on GitHub" referenced in 2026 blog content — <code>DOC_CONFIRMED</code> recency, exact semver <code>UNKNOWN</code>. SaaS (cloud sandbox execution), Node.js ≥22 for the MCP server (<code>@testsprite/testsprite-mcp</code> on npm). <a href="https://www.npmjs.com/package/@testsprite/testsprite-mcp">TestSprite MCP npm package</a>, <a href="https://www.testsprite.com/solutions/mcp">MCP for AI Coding Agents</a>, <a href="https://www.testsprite.com/blog/are-there-mcp-servers-for-software-testing">Are there MCP servers for software testing?</a>.</p>
+<p><strong>Summary</strong>: an AI testing agent that generates a PRD/test-plan/test-code (Playwright/Cypress-style) from a running application or diff, executes in TestSprite's own cloud sandbox, and reports back — via MCP (IDE-native use) or a GitHub Actions workflow triggered on PR events. It explicitly supports a <code>testScope</code> parameter of <code>"codebase"</code> or <code>"diff"</code>, and placeholders <code>{pr}</code>/<code>{branch}</code>/<code>{sha}</code>/<code>{short-sha}</code> resolved per run — <code>DOC_CONFIRMED</code>. <a href="https://www.testsprite.com/blog/github-pr-testing-the-missing-step-in-every-ai-development-workflow">GitHub PR Testing</a>, <a href="https://www.testsprite.com/blog/does-testsprite-support-github-actions-for-pull-request-testing">Does TestSprite Support GitHub Actions for Pull Request Testing?</a>.</p>
+<p><strong>MCP tools</strong> (<code>DOC_CONFIRMED</code> via <code>docs.testsprite.com/mcp/core/tools</code>): 8 tools — <code>testsprite_bootstrap</code>, <code>_generate_code_summary</code>, <code>_generate_standardized_prd</code>, <code>_generate_frontend_test_plan</code>, <code>_generate_backend_test_plan</code>, <code>_generate_code_and_execute</code> (the only one that actually starts a run), <code>_open_test_result_dashboard</code>, <code>_check_account_info</code>. <strong>No polling/cancel tool, no documented <code>run_id</code>/job-persistence contract</strong> — <code>NOT_FOUND</code> in the tools reference. This matters directly for invariant §12 (forceable read-only run) and for a future <code>RecoveryCoordinator</code> integration (job persistence): both currently <code>UNKNOWN</code>/weak.</p>
+<p><strong>Test execution</strong>: generates and runs *its own* tests against a *deployed, running application* — it does not appear to execute this repository's existing <code>pytest</code> suite; no evidence found either way for arbitrary-existing-test execution — <code>NOT_FOUND</code> (searched specifically, absent from all fetched docs). <strong>This is a material gap against invariant §1</strong>: TestSprite's own generated tests are real executable evidence, but they are not proof that *our* existing 876-test suite still passes — a PASS from TestSprite alone does not satisfy this project's actual regression-protection need without also running our own suite (which <code>QualityGateRunner</code> already does).</p>
+<p><strong>Existing-test preservation / self-healing</strong>: no update/repair/heal/ delete-obsolete-test feature documented for pre-existing, non-TestSprite tests — <code>NOT_FOUND</code>. Classified <code>SAFE_WITH_POLICY</code> provisionally (it appears to generate new tests, not touch existing ones) but this is <code>UNKNOWN</code> rather than positively confirmed, since no explicit "we never modify your existing tests" statement was found.</p>
+<p><strong>Security/privacy</strong> (<code>docs.testsprite.com</code>/privacy policy, <code>DOC_CONFIRMED</code>): TestSprite states it interacts with the *running application*, not the source code — "your private code doesn't have to go anywhere." <a href="https://www.testsprite.com/blog/is-testsprite-safe-to-use-with-private-codebases-or-internal-applications">Is TestSprite Safe to Use with Private Codebases?</a>. Privacy policy: single subprocessor <strong>AWS</strong>; all personal-data processing in the <strong>US</strong>, SCCs for EEA/UK transfers; retains "service data" for the duration of the business relationship. <strong>No explicit statement on whether code/test artifacts are used for model training</strong> — <code>UNKNOWN</code>. <a href="https://www.testsprite.com/privacy">TestSprite Privacy Policy</a>.</p>
+<p><strong>Pricing</strong> (<code>DOC_CONFIRMED</code>, <code>testsprite.com/pricing</code> via search): credit-based — Free ($0, 150 credits), Starter ($19/mo, 400 credits), Standard ($69/mo, 1,600 credits), Enterprise (custom). <a href="https://bug0.com/knowledge-base/testsprite-pricing">TestSprite Pricing 2026</a>.</p>
+<p><strong>Direct-QAEngine feasibility</strong>: <strong>PARTIAL</strong>. Strong on diff/SHA scoping and PR-native workflow (the most concrete SHA-binding evidence of any candidate studied); weak/unconfirmed on read-only forcing, job persistence, and — critically — does not run this project's own test suite. Best positioned today as a <strong>Phase 1 (test authoring/E2E complement)</strong> engine, not a standalone Phase 2 gate.</p>
+<h2 id="s7">7. BrowserStack audit</h2>
+<p><strong>Version/freshness</strong>: AI Agents suite launched publicly ~June 2025, Self-Healing Agent added ~November 2025 (<code>DOC_CONFIRMED</code> via press releases); actively documented through 2026. <a href="https://www.browserstack.com/press/browserstack-launches-suite-of-ai-agents-to-redefine-software-quality-at-scale">BrowserStack Launches Suite of AI Agents</a>, <a href="https://pureai.com/blogs/the-pure-ai-blog/2025/11/browserstack-launches-ai-self-healing-agent.aspx">BrowserStack Launches AI Self-Healing Agent</a>. SaaS (device/browser cloud farm); MCP server (20 tools, <code>DOC_CONFIRMED</code>). <a href="https://www.browserstack.com/docs/browserstack-mcp-server/tools">BrowserStack MCP tools &amp; workflows</a>.</p>
+<p><strong>Summary</strong>: an established real-device/browser cloud (Automate, App Automate, Percy visual, Accessibility, Low-Code Automation) now layered with AI agents: <strong>Test Case Generator</strong> (PRD/user-story → test cases, claims &gt;90% authoring-time reduction), <strong>Self-Healing Agent</strong> (repairs broken locators live during execution), <strong>Test Failure Analysis Agent</strong> (log root-causing, claims up to 95% faster debugging) — all <code>DOC_CONFIRMED</code> but efficiency percentages are vendor-stated, <code>MARKETING_ONLY</code> for the specific numbers. <a href="https://www.browserstack.com/guide/ai-testing-tool">Comparing the Best AI Testing Tools in 2026</a>.</p>
+<p><strong>Self-healing risk — the most important finding for this candidate</strong>: independent analysis explicitly documents the exact failure mode this project's invariants forbid — *"without clear rules, an agent might see contradictory values and 'repair' the assertion instead of recognising a product defect."* <a href="https://www.awesome-testing.com/2026/07/self-healing-tests-with-ai">Self-Healing Tests with AI: Triage Before Repair</a> — <code>DOC_CONFIRMED</code> as a documented, named risk (not merely a hypothetical this report invented). BrowserStack's own docs describe self-heal as locator-repair only (<code>DOC_CONFIRMED</code>, <a href="https://www.browserstack.com/docs/low-code-automation/test-recording/browserstack-ai/ai-self-heal">Self healing in Low Code Automation</a>), but the independent source above shows the *general* self-healing-agent pattern (which BrowserStack's Self-Healing Agent explicitly extends toward failure *repair*, not just locator repair) can drift into assertion territory without an explicit guardrail. <strong>Classification: <code>UNSAFE_FOR_FINAL_GATE</code> without a strict, verified, locator-only-self-heal policy switch — not found as a guaranteed, enforced configuration option in the docs reviewed</strong> (<code>UNKNOWN</code> whether BrowserStack exposes a hard "never touch assertions" toggle).</p>
+<p><strong>Test execution / languages</strong>: real browsers (3,000+ browser/OS combinations, <code>DOC_CONFIRMED</code>), real mobile devices, Playwright/Selenium/ Cypress integration for *existing* customer test suites (this is a genuine plus — BrowserStack Automate runs *your* Selenium/Playwright tests, not only generated ones) — <code>DOC_CONFIRMED</code>. No backend unit/integration/contract test generation found — <code>NOT_FOUND</code>.</p>
+<p><strong>Security/privacy</strong>: enterprise SaaS; no SOC2/ISO/data-residency statement was found in the sources reviewed for this report — <code>UNKNOWN</code> (not negative, simply unverified here; BrowserStack likely publishes this on a dedicated trust page not reached in this session's research).</p>
+<p><strong>Pricing</strong>: <strong>not public</strong> for AI Agents / enterprise tiers — <code>UNKNOWN</code>, consistent with the MCP server itself being free but requiring a paid BrowserStack plan underneath.</p>
+<p><strong>Direct-QAEngine feasibility</strong>: <strong>PARTIAL</strong>. The strongest single candidate for real browser/mobile/visual E2E with genuine execution evidence (video, logs, real devices), and the only one that runs *existing* Selenium/Playwright suites rather than only generated ones — but the self-healing risk (§4 invariant) and the absence of unit/backend coverage make it unsuitable as the sole general QA gate; strong as a <strong>specialized E2E/browser component</strong> in a Hybrid or Multi-engine-by-stack architecture, with self-heal locked to locator-level only.</p>
+<h2 id="s8">8. Momentic audit</h2>
+<p><strong>Version/freshness</strong>: actively documented through 2026 (<code>momentic.ai/ docs</code>); no semver found — <code>UNKNOWN</code>. Hybrid: local CLI + cloud dashboard. <a href="https://bug0.com/knowledge-base/momentic-features">Momentic Features 2026</a>, <a href="https://momentic.ai/docs">Welcome to Momentic</a>.</p>
+<p><strong>Summary</strong>: web + iOS/Android testing platform, natural-language tests compiled to <strong>readable YAML stored in the target repository</strong> — a meaningfully different posture from TestSprite/BrowserStack's cloud-sandbox model. The same CLI runs "on your laptop, in CI, or in a cloud sandbox," explicitly positioned to run inside the customer's own network — no tunnel, no IP allowlist — which is a genuine privacy/ architecture advantage. <a href="https://momentic.ai/infrastructure">Test Automation Infrastructure</a>. Positioned as "repository-friendly agentic QA... closes coverage gaps around pull requests and commits" — <code>DOC_CONFIRMED</code> PR/commit-awareness, but the *exact* base_sha/head_sha binding contract (vs. just "PR-aware") was not found in the fetched documentation excerpts — <code>UNKNOWN</code>, flagged for POC.</p>
+<p><strong>CI/CD</strong>: GitHub Actions, CircleCI, GitLab, Jenkins, plus REST API with cursor-based pagination for pulling run results by date/status/platform — <code>DOC_CONFIRMED</code>. No explicit run_id/polling contract text was retrieved verbatim, but the REST API description strongly implies one — <code>DOC_CONFIRMED</code> at a coarse level, exact shape <code>UNKNOWN</code>.</p>
+<p><strong>Self-healing</strong>: "self-healing locators and intent-based checks automatically adapt to DOM changes" — <code>DOC_CONFIRMED</code>, and the framing (locators + intent-based *checks*, not raw pixel/value assertions) suggests a more conservative, technical-level design than BrowserStack's framing, but no explicit "never touches assertion values" guarantee was found — <code>PARTIAL</code>/<code>UNKNOWN</code>, not <code>SAFE_WITH_POLICY</code> outright without deeper documentation review (recommended as part of the POC, §32).</p>
+<p><strong>Security/privacy</strong>: "separate test and production environments, redact secrets, use scoped accounts, define retention and access controls" — <code>DOC_CONFIRMED</code> at a policy-description level; specific data-residency/subprocessor list <code>NOT_FOUND</code> in this session's research.</p>
+<p><strong>Pricing</strong> (<code>DOC_CONFIRMED</code>): credit-based — Free tier 2,000 credits/ month; $125/month for 10,000 credits (pay-as-you-go); Enterprise custom; one credit = one executed test step; no per-seat fee. <a href="https://bug0.com/knowledge-base/momentic-pricing">Momentic Pricing 2026</a>.</p>
+<p><strong>Direct-QAEngine feasibility</strong>: <strong>PARTIAL</strong>, but the *most promising* of the three general-purpose web/E2E externals for this specific project's philosophy — versioned YAML tests in the repo align naturally with §13 of <code>docs/QA_STRATEGY.md</code> (durable knowledge travels with the repo), and the "runs in your network" positioning is the strongest privacy story of the three. Held to <code>PARTIAL</code> rather than <code>YES</code> purely because SHA-binding and a guaranteed read-only mode were not found explicitly documented — genuinely <code>UNKNOWN</code>, not a negative finding.</p>
+<h2 id="s9">9. Diffblue audit</h2>
+<p><strong>Version/freshness</strong>: "Cover" product, actively documented (<code>cover-docs.diffblue.com</code>), four editions (Community/Developer/Teams/ Enterprise) as of 2026 pricing pages — <code>DOC_CONFIRMED</code>. CLI + CI + IDE agent; on-prem/self-hosted posture implied by CLI-first design but not explicitly confirmed — <code>UNKNOWN</code>.</p>
+<p><strong>Summary</strong>: fully autonomous generator of <strong>Java JUnit unit tests</strong> only — <code>DOC_CONFIRMED</code>, 94% claimed generation-accuracy rate (<code>MARKETING_ONLY</code> for the specific number). <a href="https://www.diffblue.com/diffblue-cover/">Diffblue Cover</a>.</p>
+<p><strong>The central finding for this candidate</strong>: Diffblue's own documentation states its "unit regression tests" <strong>"reflect the current behavior of your code"</strong> and are updated as code changes — <code>DOC_CONFIRMED</code>, this is the product's stated design principle, not a bug report. <a href="https://www.diffblue.com/resources/introducing-unit-regression-tests-a-new-type-of-test-created-by-diffblue-cover/">Introducing Unit Regression Tests</a>, <a href="https://www.diffblue.com/resources/uplift-java-test-coverage-out-of-the-box/">Uplifting Test Coverage Out of the Box</a>. <strong>This is structurally the same shape as the SEMANTIC_SELF_HEALING pattern this project's invariants forbid</strong> (§5.1 of <code>QA_STRATEGY.md</code>: "expected=100, new result=80 → test changed to accept 80") — except Diffblue applies it by design to characterize *new or changed* code (useful, legitimate for onboarding legacy code with zero tests) rather than to silently paper over a regression in code that already had human-authored expectations. <strong>Classification: <code>UNSAFE_FOR_FINAL_GATE</code> for any test Diffblue can regenerate without a human reviewing the assertion diff</strong> — it must never be pointed at this project's own human-authored regression suite; it is only safe as a bounded, human-gated *generator* for genuinely new/legacy Java code with no prior test, and its generated-test diffs must go through the same test- protection review as any other test change (§5 <code>QA_STRATEGY.md</code>).</p>
+<p><strong>Scope</strong>: Java only, unit-level only — no integration/API/E2E (<code>NOT_FOUND</code>, and this report does not evaluate it as a universal engine, per the user's explicit instruction).</p>
+<p><strong>Pricing</strong> (<code>DOC_CONFIRMED</code>): free Community Edition; Developer Edition from ~$1,500 (5,000 net-new lines of coverage, ≈$0.30/line); Teams/ Enterprise quote-based. <a href="https://www.capterra.com/p/214366/Diffblue-Cover/">Diffblue Cover Software Pricing</a>.</p>
+<p><strong>Direct-QAEngine feasibility</strong>: <strong>NO</strong> as a general engine (single language, unit-only, and the characterization-test default behavior is incompatible with unattended final-gate use). <strong>CONDITIONAL</strong> as a specialized Java-unit-coverage *generator* inside <code>MULTI_ENGINE_BY_STACK</code> — only if every generated/regenerated assertion is routed through human review before being trusted as regression protection.</p>
+<h2 id="s10">10. Internal QA assessment</h2>
+<p>Honest self-assessment, per §3: <code>QualityGateRunner</code> already provides real executable evidence (invariant §1), SHA-binding already exists via <code>GitGovernanceService</code>/<code>ValidationStore</code> (invariant §6-7), and <code>ExecutionStore</code>/audit patterns already provide persistent, auditable FAIL records (invariant §8). What is genuinely <strong>not</strong> built: Test Impact Analysis (diff → affected-test selection), any browser/mobile/ visual E2E capability, AI-driven test authoring for coverage gaps, and the <code>.qa/</code> knowledge base. Building E2E/browser capability from zero in-house is a multi-month undertaking with no current evidence this project needs it for *itself* (a Python CLI/library, not a web app) — though target projects the orchestrator governs for other users could need it. An <code>InternalQAEngine</code>, if built, composes with the existing adaptive mechanism (<code>role=qa_testing</code>, Slice 16/17/19 pattern) purely for its own LLM-driven steps (test authoring, failure triage) — the actual PASS/FAIL still comes from <code>QualityGateRunner</code>, never an LLM verdict.</p>
+<h2 id="s11">11. Capability matrix</h2>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>Axis</th>
+<th>TestSprite</th>
+<th>BrowserStack</th>
+<th>Momentic</th>
+<th>Diffblue</th>
+<th>Internal</th>
+</tr></thead><tbody>
+<tr>
+<td data-label="Axis">Test Impact Analysis</td>
+<td data-label="TestSprite">PARTIAL (diff testScope)</td>
+<td data-label="BrowserStack">NOT_FOUND</td>
+<td data-label="Momentic">PARTIAL (PR/commit-aware)</td>
+<td data-label="Diffblue">NOT_FOUND</td>
+<td data-label="Internal">NATIVE (buildable on existing <code>git_governance.py</code>/SHA facts)</td>
+</tr>
+<tr>
+<td data-label="Axis">Test generation</td>
+<td data-label="TestSprite">Strong (frontend/backend/E2E)</td>
+<td data-label="BrowserStack">Moderate (PRD→cases)</td>
+<td data-label="Momentic">Strong (NL→YAML E2E)</td>
+<td data-label="Diffblue">Strong (Java unit only)</td>
+<td data-label="Internal">Buildable, none yet</td>
+</tr>
+<tr>
+<td data-label="Axis">Runs existing repo tests</td>
+<td data-label="TestSprite">NOT_FOUND</td>
+<td data-label="BrowserStack">YES (Selenium/Playwright)</td>
+<td data-label="Momentic">Likely (CLI runs your tests too) — UNKNOWN detail</td>
+<td data-label="Diffblue">YES (JUnit, but regenerates)</td>
+<td data-label="Internal">YES (pytest, already built)</td>
+</tr>
+<tr>
+<td data-label="Axis">Existing-test protection</td>
+<td data-label="TestSprite">UNKNOWN (no evidence either way)</td>
+<td data-label="BrowserStack">UNSAFE (documented assertion-repair risk)</td>
+<td data-label="Momentic">PARTIAL/UNKNOWN</td>
+<td data-label="Diffblue">UNSAFE by design</td>
+<td data-label="Internal">Full (native to our own policy)</td>
+</tr>
+<tr>
+<td data-label="Axis">SHA-binding</td>
+<td data-label="TestSprite">Best evidenced ({sha}/{short-sha}, testScope)</td>
+<td data-label="BrowserStack">UNKNOWN</td>
+<td data-label="Momentic">UNKNOWN (PR/commit-aware, not confirmed exact)</td>
+<td data-label="Diffblue">UNKNOWN</td>
+<td data-label="Internal">Full (Slice 20, built)</td>
+</tr>
+<tr>
+<td data-label="Axis">Read-only final-verification mode</td>
+<td data-label="TestSprite">UNKNOWN</td>
+<td data-label="BrowserStack">UNKNOWN</td>
+<td data-label="Momentic">UNKNOWN</td>
+<td data-label="Diffblue">NO (writes test files)</td>
+<td data-label="Internal">YES (buildable, gates are already read-only)</td>
+</tr>
+<tr>
+<td data-label="Axis">E2E/browser/mobile</td>
+<td data-label="TestSprite">Strong (web)</td>
+<td data-label="BrowserStack">Strongest (device farm)</td>
+<td data-label="Momentic">Strong (web+mobile)</td>
+<td data-label="Diffblue">None</td>
+<td data-label="Internal">None</td>
+</tr>
+<tr>
+<td data-label="Axis">Languages</td>
+<td data-label="TestSprite">Web/API-centric</td>
+<td data-label="BrowserStack">Web/mobile</td>
+<td data-label="Momentic">Web/mobile</td>
+<td data-label="Diffblue">Java only</td>
+<td data-label="Internal">Whatever target repo uses</td>
+</tr>
+</tbody></table></div>
+<h2 id="s12">12. Test Impact Analysis</h2>
+<p>TestSprite: <code>testScope=diff|codebase</code> is the most concrete evidence of diff-awareness among externals — <code>DOC_CONFIRMED</code> but coarse (whole-diff scope, not symbol/dependency-level impact analysis). Momentic: PR/commit-aware positioning, mechanism unconfirmed — <code>PARTIAL</code>. BrowserStack/Diffblue: no diff-impact mechanism found — <code>NOT_FOUND</code>. None of the four does true dependency-graph impact analysis (changed file → changed symbol → affected capability → recommended regression scope, §6 <code>QA_STRATEGY.md</code>) — this remains a genuine internal-build gap regardless of engine choice.</p>
+<h2 id="s13">13. Test generation</h2>
+<p>TestSprite and Momentic both generate full test code from specs/natural-language; Diffblue generates Java unit tests exclusively; BrowserStack generates test *cases* from PRDs (a lighter authoring aid, not full executable test code by default). <strong>Generation vs. execution must not be conflated</strong>: generation quality is not evidence of PASS — only real execution is (invariant §1) — and only TestSprite, BrowserStack (via existing suites), and Diffblue were confirmed to actually *execute* what they generate.</p>
+<h2 id="s14">14. Test execution</h2>
+<p>Real execution confirmed (<code>DOC_CONFIRMED</code>) for all four, but via different mechanisms: TestSprite (own cloud sandbox, Playwright/Cypress- style, against a *deployed app*), BrowserStack (real browser/device farm, runs both generated and pre-existing suites), Momentic (real browser, local or CI network), Diffblue (real JVM, JUnit). None was confirmed to invoke <code>pytest</code> directly on this project's own suite — for a Python-backend project like <code>ai-dev-orchestrator</code> itself, none of the four is a drop-in replacement for <code>QualityGateRunner</code>; they are complements for stacks/surfaces the internal gate cannot cover (E2E, browser, mobile).</p>
+<h2 id="s15">15. Existing-test protection</h2>
+<p>This is where every external candidate is weakest relative to this project's actual invariants. No candidate publishes an explicit, verifiable "we never modify your pre-existing human-authored tests" guarantee. Ranked from least to most concerning: TestSprite/Momentic (no evidence of touching pre-existing tests, <code>UNKNOWN</code> but no documented risk either) &lt; BrowserStack (documented, named assertion-repair risk, mitigable only by policy discipline this project cannot verify is enforced) &lt; Diffblue (regeneration-to-current-behavior is the *stated design*, the highest-risk pattern of the four).</p>
+<h2 id="s16">16. Self-healing</h2>
+<p>See §7 for the sourced BrowserStack finding (independent analysis names the exact failure mode this project's invariant forbids) and §9 for Diffblue's structurally similar characterization-test behavior. Classification per candidate: TestSprite <code>UNKNOWN</code> (no self-heal feature found — may simply not apply), BrowserStack <code>UNSAFE_FOR_FINAL_GATE</code> (unless locator-only mode is verified/enforced), Momentic <code>PARTIAL</code> (locator+intent framing suggests lower risk, unconfirmed), Diffblue <code>UNSAFE_FOR_FINAL_GATE</code> (by design, for any pre-existing human test).</p>
+<h2 id="s17">17. Failure analysis</h2>
+<p>BrowserStack's Test Failure Analysis Agent is the most explicitly documented failure-analysis feature (log root-causing, <code>DOC_CONFIRMED</code> existence, <code>MARKETING_ONLY</code> for the "95% faster" figure). TestSprite reports include logs/screenshots/videos per its dashboard description. Momentic and Diffblue: no dedicated failure-classification feature found — <code>NOT_FOUND</code>. <strong>None of the four maps failures into this project's <code>REGRESSION</code>/<code>EXPECTED_CHANGE</code>/<code>TEST_DEFECT</code>/<code>FLAKY_TEST</code>/ <code>ENVIRONMENT_FAILURE</code>/<code>UNKNOWN</code> taxonomy</strong> (§4 <code>QA_STRATEGY.md</code>) — this classification step is a genuine internal-build requirement regardless of engine choice, likely consuming the raw evidence each engine produces.</p>
+<h2 id="s18">18. Flakiness</h2>
+<p>Momentic's cloud dashboard is documented to include "test quarantining" — <code>DOC_CONFIRMED</code>, the only candidate with an explicit flaky-management feature found. No detail retrieved on retry policy or historical- failure-rate tracking for any candidate — <code>UNKNOWN</code> across the board. Quarantine-never-means-ignore-forever (§8 <code>QA_STRATEGY.md</code>) is not verifiable as enforced by any external tool from public docs; if adopted, this project's own <code>.qa/known-flaky.yaml</code> (§15 <code>QA_STRATEGY.md</code>) should remain the authoritative record regardless of what a vendor dashboard shows.</p>
+<h2 id="s19">19. SHA/audit</h2>
+<p>TestSprite is the only candidate with concrete, named SHA placeholders in its own documentation (<code>{sha}</code>, <code>{short-sha}</code>) — <code>DOC_CONFIRMED</code>. Momentic's PR/commit-awareness is <code>DOC_CONFIRMED</code> at a coarse level. BrowserStack and Diffblue: no SHA-binding contract found — <code>NOT_FOUND</code>/<code>UNKNOWN</code>. <strong>None of the four was confirmed to expose a result object carrying <code>base_sha</code>+<code>head_sha</code> together</strong> (only a single commit/PR reference) — this is the single most important open question for a POC (§32): can a candidate's result be trusted to say "this verdict is for exactly this diff, not just the latest branch state"?</p>
+<h2 id="s20">20. Read-only verification</h2>
+<p><strong>No candidate publishes a documented, forceable "observe/analyze/ report only, touch nothing" run mode.</strong> All four are architected around either generating artifacts (tests, PRDs) or self-healing (which by definition writes). This is classified <code>UNKNOWN</code> (not <code>NO</code>) for all four, because the absence of a *documented* feature does not prove the underlying API can't be constrained to read-only use (e.g., "generate tests" could simply be skipped, running only a previously-authored Phase-1 suite in Phase 2) — but no vendor claims this explicitly, so it cannot be assumed and must be verified by POC before any candidate is trusted for Phase 2 (§7.1 <code>QA_STRATEGY.md</code>).</p>
+<h2 id="s21">21. Autonomous/headless</h2>
+<p>TestSprite (MCP + GitHub Actions, no human-in-the-loop required for a run once configured — <code>DOC_CONFIRMED</code>), BrowserStack (MCP, 20 tools, CI/CD-integrable — <code>DOC_CONFIRMED</code>), Momentic (CLI identical on laptop/ CI, GitHub Actions/CircleCI/GitLab/Jenkins — <code>DOC_CONFIRMED</code>, the broadest CI matrix of the four) all pass this bar in principle. Diffblue (CLI + CI-pipeline integration — <code>DOC_CONFIRMED</code>) also passes for its narrow Java scope. <strong>None of the four is UI-only</strong> — all are automatable, satisfying the baseline autonomy requirement, though polling/cancel/resume completeness is <code>UNKNOWN</code> or <code>NOT_FOUND</code> for all except a coarse REST pull for Momentic.</p>
+<h2 id="s22">22. Persistence/recovery</h2>
+<p>The weakest area across all four for this project's specific future need (<code>RecoveryCoordinator</code>-style resumption after our own process restarts). TestSprite: no run_id/job-persistence contract found in its MCP tools reference — <code>NOT_FOUND</code>. Momentic: REST API can list/filter past runs by cursor — <code>DOC_CONFIRMED</code> at a coarse level, but whether a specific in-flight run can be resumed/polled by ID was not confirmed — <code>UNKNOWN</code>. BrowserStack/Diffblue: <code>UNKNOWN</code>. <strong>This means any external QA integration should assume "fire and eventually receive a webhook/ poll a listing," not "resume a specific run_id after our own crash," pending a POC that proves otherwise.</strong></p>
+<h2 id="s23">23. Security/privacy</h2>
+<p>Ranked from most to least documented privacy-favorable posture, with explicit caveats: <strong>Momentic</strong> (runs inside the customer's own network, no tunnel/allowlist — the strongest architectural privacy story, <code>DOC_CONFIRMED</code>, though specific subprocessor/residency detail <code>NOT_FOUND</code>) &gt; <strong>TestSprite</strong> (interacts with the running app rather than reading source, <code>DOC_CONFIRMED</code>; but data processed in the US only, single subprocessor AWS, no model-training statement found — <code>UNKNOWN</code>) &gt; <strong>BrowserStack</strong> (<code>UNKNOWN</code> — no trust/security page reached in this session's research; likely exists but not verified here) &gt; <strong>Diffblue</strong> (<code>UNKNOWN</code> — CLI-first design suggests less SaaS data flow, but no explicit statement found). <strong>No candidate should be treated as privacy-cleared for a private/sensitive target repository without a project-specific legal/security review</strong> — this report supplies evidence, not clearance.</p>
+<h2 id="s24">24. Cost</h2>
+<p>TestSprite and Momentic both use transparent, public credit-based pricing with real free tiers — cheapest to POC. BrowserStack: no public AI-Agent-tier pricing found — likely bundled into existing paid plans, <code>UNKNOWN</code>, probably the most expensive at scale (device-farm SaaS). Diffblue: highest per-unit cost structure found (~$0.30/line, $1,500 minimum for the paid tier) but has a genuinely free Community Edition for evaluation.</p>
+<h2 id="s25">25. Vendor lock-in</h2>
+<p>Momentic (<code>LOW</code>): tests are plain, readable YAML committed to the target repo — survives the vendor disappearing, satisfies §13 of <code>QA_STRATEGY.md</code> (durable knowledge travels with the repo) almost by default. Diffblue (<code>LOW</code>-<code>MEDIUM</code>): generates plain JUnit/Java source, exportable, but its *maintenance* value (auto-regeneration) disappears with the vendor. TestSprite (<code>MEDIUM</code>): generates Playwright/Cypress code (portable format) but orchestration/PRD/plan artifacts are proprietary-format, and the execution sandbox itself isn't portable. BrowserStack (<code>MEDIUM</code>-<code>HIGH</code>): device-farm access and Percy visual baselines are not portable at all if the subscription ends.</p>
+<h2 id="s26">26. QA knowledge base compatibility</h2>
+<p>None of the four external candidates was found to read or write a <code>.qa/</code>-style repo-local YAML knowledge base (<code>NOT_FOUND</code> across the board) — this is exclusively an internal-build concern regardless of engine choice. Momentic's own YAML-in-repo test storage is the closest philosophical fit and could plausibly coexist with a <code>.qa/</code> directory without friction; the other three keep their state SaaS-side by design, requiring an internal <code>QAResultStore</code>/<code>.qa/qa-history</code> sync step to extract durable facts out of them (a real, non-trivial integration cost — classified <code>MEDIUM</code> normalization cost per §13).</p>
+<h2 id="s27">27. Internal minimum differentiator</h2>
+<p>Regardless of engine choice, this project must still build: the <code>QAEngine</code>/<code>QARequest</code>/<code>QAResult</code> contracts (§28); <code>qa.mode</code>/ <code>qa.preferred_engine</code>/fallback policy; SHA-binding extension of <code>MergeEligibility</code> to require <code>QAVerdict.PASS</code> (§8 <code>QA_STRATEGY.md</code>); <code>FailureClassification</code> normalization (no candidate provides this taxonomy natively, §17); bounded QA/rework cycle logic (reusing <code>ReviewPolicy.max_review_cycles</code>'s pattern); <code>RealizationReport</code>/ <code>ReleaseManager</code> extension; and the <code>.qa/</code> knowledge base. This list is <strong>unchanged from the premise in <code>docs/QA_STRATEGY.md</code></strong> — research confirmed rather than corrected it, because no external candidate offers any of these governance primitives natively.</p>
+<h2 id="s28">28. Architecture A/B/C/D</h2>
+<p><strong>A — BUILD_INTERNAL</strong>: benefits — full control, zero SaaS dependency, zero data-leaves-network risk, reuses ~70% already-built substrate (§3). Gaps — no E2E/browser/mobile without a large new build; test-generation quality untested against TestSprite/Momentic's specialized models. Engineering/maintenance cost: ongoing, ours alone.</p>
+<p><strong>B — DIRECT_EXTERNAL</strong>: <code>ai-dev-orchestrator</code> keeps governance (WorkItem/SHA/policy/audit/merge) and delegates test impact/generation/ execution/E2E/failure-analysis to one external engine. Viable in principle (§11.1 <code>QA_STRATEGY.md</code> criteria) but <strong>no single candidate passes all elimination gates today</strong> (§31) — this architecture is not recommended as a *sole* choice until a POC resolves the read-only-mode and SHA-binding unknowns.</p>
+<p><strong>C — HYBRID</strong>: internal engine (reusing <code>QualityGateRunner</code>) as the mandatory unit/integration/contract Phase 2 gate; external engine (TestSprite first) as an <strong>optional</strong> Phase 1/E2E complement, feeding its findings through the same <code>FailureClassification</code>/SHA-binding layer before any weight is given to it. Highest score (§30) because it combines what's already reliable (internal, invariant-compliant) with what's genuinely missing (E2E) without making an unverified external product the sole gate.</p>
+<p><strong>D — MULTI_ENGINE_BY_STACK</strong>: internal for Python/backend, an external web-E2E engine, Diffblue for Java (gated per §9). Most flexible for a multi-target-project future, but highest engineering/maintenance/vendor complexity — only justified once ≥2 target-project stacks with real divergent QA needs actually exist (currently speculative for this repository).</p>
+<h2 id="s29">29. Direct external-engine feasibility</h2>
+<p>Restated from §6-9: TestSprite <code>PARTIAL</code>, BrowserStack <code>PARTIAL</code>, Momentic <code>PARTIAL</code>, Diffblue <code>NO</code> (general)/<code>CONDITIONAL</code> (Java-only, human-gated). <strong>No candidate is <code>YES</code></strong> — none can today fully replace the need for the internal governance core, though several can meaningfully reduce what that core has to build itself (test generation, E2E execution).</p>
+<h2 id="s30">30. Scorecard /100</h2>
+<p>Weights fixed per brief: Autonomous/headless 15, Test quality/coverage 15, Existing-test protection 10, SHA/auditability 10, Execution evidence 10, Languages/stacks 10, E2E/browser/mobile 10, Security/privacy 8, Cost 5, Maintainability 4, Vendor independence 3.</p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>Axis (weight)</th>
+<th>INTERNAL</th>
+<th>TESTSPRITE</th>
+<th>BROWSERSTACK</th>
+<th>MOMENTIC</th>
+<th>DIFFBLUE</th>
+<th>HYBRID</th>
+<th>MULTI_ENGINE</th>
+</tr></thead><tbody>
+<tr>
+<td data-label="Axis (weight)">Autonomous/headless (15)</td>
+<td data-label="INTERNAL">15</td>
+<td data-label="TESTSPRITE">11</td>
+<td data-label="BROWSERSTACK">12</td>
+<td data-label="MOMENTIC">12</td>
+<td data-label="DIFFBLUE">10</td>
+<td data-label="HYBRID">12</td>
+<td data-label="MULTI_ENGINE">11</td>
+</tr>
+<tr>
+<td data-label="Axis (weight)">Test quality/coverage (15)</td>
+<td data-label="INTERNAL">9</td>
+<td data-label="TESTSPRITE">8</td>
+<td data-label="BROWSERSTACK">8</td>
+<td data-label="MOMENTIC">8</td>
+<td data-label="DIFFBLUE">7</td>
+<td data-label="HYBRID">12</td>
+<td data-label="MULTI_ENGINE">12</td>
+</tr>
+<tr>
+<td data-label="Axis (weight)">Existing-test protection (10)</td>
+<td data-label="INTERNAL">10</td>
+<td data-label="TESTSPRITE">5</td>
+<td data-label="BROWSERSTACK">4</td>
+<td data-label="MOMENTIC">6</td>
+<td data-label="DIFFBLUE">2</td>
+<td data-label="HYBRID">9</td>
+<td data-label="MULTI_ENGINE">8</td>
+</tr>
+<tr>
+<td data-label="Axis (weight)">SHA/auditability (10)</td>
+<td data-label="INTERNAL">10</td>
+<td data-label="TESTSPRITE">8</td>
+<td data-label="BROWSERSTACK">6</td>
+<td data-label="MOMENTIC">7</td>
+<td data-label="DIFFBLUE">4</td>
+<td data-label="HYBRID">9</td>
+<td data-label="MULTI_ENGINE">8</td>
+</tr>
+<tr>
+<td data-label="Axis (weight)">Execution evidence (10)</td>
+<td data-label="INTERNAL">10</td>
+<td data-label="TESTSPRITE">8</td>
+<td data-label="BROWSERSTACK">9</td>
+<td data-label="MOMENTIC">8</td>
+<td data-label="DIFFBLUE">9</td>
+<td data-label="HYBRID">10</td>
+<td data-label="MULTI_ENGINE">10</td>
+</tr>
+<tr>
+<td data-label="Axis (weight)">Languages/stacks (10)</td>
+<td data-label="INTERNAL">5</td>
+<td data-label="TESTSPRITE">5</td>
+<td data-label="BROWSERSTACK">5</td>
+<td data-label="MOMENTIC">5</td>
+<td data-label="DIFFBLUE">3</td>
+<td data-label="HYBRID">7</td>
+<td data-label="MULTI_ENGINE">9</td>
+</tr>
+<tr>
+<td data-label="Axis (weight)">E2E/browser/mobile (10)</td>
+<td data-label="INTERNAL">1</td>
+<td data-label="TESTSPRITE">7</td>
+<td data-label="BROWSERSTACK">10</td>
+<td data-label="MOMENTIC">6</td>
+<td data-label="DIFFBLUE">0</td>
+<td data-label="HYBRID">8</td>
+<td data-label="MULTI_ENGINE">8</td>
+</tr>
+<tr>
+<td data-label="Axis (weight)">Security/privacy (8)</td>
+<td data-label="INTERNAL">8</td>
+<td data-label="TESTSPRITE">5</td>
+<td data-label="BROWSERSTACK">4</td>
+<td data-label="MOMENTIC">6</td>
+<td data-label="DIFFBLUE">4</td>
+<td data-label="HYBRID">6</td>
+<td data-label="MULTI_ENGINE">5</td>
+</tr>
+<tr>
+<td data-label="Axis (weight)">Cost (5)</td>
+<td data-label="INTERNAL">3</td>
+<td data-label="TESTSPRITE">4</td>
+<td data-label="BROWSERSTACK">2</td>
+<td data-label="MOMENTIC">4</td>
+<td data-label="DIFFBLUE">3</td>
+<td data-label="HYBRID">3</td>
+<td data-label="MULTI_ENGINE">2</td>
+</tr>
+<tr>
+<td data-label="Axis (weight)">Maintainability (4)</td>
+<td data-label="INTERNAL">2</td>
+<td data-label="TESTSPRITE">3</td>
+<td data-label="BROWSERSTACK">3</td>
+<td data-label="MOMENTIC">3</td>
+<td data-label="DIFFBLUE">3</td>
+<td data-label="HYBRID">2</td>
+<td data-label="MULTI_ENGINE">1</td>
+</tr>
+<tr>
+<td data-label="Axis (weight)">Vendor independence (3)</td>
+<td data-label="INTERNAL">3</td>
+<td data-label="TESTSPRITE">2</td>
+<td data-label="BROWSERSTACK">1</td>
+<td data-label="MOMENTIC">2</td>
+<td data-label="DIFFBLUE">3</td>
+<td data-label="HYBRID">2</td>
+<td data-label="MULTI_ENGINE">1</td>
+</tr>
+<tr>
+<td data-label="Axis (weight)"><strong>Total /100</strong></td>
+<td data-label="INTERNAL"><strong>76</strong></td>
+<td data-label="TESTSPRITE"><strong>66</strong></td>
+<td data-label="BROWSERSTACK"><strong>64</strong></td>
+<td data-label="MOMENTIC"><strong>67</strong></td>
+<td data-label="DIFFBLUE"><strong>48</strong></td>
+<td data-label="HYBRID"><strong>80</strong></td>
+<td data-label="MULTI_ENGINE"><strong>75</strong></td>
+</tr>
+</tbody></table></div>
+<p>No <code>UNKNOWN</code> axis was scored at its maximum — every <code>UNKNOWN</code> finding (e.g. security/privacy for BrowserStack/Diffblue, SHA-binding depth for Momentic) was scored conservatively below the midpoint of the axis rather than assumed favorable, per the explicit instruction.</p>
+<h2 id="s31">31. Elimination gates</h2>
+<p>Minimal conditions to be the <strong>mandatory, sole</strong> final QA gate: (a) headless/automatable; (b) real execution evidence; (c) reliable SHA-binding (base+head, not just "latest branch"); (d) structured, auditable result; (e) a verifiable read-only mode; (f) semantic self-healing controllable/disableable; (g) acceptable privacy for the target repo; (h) private-repo compatible.</p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>Candidate</th>
+<th>Fails</th>
+<th>Verdict</th>
+</tr></thead><tbody>
+<tr>
+<td data-label="Candidate">TestSprite</td>
+<td data-label="Fails">(c) partial-only, (e) unconfirmed, doesn't run existing suite</td>
+<td data-label="Verdict">Complement, not sole gate</td>
+</tr>
+<tr>
+<td data-label="Candidate">BrowserStack</td>
+<td data-label="Fails">(f) documented risk, (c) unconfirmed</td>
+<td data-label="Verdict">Complement (E2E), not sole gate</td>
+</tr>
+<tr>
+<td data-label="Candidate">Momentic</td>
+<td data-label="Fails">(c) unconfirmed, (e) unconfirmed</td>
+<td data-label="Verdict">Complement, promising POC candidate</td>
+</tr>
+<tr>
+<td data-label="Candidate">Diffblue</td>
+<td data-label="Fails">(f) fails by design for pre-existing tests</td>
+<td data-label="Verdict">Human-gated Java generator only, never autonomous gate</td>
+</tr>
+<tr>
+<td data-label="Candidate">Internal</td>
+<td data-label="Fails">passes all — by construction, since we control the contract</td>
+<td data-label="Verdict">Can be the sole mandatory gate today</td>
+</tr>
+</tbody></table></div>
+<p>A candidate failing a gate can still remain a valuable <strong>complement</strong> (Phase 1 authoring, E2E-only Phase 2 addendum) — none is disqualified from the architecture entirely, only from being the *sole* authority.</p>
+<h2 id="s32">32. Recommended POCs (not executed)</h2>
+<p><strong>POC 1 — SHA-binding &amp; read-only verification, TestSprite vs. Momentic vs. internal baseline.</strong> Same tiny reproducible scenario as the Slice 17/18 real smoke test (<code>add()</code> bug, TDD fix, <code>docs/reports/ real-cross-worker-resume-2026-09-13.html</code>): run each candidate against base_sha A and head_sha B of the same fix, confirm (1) the result names both SHAs unambiguously, (2) a "verify only, generate/write nothing" run is actually achievable, (3) evidence (logs/artifacts) is retrievable after the run completes without polling a specific run_id (given §22's finding). This directly resolves the single largest open uncertainty in this report and would change §29's verdicts from <code>PARTIAL</code> to <code>YES</code>/<code>NO</code> for at least one candidate.</p>
+<p><strong>POC 2 — BrowserStack self-heal boundary.</strong> Deliberately introduce a regression (change a UI-visible computed value, not a selector) in a disposable demo app, run BrowserStack's Self-Healing Agent against it, and confirm whether the run reports a genuine FAIL or silently "repairs" the assertion. This directly tests the single most concrete, independently-documented risk found in this study (§16) and would move BrowserStack from <code>UNSAFE_FOR_FINAL_GATE</code> to either confirmed-safe (if a real, enforced locator-only mode exists) or confirmed-unsafe.</p>
+<p>Neither POC was run this session, per explicit instruction.</p>
+<h2 id="s33">33. Recommended target architecture</h2>
+<p><strong>HYBRID</strong> (§28-C): mandatory internal Phase 2 gate (reusing <code>QualityGateRunner</code>, extended with <code>FailureClassification</code> and SHA-bound <code>QAVerdict</code>), optional external Phase 1/E2E complement — TestSprite as the first candidate to POC (best-evidenced SHA/diff-scoping), Momentic as the close second (best privacy/repo-friendliness story, promising but less-evidenced SHA-binding). BrowserStack held in reserve specifically for future target projects with a real browser/device/visual surface, gated to locator-only self-heal pending POC 2. Diffblue held in reserve specifically for a future Java target project, always human-gated.</p>
+<h2 id="s34">34. Slice 22 implications</h2>
+<p>Slice 22 should build the <strong>engine-independent</strong> governance layer only: <code>QAEngine</code>/<code>QARequest</code>/<code>QAResult</code> contracts, <code>FailureClassification</code>, the Test Impact Analysis contract (not full implementation if it's large), test-protection policy enforcement, <code>QAResultStore</code>/SHA-binding persistence, and the <code>.qa/</code> knowledge-base scaffold — <strong>explicitly not coupled to TestSprite/BrowserStack/Momentic/Diffblue</strong>, so the Slice 21 recommendation above can be revisited after the POCs without touching Slice 22's code.</p>
+<h2 id="s35">35. Slice 23 recommendation — PENDING USER ARBITRATION</h2>
+<p>Proposed (not approved): <code>InternalQAEngine</code> first (fastest to build given §3's existing substrate, satisfies invariants unconditionally), with a <code>TestSpriteQAEngine</code> adapter as the second deliverable once POC 1 confirms feasibility. This is a recommendation only — <strong>Slice 23's actual scope must be decided by the user after reading this report, independently repeating this study with Codex, and arbitrating any disagreement</strong>, exactly as instructed.</p>
+<h2 id="s36">36. Risks</h2>
+<p>Committing to any single external vendor before POC 1/2 risks building governance code around unverified SHA-binding/read-only assumptions that later prove false. Conversely, deferring all external QA risks under-investing in E2E coverage this project may need once it governs web-facing target projects. Diffblue's characterization-test behavior, if ever misapplied to a human-authored regression suite by a future implementer unaware of this report's §9 finding, would directly violate this project's central test-protection invariant — this risk should be called out explicitly in any future Slice 23/24 implementation.</p>
+<h2 id="s37">37. Final decision</h2>
+<p><strong>Primary: <code>HYBRID</code>.</strong> <strong>Second best: <code>BUILD_INTERNAL</code></strong> — remains fully viable alone (76/100, second-highest score) since the mandatory governance substrate is already ~70% built; choosing this would simply mean deferring all external QA (E2E/browser) indefinitely rather than gating it behind a POC. <strong><code>WHAT_WOULD_CHANGE_MY_MIND</code></strong>: (1) POC 1 confirming a candidate's read-only mode and SHA-binding are real and reliable would justify promoting that candidate from "optional complement" to "conditionally-trusted Phase 2 contributor" for its specific domain (E2E); (2) discovering that <code>ai-dev-orchestrator</code> will soon govern a target project with a genuine browser/device/visual- regression surface would raise <code>MULTI_ENGINE_BY_STACK</code>'s priority; (3) discovering that BrowserStack does publish a verified, enforced locator-only self-heal toggle would remove its single biggest disqualifying concern and could make <code>HYBRID</code> lean toward BrowserStack over TestSprite for the E2E slot.</p>
+<h2 id="s38">38. Sources</h2>
+<ul>
+<li><a href="https://www.testsprite.com/blog/are-there-mcp-servers-for-software-testing">Are there MCP servers for software testing? — TestSprite</a></li>
+<li><a href="https://www.npmjs.com/package/@testsprite/testsprite-mcp">@testsprite/testsprite-mcp — npm</a></li>
+<li><a href="https://www.testsprite.com/solutions/mcp">MCP for AI Coding Agents — TestSprite</a></li>
+<li><a href="https://docs.testsprite.com/mcp/core/tools">MCP Tools References — TestSprite Documentation</a></li>
+<li><a href="https://docs.testsprite.com/web-portal/admin/api-keys">API Keys &amp; MCP Integration — TestSprite Documentation</a></li>
+<li><a href="https://www.testsprite.com/blog/github-pr-testing-the-missing-step-in-every-ai-development-workflow">GitHub PR Testing — TestSprite</a></li>
+<li><a href="https://www.testsprite.com/blog/does-testsprite-support-github-actions-for-pull-request-testing">Does TestSprite Support GitHub Actions for Pull Request Testing? — TestSprite</a></li>
+<li><a href="https://www.testsprite.com/blog/is-testsprite-safe-to-use-with-private-codebases-or-internal-applications">Is TestSprite Safe to Use with Private Codebases or Internal Applications? — TestSprite</a></li>
+<li><a href="https://www.testsprite.com/privacy">TestSprite Privacy Policy</a></li>
+<li><a href="https://bug0.com/knowledge-base/testsprite-pricing">TestSprite Pricing 2026 — Bug0</a></li>
+<li><a href="https://www.browserstack.com/press/browserstack-launches-suite-of-ai-agents-to-redefine-software-quality-at-scale">BrowserStack Launches Suite of AI Agents to Redefine Software Quality at Scale</a></li>
+<li><a href="https://pureai.com/blogs/the-pure-ai-blog/2025/11/browserstack-launches-ai-self-healing-agent.aspx">BrowserStack Launches AI Self-Healing Agent — Pure AI</a></li>
+<li><a href="https://www.browserstack.com/guide/ai-testing-tool">Comparing the Best AI Testing Tools in 2026 — BrowserStack</a></li>
+<li><a href="https://www.browserstack.com/docs/low-code-automation/test-recording/browserstack-ai/ai-self-heal">Self healing in Low Code Automation — BrowserStack Docs</a></li>
+<li><a href="https://www.awesome-testing.com/2026/07/self-healing-tests-with-ai">Self-Healing Tests with AI: Triage Before Repair — Awesome Testing</a></li>
+<li><a href="https://www.browserstack.com/docs/browserstack-mcp-server/tools">BrowserStack MCP tools &amp; workflows</a></li>
+<li><a href="https://bug0.com/knowledge-base/momentic-features">Momentic Features 2026 — Bug0</a></li>
+<li><a href="https://momentic.ai/docs">Welcome to Momentic</a></li>
+<li><a href="https://momentic.ai/infrastructure">Test Automation Infrastructure — Momentic</a></li>
+<li><a href="https://bug0.com/knowledge-base/momentic-pricing">Momentic Pricing 2026 — Bug0</a></li>
+<li><a href="https://www.diffblue.com/diffblue-cover/">Diffblue Cover</a></li>
+<li><a href="https://www.diffblue.com/resources/introducing-unit-regression-tests-a-new-type-of-test-created-by-diffblue-cover/">Introducing Unit Regression Tests — Diffblue</a></li>
+<li><a href="https://www.diffblue.com/resources/uplift-java-test-coverage-out-of-the-box/">Uplifting Test Coverage Out of the Box with Diffblue Cover</a></li>
+<li><a href="https://www.capterra.com/p/214366/Diffblue-Cover/">Diffblue Cover Software Pricing — Capterra</a></li>
+<li><code>docs/QA_STRATEGY.md</code>, <code>docs/GIT_GOVERNANCE.md</code>, <code>docs/ADAPTIVE_EXECUTION.md</code>, <code>ROADMAP.md</code>, <code>docs/status.md</code> (this repository, internal sources)</li>
+</ul>
+</div></body></html>

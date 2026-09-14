@@ -1388,7 +1388,28 @@ spec, décision d'architecture). Un verdict PASS doit toujours être fondé
 sur des preuves exécutables (pytest/Playwright/mypy/Ruff/build/lint/API/
 contract/E2E) — un verdict LLM seul n'est jamais une preuve de PASS.
 
-**Slice 21 — QA Architecture + Build-vs-Adopt Study**
+**Slice 21 — QA Architecture + Build-vs-Adopt Study — ✅ DONE (arbitrage utilisateur 2026-09-14)**
+- Étude Claude (`docs/QA_BUILD_VS_ADOPT_REPORT_CLAUDE.md`) : `HYBRID`
+  80/100, second `BUILD_INTERNAL` 76/100. Étude Codex
+  (`docs/QA_BUILD_VS_ADOPT_REPORT.md`) : `BUILD_INTERNAL` 75/100, second
+  `HYBRID` 74/100 — les deux indépendantes, la seconde écrite sans lire la
+  première (voir provenance dans chaque rapport). **Arbitrage utilisateur
+  (2026-09-14, `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`)**, non tranché par
+  les scores : **architecture cible `HYBRID-READY`** (contrats
+  engine-independent, `ExternalQAEngine` reste une extension de premier
+  ordre, aucun fournisseur externe requis pour le gate initial) ;
+  **implémentation immédiate `BUILD_INTERNAL_MINIMAL`** — les deux études
+  convergent en pratique sur `InternalQAEngine` first, aucun candidat
+  externe ne passant toutes les eliminations gates aujourd'hui.
+  TestSprite (limites V3 target/healing documentées par Codex — POC
+  seulement après preuve que ces blockers sont levés), Momentic
+  (challenger repo-centric sérieux, SHA/recovery/policies à qualifier),
+  BrowserStack (spécialiste browser/mobile/visual, à activer sur besoin
+  réel d'un target project) et Diffblue (spécialiste Java, génération
+  sous protection stricte de baseline) restent des adaptateurs externes
+  futurs possibles, aucun approuvé aujourd'hui comme gate final
+  obligatoire. **Slice 23 décidée : `InternalQAEngine` MVP mince,
+  Python/pytest first** — ne démarre pas cette session.
 - Définir formellement les contrats `QARequest`/`QAResult`/`QAEngine` (le
   nom exact — `QAEngine` vs `TestAgent`/`QAProvider`/`VerificationEngine`
   — est lui-même un livrable de l'étude, pas figé d'avance)
@@ -1802,15 +1823,23 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     décision reste un livrable de Slice 21. Session documentation
     uniquement : aucun code fonctionnel modifié, aucun test ajouté/
     modifié (876 tests offline PASS, inchangé).
-- **Next : Slice 21 — QA Architecture + Build-vs-Adopt Study.** Voir
-  l'entrée détaillée ci-dessus et `docs/QA_STRATEGY.md`. Slices 21-24 du
-  nouveau cycle QA sont considérées engagées par cette revue de roadmap ;
-  Slice 25 reste conditionnelle (non obligatoire tant que le besoin n'est
-  pas établi). Le prochain point de contrôle utilisateur explicite reste
+  - **Slice 21 (QA Architecture + Build-vs-Adopt Study) — DONE,
+    arbitrage utilisateur 2026-09-14** : voir l'entrée détaillée
+    ci-dessus — études indépendantes Claude (`HYBRID` 80/`BUILD_INTERNAL`
+    76) et Codex (`BUILD_INTERNAL` 75/`HYBRID` 74), arbitrage documenté
+    (`docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`, jamais tranché par les
+    scores) : architecture cible `HYBRID-READY`, implémentation
+    immédiate `BUILD_INTERNAL_MINIMAL`, Slice 23 = `InternalQAEngine` MVP
+    mince Python/pytest first. Aucun fournisseur externe approuvé comme
+    gate final aujourd'hui.
+- **Next : Slice 21.5 — Evidence / SHA hardening**, avant Slice 22 (voir
+  `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`). Reste centrée gouvernance
+  engine-independent, non couplée à un fournisseur externe. Slice 25
+  reste conditionnelle (non obligatoire tant que le besoin n'est pas
+  établi). Le prochain point de contrôle utilisateur explicite reste
   celui prévu par le principe du projet (entre deux grandes versions
-  stables, avant toute Slice au-delà de ce cycle QA). OmniRoute reste une
-  qualification future optionnelle, hors roadmap principale — voir
-  `docs/OMNIROUTE_ARBITRATION.md`.
+  stables). OmniRoute reste une qualification future optionnelle, hors
+  roadmap principale — voir `docs/OMNIROUTE_ARBITRATION.md`.
 
 ## Comment reprendre ce projet à froid
 

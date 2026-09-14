@@ -1,7 +1,25 @@
 # Status
 
-Dernière mise à jour : revue de roadmap post-Slice 20 (2026-09-13).
+Dernière mise à jour : Slice 21 — arbitrage utilisateur (2026-09-14).
 
+- **Slice 21 — QA Architecture + Build-vs-Adopt Study : DONE, arbitrage
+  utilisateur (2026-09-14).** Deux études indépendantes : Claude
+  (`docs/QA_BUILD_VS_ADOPT_REPORT_CLAUDE.md`, recherche web réelle,
+  `HYBRID` 80/100, second `BUILD_INTERNAL` 76/100) et Codex
+  (`docs/QA_BUILD_VS_ADOPT_REPORT.md`, `BUILD_INTERNAL` 75/100, second
+  `HYBRID` 74/100), la seconde écrite sans lire la première. Arbitrage
+  documenté dans `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md` +
+  `docs/reports/qa-build-vs-adopt-arbitration.html` — **jamais tranché
+  par les scores** : les deux études convergent en pratique sur
+  `InternalQAEngine` first (aucun candidat externe ne passe toutes les
+  elimination gates aujourd'hui). **Décision utilisateur : architecture
+  cible `HYBRID-READY`, implémentation immédiate
+  `BUILD_INTERNAL_MINIMAL`.** TestSprite/Momentic/BrowserStack/Diffblue
+  restent des adaptateurs externes futurs possibles (statuts détaillés
+  dans l'arbitrage), aucun approuvé aujourd'hui comme gate final.
+  **Slice 23 décidée : `InternalQAEngine` MVP mince, Python/pytest
+  first** — non commencée cette session. Rapports d'étude + arbitrage
+  commités (voir hash ci-dessous), non poussés.
 - **Revue de roadmap post-Slice 20 (avec l'utilisateur) : DONE.** Toutes
   les Slices 7-20 de Phase 1 sont DONE ; décision : ouvrir un nouveau
   cycle **QA/Regression Testing Governance** (Slices 21-25). Étude
@@ -98,10 +116,10 @@ Dernière mise à jour : revue de roadmap post-Slice 20 (2026-09-13).
     aucun downgrade ; aucun bug Slice 17/18 découvert. Preuve versionnée
     (sanitizée) : `docs/reports/real-cross-worker-resume-2026-09-13.html`
   - `~/projects/ralph-spike` original : non modifié (vérifié avant/après)
-- **Next : Slice 21 — QA Architecture + Build-vs-Adopt Study** (voir
-  `ROADMAP.md` et `docs/QA_STRATEGY.md`). OmniRoute reste une
-  qualification future optionnelle, hors roadmap principale (voir
-  `docs/OMNIROUTE_ARBITRATION.md`).
+- **Next : Slice 21.5 — Evidence / SHA hardening**, avant Slice 22 (voir
+  `ROADMAP.md` et `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`). OmniRoute
+  reste une qualification future optionnelle, hors roadmap principale
+  (voir `docs/OMNIROUTE_ARBITRATION.md`).
 
 Détail complet des slices, de la vision cible et du découpage incrémental :
 voir `ROADMAP.md` (source de vérité fonctionnelle).
