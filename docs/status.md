@@ -1,7 +1,53 @@
 # Status
 
-Dernière mise à jour : Slice 22 — QA Governance + Regression Knowledge Base (2026-09-15).
+Dernière mise à jour : Slice 23 — QA Engine MVP (2026-09-15).
 
+- **Slice 23 — QA Engine MVP : DONE (Python/pytest uniquement).** Nouveau
+  `src/orchestrator/internal_qa_engine.py` — `InternalQAEngine` (implémente
+  le `QAEngine` Slice 22), `InternalQAPlan`, `InternalQATestAuthor`,
+  `run_qa_cycle`. Composition stricte : `QualityGateRunner` (jamais un
+  second runner — une commande ciblée pytest est un `ValidationCommand`
+  de plus, via un `project_id` synthétique éphémère), `analyze_test_impact_deterministic`/
+  `run_final_verification_gate`/`qa_protection` (Slice 21.5/22, verbatim),
+  `evaluate_qa_verdict` (jamais dupliqué). Scope honnête : absence de
+  marqueur pytest (`pyproject.toml`/`pytest.ini`/`setup.cfg`/`tox.ini`) =>
+  `INCONCLUSIVE`, jamais `PASS` ; aucune prétention JS/Java/mobile/
+  browser/BrowserStack/TestSprite/Momentic. Sélection de tests
+  déterministe réutilisée (regression-map/critical-paths → tests ciblés,
+  repli sur régression globale configurée si rien sélectionné, sinon
+  `INCONCLUSIVE` — jamais `PASS` sur preuve vide). Known-flaky : re-run
+  borné (jamais infini), tenté et échoué toujours conservé en evidence,
+  jamais un skip list. QA Test Authoring adaptatif réutilise
+  intégralement le mécanisme existant (Slice 16/17/19) ; capability
+  `qa_testing` ajoutée à `config/workers.yaml` (alice/victor, aucun
+  worker dédié fabriqué) ; `qa_worker_id != developer_worker_id`
+  obligatoire, `!= reviewer_worker_id` préféré (repli automatique, jamais
+  bloquant à deux workers). Mutation de production détectée
+  indépendamment (jamais une confiance aveugle dans l'event structuré du
+  worker) => violation fail-closed. `RealizationReport` enrichi en option
+  (`qa_run_store`). Aucune intégration `MVPManager`/merge/release
+  (Slice 24). 1074 tests offline PASS (1004 + 70).
+  **Smoke réel PASS** (`scripts/smoke_internal_qa_real.py`) : vrai worker
+  alice (anthropic/claude_code/sonnet), copie jetable de
+  `~/projects/ralph-spike`, test de régression réel ajouté prouvant le
+  bug connu de `add()`, aucune modification de production, verdict
+  gouverné `FAIL` + `requires_coding_agent=True`, ralph-spike original
+  inchangé. Deux bugs réels trouvés et corrigés par ce smoke (fichiers
+  `test_*.py` hors `tests/`, bruit `__pycache__` imbriqué — voir
+  `docs/QA_GOVERNANCE.md`).
+  **Self-dogfood acceptance : BLOCKED_BY_PROVIDER (partiel, honnête)**
+  (`scripts/self_dogfood_dev_qa_real.py`) : copie jetable complète de ce
+  dépôt lui-même, défaut contrôlé réel introduit, contrôle négatif
+  confirmé RED avant correction, vrai worker DEVELOPMENT (alice) a
+  réellement corrigé le défaut sans toucher aux tests — puis bloqué
+  honnêtement à la sélection du worker QA distinct (seul `anthropic` est
+  disponible, `openai` en quota épuisé — un seul worker `qa_testing`
+  éligible existe donc, le même que le développeur, exclusion
+  obligatoire jamais contournée). Dépôt source (`~/projects/ai-dev-orchestrator`)
+  vérifié strictement inchangé avant/après (HEAD identique, aucun statut
+  git inattendu). Aucun rapport de réalisation fabriqué pour ce chemin
+  bloqué. Aucun reset credit consommé au-delà des sessions réelles
+  nécessaires ; aucun push.
 - **Slice 22 — QA Governance + Regression Knowledge Base : DONE.**
   Socle QA provider-independent uniquement — aucun `InternalQAEngine`,
   aucune intégration `MVPManager`/merge/release (Slice 23/24). Nouveaux
@@ -174,11 +220,12 @@ Dernière mise à jour : Slice 22 — QA Governance + Regression Knowledge Base 
     aucun downgrade ; aucun bug Slice 17/18 découvert. Preuve versionnée
     (sanitizée) : `docs/reports/real-cross-worker-resume-2026-09-13.html`
   - `~/projects/ralph-spike` original : non modifié (vérifié avant/après)
-- **Next : Slice 23 — QA Engine MVP (`InternalQAEngine`, Python/pytest
-  first)** (voir `ROADMAP.md` et `docs/QA_GOVERNANCE.md`) ; ne démarre pas
-  avant une future session. OmniRoute reste une qualification future
-  optionnelle, hors roadmap principale (voir
-  `docs/OMNIROUTE_ARBITRATION.md`).
+- **Next : Slice 24 — QA/Rework/Review/Merge Integration** (voir
+  `ROADMAP.md`) — branche `InternalQAEngine` dans `MVPManager`,
+  `compute_merge_eligibility`, `ReleaseManager`, et la boucle QA
+  FAIL→rework bornée ; ne démarre pas avant une future session. OmniRoute
+  reste une qualification future optionnelle, hors roadmap principale
+  (voir `docs/OMNIROUTE_ARBITRATION.md`).
 
 Détail complet des slices, de la vision cible et du découpage incrémental :
 voir `ROADMAP.md` (source de vérité fonctionnelle).
