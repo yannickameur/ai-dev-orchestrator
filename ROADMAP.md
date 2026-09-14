@@ -1499,37 +1499,85 @@ contract/E2E) — un verdict LLM seul n'est jamais une preuve de PASS.
 - Dépend de : Slice 20 (Git governance), Slice 8 (QualityGateRunner) ;
   prépare Slice 22/23 sans les anticiper.
 
-**Slice 22 — QA Governance + Regression Knowledge Base**
-- `QARun`/`QAVerdict`/`QAFinding`/`FailureClassification`/`QAResultStore`
-  — chaque run QA lié à project/MVP/WorkItem/base_sha/head_sha/engine/
-  worker ou provider éventuel/commandes/tests/résultat/horodatages
-- `TestImpactAnalysis` : base_sha/head_sha/diff → fichiers changés →
-  symboles/modules/config changés → dépendances directes → capacités
-  potentiellement impactées → tests existants → tests manquants → portée
-  de régression recommandée — objectif : ne pas systématiquement exécuter
-  la suite maximale dès la première boucle (stratégie « fast feedback »
-  puis « regression confidence »)
-- Base de connaissance de régression versionnée dans le dépôt cible
-  (`.qa/regression-map.yaml`, `.qa/invariants.yaml`,
-  `.qa/critical-paths.yaml`, `.qa/known-flaky.yaml`, `.qa/qa-history/`) —
-  frontière étudiée avec les stores SQLite existants : Git porte la
-  connaissance durable qui doit voyager avec le projet cible, SQLite
-  porte l'état runtime/audit de l'orchestrateur
-- `known-flaky.yaml` ne sert jamais de liste de tests ignorés — documente
-  test/evidence/cause suspectée/date/owner/retry policy ; un flaky
-  critique reste visible, jamais masqué
-- Policy de protection des tests existants (voir ci-dessus) rendue
-  opérationnelle : toute modification d'un test existant doit être
-  justifiée par un changement attendu traçable
-- Distinction self-healing technique (ex. sélecteur UI changé sans
-  changement fonctionnel — acceptable) vs self-healing sémantique (ex.
-  attendu=100 → résultat=80 → le test est changé pour accepter 80 —
-  interdit)
-- Classes de classification d'échec : `REGRESSION`, `EXPECTED_CHANGE`,
-  `TEST_DEFECT`, `FLAKY_TEST`, `ENVIRONMENT_FAILURE`, `UNKNOWN` — aucun
-  test en échec n'est automatiquement « réparé »
-- Dépend de : Slice 21 (le contrat QARequest/QAResult doit exister avant
-  de persister des QARun/QAVerdict réels)
+**Slice 22 — QA Governance + Regression Knowledge Base — ✅ DONE**
+- Nouveaux modules `src/orchestrator/qa.py` (contrats provider-independent
+  `QARequest`/`QAResult`/`QAVerdict`/`QAVerdictStatus`/
+  `FailureClassification`/`QARun`/`QARunStatus`/`QAPhase`/`QAPolicy`/
+  `QAEvidenceManifest`/`QARunStore`/`QAEngine` (Protocol)/
+  `QAEngineCapabilities`/`TestImpactRequest`/`TestImpactResult`, et
+  `evaluate_qa_verdict` — la fonction de gouvernance déterministe, jamais
+  LLM), `src/orchestrator/qa_knowledge.py` (`.qa/*.yaml`, chargeur/écrivain
+  + analyseur Test Impact déterministe), `src/orchestrator/qa_protection.py`
+  (baseline de tests protégés, SHA-256). Aucun `InternalQAEngine` ni
+  fournisseur externe implémenté (reste Slice 23) ; aucune intégration
+  `MVPManager`/`compute_merge_eligibility`/`ReleaseManager` (reste Slice 24).
+- **Séparation centrale ENGINE RESULT != GOVERNED VERDICT** : `QAResult`
+  (ce qu'un moteur observe, peut porter `engine_reported_status` à titre
+  informatif) n'est jamais l'autorité du verdict ; `QAVerdict`
+  (`PASS`/`FAIL`/`INCONCLUSIVE`) est calculé exclusivement par
+  `evaluate_qa_verdict`, fonction pure des faits déjà persistés (SHA
+  exact, manifest obligatoire non vide, aucune régression non résolue,
+  aucune mutation de test protégée non autorisée, aucun engine requis
+  manquant, statut du run) — ne lit jamais `engine_reported_status`,
+  prouvé par deux faux moteurs (style interne/externe) donnant le même
+  verdict gouverné pour la même preuve malgré des statuts auto-déclarés
+  opposés (`tests/test_qa.py::TestEngineResultNeverAuthoritative`,
+  `TestEngineIndependence`).
+- `QARunStatus` (`CREATED`/`RUNNING`/`COMPLETED`/`FAILED`/`INTERRUPTED`)
+  distinct de `QAVerdictStatus` — un run techniquement `FAILED`/
+  `INTERRUPTED`/non terminé produit `INCONCLUSIVE`, jamais un `PASS`
+  automatique.
+- Policy/manifest snapshotés avec chaque `QARun` — exactement le motif
+  `record_manifest`/`get_manifest_for_run` de la Slice 21.5, généralisé à
+  la QA : un changement de policy après coup ne peut jamais faire dériver
+  silencieusement le sens d'un ancien verdict.
+- `QARunStore` (sqlite3, restart-safe) : `record_result`/`record_verdict`
+  insert-only (`ResultAlreadyRecordedError`/`VerdictAlreadyRecordedError`
+  sur un second appel), transitions de statut explicitement validées,
+  journal d'événements insert-only.
+- Phases `TEST_AUTHORING`/`FINAL_VERIFICATION` explicites sur
+  `QAPolicy`/`QARun`. Final Verification read-only : réutilise
+  **verbatim** les primitives Slice 21.5
+  (`QualityGateRunner.run_gate(require_nonempty_mandatory_manifest=True,
+  verify_repository_unchanged=True)` via
+  `orchestrator.qa.run_final_verification_gate`, testé contre un vrai
+  dépôt git temporaire) — violation de policy (mutation observée) =>
+  `FAIL` ; incapacité infrastructure à prouver le read-only (pas un dépôt
+  git) => `INCONCLUSIVE` ; jamais `PASS` dans les deux cas.
+- Baseline de tests protégés (`qa_protection.py`) : hachage SHA-256
+  déterministe, ensemble de chemins protégés toujours fourni par
+  l'appelant (manifest/policy/knowledge base — jamais une convention
+  `"tests/"` codée en dur) ; un nouveau fichier hors baseline n'est
+  jamais inspecté (donc jamais une violation) ; `TestChangeAuthorization`
+  (`ExpectedChangeSource` : `ACCEPTANCE_CRITERIA`/`SPECIFICATION`/
+  `ROADMAP_DECISION`/`ARCHITECTURE_DECISION`/`HUMAN_APPROVAL`) requise
+  pour qu'une mutation détectée ne bloque pas le PASS.
+- `.qa/*.yaml` (`invariants`/`regression-map`/`critical-paths`/
+  `known-flaky`) : absence de `.qa/` ou fichier manquant => connaissance
+  vide valide, jamais une erreur, jamais une auto-création ; écriture
+  atomique (`tempfile.mkstemp`+`os.replace`, même motif que
+  `RoadmapApplicationService`/`RealizationReportService`) ; YAML invalide
+  ou ID dupliqué => échec fermé ; `known-flaky.yaml` ne convertit jamais
+  un FAIL en PASS. Frontière stricte : Git = connaissance produit durable
+  (`.qa/`), SQLite = état runtime/audit orchestrateur (`QARunStore`) —
+  jamais mélangés (`qa_knowledge.py` n'importe pas `sqlite3`).
+- Analyseur Test Impact déterministe minimal (`analyze_test_impact_deterministic`)
+  : chemin changé → correspondance préfixe avec `regression-map`/
+  `critical-paths` → tests/invariants liés ; aucune analyse AST,
+  dépendances multi-langage, ou sémantique (reste Slice 23+) ; un
+  changement non lié n'invente rien (résultat vide).
+- Ce dépôt seed son propre `.qa/invariants.yaml` minimal (4 invariants
+  réellement démontrés par des tests existants : SHA-bound evidence,
+  author≠reviewer, no silent quality downgrade, merge H2→H3 head-drift
+  Slice 21.5) — pas une migration des 1004 tests dans un regression-map.
+- 1004 tests offline PASS (892 + 112 : `tests/test_qa.py` 58,
+  `tests/test_qa_knowledge.py` 36 (dont 3 tests dédiés au chargement du
+  vrai `.qa/invariants.yaml` de ce dépôt), `tests/test_qa_protection.py`
+  18).
+- Voir `docs/QA_GOVERNANCE.md` pour le détail complet.
+- Dépend de : Slice 21 (arbitrage), Slice 21.5 (primitives d'evidence
+  hardening réutilisées verbatim) ; prépare Slice 23/24 sans les
+  anticiper.
 
 **Slice 23 — QA Engine MVP**
 - Dépend entièrement de la décision Slice 21 — cette Slice garde
@@ -1895,14 +1943,21 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     corrigés (manifest QA obligatoire vide, policy/manifest snapshot,
     invariance read-only, merge TOCTOU/head drift). 892 tests offline
     PASS.
-- **Next : Slice 22 — QA Governance + Regression Knowledge Base.** Voir
-  l'entrée détaillée ci-dessus et `docs/QA_STRATEGY.md`. Reste centrée
-  gouvernance engine-independent, non couplée à un fournisseur externe.
-  Slice 25 reste conditionnelle (non obligatoire tant que le besoin n'est
-  pas établi). Le prochain point de contrôle utilisateur explicite reste
-  celui prévu par le principe du projet (entre deux grandes versions
-  stables). OmniRoute reste une qualification future optionnelle, hors
-  roadmap principale — voir `docs/OMNIROUTE_ARBITRATION.md`.
+  - **Slice 22 (QA Governance + Regression Knowledge Base) — DONE** :
+    voir l'entrée détaillée ci-dessus — `src/orchestrator/qa.py`/
+    `qa_knowledge.py`/`qa_protection.py`, séparation ENGINE RESULT !=
+    GOVERNED VERDICT prouvée par deux faux moteurs, `.qa/*.yaml`
+    provider-independent, réutilisation verbatim des primitives Slice
+    21.5. Aucun `InternalQAEngine`, aucune intégration `MVPManager`/
+    merge/release (restent Slice 23/24). 1004 tests offline PASS.
+- **Next : Slice 23 — QA Engine MVP (`InternalQAEngine`, Python/pytest
+  first).** Voir l'entrée détaillée ci-dessus, `docs/QA_GOVERNANCE.md` et
+  `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`. Slice 25 reste conditionnelle
+  (non obligatoire tant que le besoin n'est pas établi). Le prochain
+  point de contrôle utilisateur explicite reste celui prévu par le
+  principe du projet (entre deux grandes versions stables). OmniRoute
+  reste une qualification future optionnelle, hors roadmap principale —
+  voir `docs/OMNIROUTE_ARBITRATION.md`.
 
 ## Comment reprendre ce projet à froid
 

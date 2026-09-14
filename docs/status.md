@@ -1,7 +1,41 @@
 # Status
 
-Dernière mise à jour : Slice 21.5 — evidence/SHA hardening (2026-09-14).
+Dernière mise à jour : Slice 22 — QA Governance + Regression Knowledge Base (2026-09-15).
 
+- **Slice 22 — QA Governance + Regression Knowledge Base : DONE.**
+  Socle QA provider-independent uniquement — aucun `InternalQAEngine`,
+  aucune intégration `MVPManager`/merge/release (Slice 23/24). Nouveaux
+  `src/orchestrator/qa.py` (`QARequest`/`QAResult`/`QAVerdict`/
+  `QARunStatus`/`QAVerdictStatus`/`QAPhase`/`QAPolicy`/
+  `QAEvidenceManifest`/`QARunStore`/`QAEngine` Protocol/
+  `QAEngineCapabilities`/`TestImpactRequest`/`TestImpactResult`,
+  `evaluate_qa_verdict`), `qa_knowledge.py` (`.qa/*.yaml`), `qa_protection.py`
+  (baseline SHA-256). **Séparation centrale prouvée** : `QAResult` (ce
+  qu'un moteur observe, `engine_reported_status` informatif seulement)
+  n'est jamais l'autorité du verdict ; `QAVerdict` vient exclusivement de
+  `evaluate_qa_verdict`, fonction pure ne lisant jamais
+  `engine_reported_status` — prouvé par deux faux moteurs (style
+  interne/externe) donnant le même verdict gouverné malgré des statuts
+  auto-déclarés opposés. Policy/manifest snapshotés par `QARun` (motif
+  Slice 21.5 généralisé) ; `QARunStore` restart-safe, `record_result`/
+  `record_verdict` insert-only. Final Verification read-only réutilise
+  **verbatim** `QualityGateRunner.run_gate(require_nonempty_mandatory_manifest=True,
+  verify_repository_unchanged=True)` (Slice 21.5) — violation => `FAIL`,
+  incapacité à prouver le read-only => `INCONCLUSIVE`, jamais `PASS`.
+  Baseline de tests protégés SHA-256, chemins toujours fournis par
+  l'appelant (jamais `"tests/"` codé en dur) ; mutation non autorisée =>
+  `FAIL`. `.qa/invariants.yaml`/`regression-map.yaml`/`critical-paths.yaml`/
+  `known-flaky.yaml` : absence => connaissance vide valide, jamais
+  d'auto-création, écriture atomique, YAML invalide/ID dupliqué => échec
+  fermé, `known-flaky` ne convertit jamais FAIL en PASS. Frontière stricte
+  Git (connaissance produit durable) / SQLite (runtime orchestrateur),
+  jamais mélangées. Analyseur Test Impact déterministe minimal (chemin
+  changé → regression-map/critical-paths → tests/invariants liés,
+  aucun AST/dépendances/sémantique). Ce dépôt seed son propre
+  `.qa/invariants.yaml` (4 invariants réellement démontrés par des tests
+  existants). Voir `ROADMAP.md`, Slice 22, et `docs/QA_GOVERNANCE.md`.
+  1004 tests offline PASS (892 + 112). Aucun service QA externe appelé,
+  aucun reset credit consommé.
 - **Slice 21.5 — Evidence / SHA hardening : DONE.** Quatre points
   techniques relevés par l'audit Codex de Slice 21, **relus/reproduits
   dans le vrai code avant correction** (jamais pris pour argent
@@ -140,10 +174,9 @@ Dernière mise à jour : Slice 21.5 — evidence/SHA hardening (2026-09-14).
     aucun downgrade ; aucun bug Slice 17/18 découvert. Preuve versionnée
     (sanitizée) : `docs/reports/real-cross-worker-resume-2026-09-13.html`
   - `~/projects/ralph-spike` original : non modifié (vérifié avant/après)
-- **Next : Slice 22 — QA Governance + Regression Knowledge Base** (voir
-  `ROADMAP.md` et `docs/QA_STRATEGY.md`) — reste centrée gouvernance
-  engine-independent, non couplée à un fournisseur externe ; ne démarre
-  pas avant une future session. OmniRoute reste une qualification future
+- **Next : Slice 23 — QA Engine MVP (`InternalQAEngine`, Python/pytest
+  first)** (voir `ROADMAP.md` et `docs/QA_GOVERNANCE.md`) ; ne démarre pas
+  avant une future session. OmniRoute reste une qualification future
   optionnelle, hors roadmap principale (voir
   `docs/OMNIROUTE_ARBITRATION.md`).
 
