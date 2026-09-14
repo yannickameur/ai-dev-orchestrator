@@ -1,10 +1,18 @@
 # QA_STRATEGY.md — QA / Regression Testing Governance architecture
 
-Document d'étude (Phase 2, avant Slices 21-25). Aucune de ces slices n'est
-implémentée : ce document fixe l'architecture cible, les contrats
-conceptuels et les décisions déjà tranchées, pour que l'implémentation
-future n'ait pas à ré-ouvrir ces questions. Voir `ROADMAP.md`, section
+Document d'étude (Phase 2, avant Slices 21-25). Écrit avant toute
+implémentation : ce document fixe l'architecture cible, les contrats
+conceptuels et les décisions déjà tranchées. Voir `ROADMAP.md`, section
 « Découpage incrémental », pour le séquencement retenu (Slices 21-25).
+
+**Statut d'implémentation (2026-09-15)** : Slice 21 (arbitrage
+build-vs-adopt) et Slice 21.5 (evidence/SHA hardening) sont DONE ; Slice
+22 (socle QA provider-independent — contrats/persistence/`.qa/`/baseline
+de tests protégés, sans `InternalQAEngine` ni intégration `MVPManager`)
+est DONE — voir `docs/QA_GOVERNANCE.md` pour la description factuelle du
+comportement réellement implémenté (ce document-ci reste l'étude
+d'architecture d'origine, non mise à jour rétroactivement à chaque
+détail d'implémentation). Slices 23-25 restent non implémentées.
 
 Contexte : depuis Slice 20, l'orchestrateur gouverne le cycle de vie Git
 d'un WorkItem (branche, SHA, éligibilité au merge, review liée au SHA

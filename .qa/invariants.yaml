@@ -1,0 +1,63 @@
+# Regression knowledge base — durable QA invariants for this repository
+# itself (Slice 22, Part N). Seeded minimally and only for invariants
+# already demonstrated by real, existing tests — this is not a migration
+# of the full 1001-test suite into a regression map, and no ID prefix
+# here (e.g. "AIDO-") is required by the loader (see
+# src/orchestrator/qa_knowledge.py) — it is just this project's own
+# convention.
+#
+# Git vs SQLite boundary (docs/QA_STRATEGY.md §15.1): this file is
+# durable product knowledge that travels with the repository — never
+# orchestrator runtime/audit state (that stays in SQLite stores).
+invariants:
+  - invariant_id: AIDO-QA-001
+    description: >
+      A quality gate or QA verdict evidence bound to git SHA A can never
+      authorize an action (merge, release) for a different SHA B — new
+      evidence for the exact current head is always required.
+    criticality: critical
+    source: "Slice 8 (validation.py) / Slice 20 (git_governance.py)"
+    introduced_by_work_item: "Slice 20 — Git/PR/merge governance"
+    related_tests:
+      - tests/test_git_governance.py::TestMergeEligibility
+      - tests/test_validation.py
+    active: true
+
+  - invariant_id: AIDO-QA-002
+    description: >
+      A review's author worker can never also be its reviewer — cross-
+      provider/cross-worker independence is enforced by WorkerSelector,
+      never bypassed for cost, tier, or convenience.
+    criticality: critical
+    source: "Slice 4 (worker_selector.py) / Slice 9 (review.py)"
+    introduced_by_work_item: "Slice 4 — WorkerSelector"
+    related_tests:
+      - tests/test_worker_selector.py::test_reviewer_can_never_be_the_author_worker
+      - tests/test_mvp_manager.py::TestReviewSelectionIsAdaptive
+    active: true
+
+  - invariant_id: AIDO-QA-003
+    description: >
+      Adaptive execution never silently downgrades quality tier to reach
+      an exact reasoning-effort match — an unsatisfiable reasoning hint
+      is dropped before a tier is ever lowered.
+    criticality: high
+    source: "Slice 17 (adaptive_execution.py)"
+    introduced_by_work_item: "Slice 17 — Adaptive Worker/Profile Selection"
+    related_tests:
+      - tests/test_adaptive_execution.py::test_unsatisfiable_hint_never_downgrades_tier
+    active: true
+
+  - invariant_id: AIDO-QA-004
+    description: >
+      A fast-forward merge computed as eligible for work-branch head H2
+      can never silently fold in a later, unreviewed commit H3 that has
+      since landed on the same branch — merge() re-reads the branch's
+      actual tip and requires it to equal the eligibility's exact head
+      SHA before touching the base branch.
+    criticality: critical
+    source: "Slice 21.5 — Evidence / SHA hardening (merge TOCTOU/head-drift fix)"
+    introduced_by_work_item: "Slice 21.5"
+    related_tests:
+      - tests/test_git_governance.py::TestMergeHeadDriftHardening
+    active: true
