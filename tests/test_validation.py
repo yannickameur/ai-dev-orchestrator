@@ -20,6 +20,7 @@ import pytest
 from orchestrator.validation import (
     CorruptValidationResultError,
     QualityGateRunner,
+    ReadOnlyValidationViolationError,
     UnknownValidationRunError,
     ValidationCommand,
     ValidationKind,
@@ -370,3 +371,234 @@ class TestNoForbiddenBehavior:
         source = inspect.getsource(module)
         for forbidden in ('"checkout"', '"commit"', '"merge"', '"reset"', '"clean"', "'add'"):
             assert forbidden not in source
+
+
+class TestMandatoryManifestHardening:
+    """Slice 21.5, point A: an empty (or all-optional) mandatory manifest
+    must never be indistinguishable from "all mandatory checks passed" —
+    but only when a caller opts into that stricter behavior. Reproduced
+    first (see the two "confirms" tests) before being fixed, per the
+    session's explicit instruction not to trust the audit report blindly.
+    """
+
+    def test_confirms_default_behavior_is_trivial_pass_on_empty_manifest(self, tmp_path: Path) -> None:
+        # This is the exact behavior the Codex/Claude audits flagged.
+        # Reproduced here first: zero configured commands -> passed=True.
+        # It must remain legal by default (e.g. an all-optional gate) —
+        # this test pins that pre-existing, still-intentional behavior.
+        store = _store(tmp_path)
+        store.set_project_commands("proj-1", [])
+        runner = _runner(store)
+
+        gate = asyncio.run(runner.run_gate(project_id="proj-1", cwd=tmp_path))
+        assert gate.passed is True
+
+    def test_mandatory_qa_verification_with_empty_manifest_never_passes(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.set_project_commands("proj-1", [])
+        runner = _runner(store)
+
+        gate = asyncio.run(
+            runner.run_gate(
+                project_id="proj-1", cwd=tmp_path, require_nonempty_mandatory_manifest=True,
+            )
+        )
+        assert gate.passed is False
+
+    def test_mandatory_qa_verification_with_only_optional_commands_never_passes(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.set_project_commands("proj-1", [_cmd(required=False, argv=(PY, "-c", "pass"))])
+        runner = _runner(store)
+
+        gate = asyncio.run(
+            runner.run_gate(
+                project_id="proj-1", cwd=tmp_path, require_nonempty_mandatory_manifest=True,
+            )
+        )
+        assert gate.passed is False
+
+    def test_mandatory_qa_verification_with_a_real_required_command_can_pass(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.set_project_commands("proj-1", [_cmd(required=True, argv=(PY, "-c", "pass"))])
+        runner = _runner(store)
+
+        gate = asyncio.run(
+            runner.run_gate(
+                project_id="proj-1", cwd=tmp_path, require_nonempty_mandatory_manifest=True,
+            )
+        )
+        assert gate.passed is True
+
+
+class TestPolicySnapshotHardening:
+    """Slice 21.5, point B: a historical gate result must stay bound to the
+    manifest actually applied at run time — never recomputed from the
+    project's possibly-since-changed *current* configuration.
+    """
+
+    def test_confirms_replay_used_to_be_sensitive_to_config_drift(self, tmp_path: Path) -> None:
+        # Reproduction of the exact bug: without a recorded manifest,
+        # get_gate_result recomputes "passed" from *current*
+        # get_project_commands — so adding a new required command later,
+        # which never even existed at run time, silently flips an old
+        # PASS to FAIL on replay. This test bypasses record_manifest
+        # (as pre-Slice-21.5 code always did) to pin the drift as real.
+        store = _store(tmp_path)
+        store.set_project_commands("proj-1", [_cmd(validation_id="a", required=True)])
+        result = ValidationResult(
+            validation_run_id="run-drift", validation_id="a", kind=ValidationKind.UNIT_TEST,
+            required=True, argv=(PY, "-c", "pass"), status=ValidationStatus.PASSED,
+            started_at=UTC_NOW, finished_at=UTC_NOW,
+        )
+        store.record_result("run-drift", "proj-1", result)  # no record_manifest call
+        assert store.get_gate_result("run-drift").passed is True
+
+        # Policy changes after the fact: a new required check is added
+        # that never ran for this historical run.
+        store.set_project_commands(
+            "proj-1",
+            [_cmd(validation_id="a", required=True), _cmd(validation_id="b", required=True)],
+        )
+        assert store.get_gate_result("run-drift").passed is False  # drifted silently
+
+    def test_manifest_snapshot_keeps_historical_result_stable_after_new_required_check(
+        self, tmp_path: Path
+    ) -> None:
+        store = _store(tmp_path)
+        store.set_project_commands("proj-1", [_cmd(validation_id="a", required=True)])
+        runner = _runner(store)
+
+        gate = asyncio.run(runner.run_gate(project_id="proj-1", cwd=tmp_path))
+        assert gate.passed is True
+
+        # A new required check is added to the project after this run.
+        store.set_project_commands(
+            "proj-1",
+            [_cmd(validation_id="a", required=True), _cmd(validation_id="b", required=True)],
+        )
+
+        replayed = store.get_gate_result(gate.validation_run_id)
+        assert replayed.passed is True  # bound to the manifest actually applied, unaffected
+
+    def test_manifest_snapshot_survives_restart(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "validation.sqlite3"
+        store = ValidationStore(db_path, clock=lambda: UTC_NOW)
+        store.set_project_commands("proj-1", [_cmd(validation_id="a", required=True)])
+        runner = _runner(store)
+        gate = asyncio.run(runner.run_gate(project_id="proj-1", cwd=tmp_path))
+        store.close()
+
+        # New process/instance, and policy has since changed too.
+        reopened = ValidationStore(db_path, clock=lambda: UTC_NOW)
+        reopened.set_project_commands(
+            "proj-1",
+            [_cmd(validation_id="a", required=True), _cmd(validation_id="b", required=True)],
+        )
+        replayed = reopened.get_gate_result(gate.validation_run_id)
+        assert replayed.passed is True  # the original run's own manifest, not today's config
+
+    def test_manifest_snapshot_keeps_historical_result_stable_after_required_flag_toggled(
+        self, tmp_path: Path
+    ) -> None:
+        store = _store(tmp_path)
+        store.set_project_commands(
+            "proj-1", [_cmd(validation_id="a", required=True, argv=(PY, "-c", "import sys; sys.exit(1)"))]
+        )
+        runner = _runner(store)
+
+        gate = asyncio.run(runner.run_gate(project_id="proj-1", cwd=tmp_path))
+        assert gate.passed is False  # "a" failed and was required at run time
+
+        # Someone downgrades "a" to optional after the fact — the old FAIL
+        # must not silently become a PASS on replay either.
+        store.set_project_commands(
+            "proj-1", [_cmd(validation_id="a", required=False, argv=(PY, "-c", "import sys; sys.exit(1)"))]
+        )
+        replayed = store.get_gate_result(gate.validation_run_id)
+        assert replayed.passed is False
+
+    def test_get_gate_result_still_falls_back_without_a_recorded_manifest(self, tmp_path: Path) -> None:
+        # Backward compatibility: results written directly via
+        # record_result (bypassing run_gate/record_manifest, as some
+        # tests and any pre-Slice-21.5 data do) still resolve via the
+        # live project configuration — this is the existing
+        # TestGateComputation.test_missing_required_result_is_never_interpreted_as_passed
+        # behavior, re-asserted here as an explicit manifest-fallback test.
+        store = _store(tmp_path)
+        store.set_project_commands("proj-1", [_cmd(validation_id="a", required=True)])
+        result = ValidationResult(
+            validation_run_id="run-nomanifest", validation_id="a", kind=ValidationKind.UNIT_TEST,
+            required=True, argv=(PY, "-c", "pass"), status=ValidationStatus.PASSED,
+            started_at=UTC_NOW, finished_at=UTC_NOW,
+        )
+        store.record_result("run-nomanifest", "proj-1", result)
+        assert store.get_manifest_for_run("run-nomanifest") is None
+        assert store.get_gate_result("run-nomanifest").passed is True
+
+    def test_run_gate_records_a_manifest_for_every_run(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.set_project_commands("proj-1", [_cmd(validation_id="a", required=True)])
+        runner = _runner(store)
+
+        gate = asyncio.run(runner.run_gate(project_id="proj-1", cwd=tmp_path))
+        manifest = store.get_manifest_for_run(gate.validation_run_id)
+        assert manifest is not None
+        assert [c.validation_id for c in manifest] == ["a"]
+
+
+class TestReadOnlyVerificationHardening:
+    """Slice 21.5, point C: a gate run declared read-only must fail closed
+    if the repository's HEAD changes while its commands run — a future
+    mandatory Final QA Verification must never be fooled by a subprocess
+    that silently commits.
+    """
+
+    @staticmethod
+    def _init_repo(tmp_path: Path) -> None:
+        import subprocess
+
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True)
+        (tmp_path / "f.txt").write_text("x")
+        subprocess.run(["git", "add", "f.txt"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=tmp_path, check=True)
+
+    def test_confirms_a_mutating_command_is_silently_allowed_by_default(self, tmp_path: Path) -> None:
+        # Reproduction: without verify_repository_unchanged, a "validation"
+        # command that actually commits goes completely unnoticed.
+        self._init_repo(tmp_path)
+        store = _store(tmp_path)
+        store.set_project_commands(
+            "proj-1",
+            [_cmd(argv=("git", "commit", "--allow-empty", "-q", "-m", "sneaky"), required=True)],
+        )
+        runner = _runner(store)
+
+        gate = asyncio.run(runner.run_gate(project_id="proj-1", cwd=tmp_path))
+        assert gate.passed is True  # the mutation went completely undetected
+
+    def test_read_only_run_raises_when_head_changes(self, tmp_path: Path) -> None:
+        self._init_repo(tmp_path)
+        store = _store(tmp_path)
+        store.set_project_commands(
+            "proj-1",
+            [_cmd(argv=("git", "commit", "--allow-empty", "-q", "-m", "sneaky"), required=True)],
+        )
+        runner = _runner(store)
+
+        with pytest.raises(ReadOnlyValidationViolationError):
+            asyncio.run(
+                runner.run_gate(project_id="proj-1", cwd=tmp_path, verify_repository_unchanged=True)
+            )
+
+    def test_read_only_run_passes_through_when_head_is_stable(self, tmp_path: Path) -> None:
+        self._init_repo(tmp_path)
+        store = _store(tmp_path)
+        store.set_project_commands("proj-1", [_cmd(argv=(PY, "-c", "pass"), required=True)])
+        runner = _runner(store)
+
+        gate = asyncio.run(
+            runner.run_gate(project_id="proj-1", cwd=tmp_path, verify_repository_unchanged=True)
+        )
+        assert gate.passed is True

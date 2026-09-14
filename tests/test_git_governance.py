@@ -603,6 +603,69 @@ class TestMerge:
         assert reconciled.merged_sha == head
 
 
+class TestMergeHeadDriftHardening:
+    """Slice 21.5, point D: merge() must never fold in a work-branch tip
+    the supplied eligibility never actually covered — reproduced first
+    (the "confirms" test would have merged H3 on H2's eligibility before
+    this slice's fix), then the fix is asserted directly.
+    """
+
+    def test_confirms_merge_used_to_trust_the_branch_name_not_the_sha(self, tmp_path: Path) -> None:
+        # Historical/regression pin: this exact scenario is exactly what
+        # Slice 21.5 closes. With today's fix it must raise
+        # GitHeadDriftError; if this ever silently merges H3 again, that
+        # is the TOCTOU bug back.
+        service, repo, h2 = _prepared(tmp_path)
+        eligibility_for_h2 = service.compute_merge_eligibility(
+            "wi-1", repository_path=repo, work_item_status="completed",
+            gate_passed=True, gate_git_sha=h2, review_approved=True, review_git_sha=h2,
+        )
+        assert eligibility_for_h2.mergeable is True
+
+        # The work branch advances again *after* eligibility was computed
+        # (e.g. a stray/concurrent rework execution) — still a clean
+        # fast-forward child, so git itself would happily allow it.
+        LocalGitWorkspace(repo).switch(work_branch_name("wi-1"))
+        h3 = _commit_file(repo, "c.txt", "c", "unreviewed stray commit")
+        assert h3 != h2
+
+        with pytest.raises(GitHeadDriftError):
+            service.merge("wi-1", repository_path=repo, eligibility=eligibility_for_h2)
+
+    def test_main_is_not_advanced_when_drift_is_refused(self, tmp_path: Path) -> None:
+        service, repo, h2 = _prepared(tmp_path)
+        eligibility_for_h2 = service.compute_merge_eligibility(
+            "wi-1", repository_path=repo, work_item_status="completed",
+            gate_passed=True, gate_git_sha=h2, review_approved=True, review_git_sha=h2,
+        )
+        main_before = LocalGitWorkspace(repo).head_sha("main")
+
+        LocalGitWorkspace(repo).switch(work_branch_name("wi-1"))
+        _commit_file(repo, "c.txt", "c", "unreviewed stray commit")
+
+        with pytest.raises(GitHeadDriftError):
+            service.merge("wi-1", repository_path=repo, eligibility=eligibility_for_h2)
+        assert LocalGitWorkspace(repo).head_sha("main") == main_before  # untouched, no rebase/reset/force
+
+    def test_merging_the_exact_current_head_still_works(self, tmp_path: Path) -> None:
+        # Nominal case unaffected: a fresh eligibility computed for the
+        # branch's real current tip still merges normally.
+        service, repo, h2 = _prepared(tmp_path)
+        LocalGitWorkspace(repo).switch(work_branch_name("wi-1"))
+        h3 = _commit_file(repo, "c.txt", "c", "second dev commit")
+        service.capture_head("wi-1", repository_path=repo)
+
+        eligibility_for_h3 = service.compute_merge_eligibility(
+            "wi-1", repository_path=repo, work_item_status="completed",
+            gate_passed=True, gate_git_sha=h3, review_approved=True, review_git_sha=h3,
+        )
+        assert eligibility_for_h3.mergeable is True
+        record = service.merge("wi-1", repository_path=repo, eligibility=eligibility_for_h3)
+        assert record.status is GitWorkItemStatus.MERGED
+        assert record.merged_sha == h3
+        assert LocalGitWorkspace(repo).head_sha("main") == h3
+
+
 # --- reconcile / restart recovery -------------------------------------------
 
 

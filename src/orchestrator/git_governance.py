@@ -1044,6 +1044,23 @@ class GitGovernanceService:
         to have just called ``compute_merge_eligibility``. Idempotent: if
         the work item is already ``MERGED``, returns the existing record
         unchanged rather than attempting a second merge.
+
+        TOCTOU/head-drift hardening (Slice 21.5): ``merge_ff_only`` merges
+        by *branch name* — it always picks up the work branch's live tip,
+        not a pinned SHA. Between ``compute_merge_eligibility`` proving a
+        specific ``eligibility.head_sha`` (H2, with gate+review evidence
+        bound to it) and this call, the work branch could have advanced
+        further (H3 — e.g. a stray rework execution), and H3 would still
+        be fast-forwardable from base. Without this check, ``merge()``
+        would silently fold in H3 on the strength of evidence that only
+        ever covered H2. So the work branch's *actual* current tip is
+        re-read here and required to equal ``eligibility.head_sha`` exactly
+        before any mutation of ``base_branch`` is attempted — any mismatch
+        fails closed as ``GitHeadDriftError``, never a silent re-merge, no
+        rebase/reset/force. A base branch that has meanwhile diverged
+        incompatibly is still caught by ``merge_ff_only`` itself (git's own
+        ff-only check re-validates ancestry at merge time) via the
+        existing ``MergeRefusedError``/``mark_conflict`` path below.
         """
         record = self._store.get(work_item_id)
         if record.status is GitWorkItemStatus.MERGED:
@@ -1052,6 +1069,10 @@ class GitGovernanceService:
             raise NotMergeableError(work_item_id, eligibility.reason or "eligibility check did not pass")
 
         ws = self._workspace(repository_path)
+        actual_tip = ws.try_rev_parse(record.work_branch)
+        if actual_tip != eligibility.head_sha:
+            raise GitHeadDriftError(work_item_id, eligibility.head_sha, actual_tip or "")
+
         ws.switch(record.base_branch)
         try:
             merged_sha = ws.merge_ff_only(record.work_branch)

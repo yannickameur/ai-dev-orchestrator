@@ -189,13 +189,52 @@ class ValidationTimeoutError(ValidationError):
     """Internal: a validation command exceeded its bounded timeout."""
 
 
+class ReadOnlyValidationViolationError(ValidationError):
+    """Raised when a gate run declared ``verify_repository_unchanged=True``
+    but the repository's HEAD changed while the configured commands ran —
+    e.g. a "final verification" step is expected to only observe/execute/
+    report, never to commit or otherwise mutate the workspace. Fail-closed:
+    this is raised instead of returning a result that could be mistaken
+    for a legitimate PASS/FAIL."""
+
+    def __init__(self, validation_run_id: str, sha_before: str | None, sha_after: str | None) -> None:
+        super().__init__(
+            f"validation run {validation_run_id!r} was declared read-only but HEAD changed "
+            f"({sha_before!r} -> {sha_after!r})"
+        )
+        self.validation_run_id = validation_run_id
+        self.sha_before = sha_before
+        self.sha_after = sha_after
+
+
 def _compute_passed(
-    commands: Sequence[ValidationCommand], results: Sequence[ValidationResult]
+    commands: Sequence[ValidationCommand],
+    results: Sequence[ValidationResult],
+    *,
+    require_nonempty_mandatory_manifest: bool = False,
 ) -> bool:
+    """Fail-closed manifest check, generalized in Slice 21.5.
+
+    ``commands`` must be the manifest actually applied at run time (see
+    ``ValidationStore.record_manifest``/``get_manifest_for_run``) — never a
+    possibly-since-changed *current* project configuration, or a historical
+    PASS/FAIL could silently flip meaning without the underlying evidence
+    changing at all.
+
+    ``require_nonempty_mandatory_manifest``, opt-in and False by default
+    (preserves every pre-Slice-21.5 caller's behavior unchanged — a gate
+    with zero required commands legitimately passes trivially today, e.g.
+    an all-optional lint-only gate): when True, a manifest with no
+    ``required`` command at all can never PASS. This is the primitive a
+    future mandatory QA Final Verification (Slice 22/23) must set to True —
+    "no mandatory checks were even configured" must never be
+    indistinguishable from "all mandatory checks passed".
+    """
+    required_commands = [c for c in commands if c.required]
+    if require_nonempty_mandatory_manifest and not required_commands:
+        return False
     by_id = {r.validation_id: r for r in results}
-    for command in commands:
-        if not command.required:
-            continue
+    for command in required_commands:
         result = by_id.get(command.validation_id)
         # No result at all for a required validation is never "passed".
         if result is None or result.status is not ValidationStatus.PASSED:
@@ -264,6 +303,12 @@ CREATE TABLE IF NOT EXISTS validation_results (
     stdout TEXT NOT NULL,
     stderr TEXT NOT NULL,
     git_sha TEXT
+);
+CREATE TABLE IF NOT EXISTS validation_run_manifests (
+    validation_run_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
 );
 """
 
@@ -337,7 +382,60 @@ class ValidationStore:
                 ),
             )
 
-    def get_gate_result(self, validation_run_id: str) -> QualityGateResult:
+    def record_manifest(
+        self, validation_run_id: str, project_id: str, commands: Sequence[ValidationCommand]
+    ) -> None:
+        """Snapshots the exact configured commands used for one gate run.
+
+        A later replay (``get_gate_result``) must reflect the policy
+        actually applied at run time — never the project's possibly-
+        since-changed *current* ``validation_commands`` configuration
+        (Slice 21.5 hardening: a required check added/removed/toggled
+        after the fact must never retroactively change what an old run's
+        ``passed`` means). Insert-only, like the rest of this store: a
+        repeated call for the same ``validation_run_id`` is a no-op — the
+        first recorded manifest wins, it is never overwritten.
+        """
+        manifest_json = json.dumps(
+            [
+                {
+                    "validation_id": c.validation_id, "kind": c.kind.value, "argv": list(c.argv),
+                    "timeout_seconds": c.timeout_seconds, "required": c.required,
+                }
+                for c in commands
+            ]
+        )
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO validation_run_manifests "
+                "(validation_run_id, project_id, manifest_json, recorded_at) VALUES (?, ?, ?, ?)",
+                (validation_run_id, project_id, manifest_json, self._clock().isoformat()),
+            )
+
+    def get_manifest_for_run(self, validation_run_id: str) -> tuple[ValidationCommand, ...] | None:
+        """The manifest snapshot recorded for this run, or ``None`` if none
+        was ever recorded (e.g. results written directly via
+        ``record_result`` without going through ``QualityGateRunner.run_gate``,
+        as some pre-Slice-21.5 tests do) — callers fall back to
+        ``get_project_commands`` only in that case."""
+        row = self._conn.execute(
+            "SELECT manifest_json FROM validation_run_manifests WHERE validation_run_id = ?",
+            (validation_run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        data = json.loads(row["manifest_json"])
+        return tuple(
+            ValidationCommand(
+                validation_id=d["validation_id"], kind=ValidationKind(d["kind"]), argv=tuple(d["argv"]),
+                timeout_seconds=d["timeout_seconds"], required=d["required"],
+            )
+            for d in data
+        )
+
+    def get_gate_result(
+        self, validation_run_id: str, *, require_nonempty_mandatory_manifest: bool = False
+    ) -> QualityGateResult:
         rows = self._conn.execute(
             "SELECT * FROM validation_results WHERE validation_run_id = ? ORDER BY row_id ASC",
             (validation_run_id,),
@@ -349,11 +447,15 @@ class ValidationStore:
 
         first = rows[0]
         project_id = first["project_id"]
-        commands = self.get_project_commands(project_id)
+        commands = self.get_manifest_for_run(validation_run_id)
+        if commands is None:
+            commands = self.get_project_commands(project_id)
         return QualityGateResult(
             validation_run_id=validation_run_id,
             project_id=project_id,
-            passed=_compute_passed(commands, results),
+            passed=_compute_passed(
+                commands, results, require_nonempty_mandatory_manifest=require_nonempty_mandatory_manifest
+            ),
             results=results,
             mvp_id=first["mvp_id"],
             work_item_id=first["work_item_id"],
@@ -432,10 +534,28 @@ class QualityGateRunner:
         mvp_id: str | None = None,
         work_item_id: str | None = None,
         validation_run_id: str | None = None,
+        require_nonempty_mandatory_manifest: bool = False,
+        verify_repository_unchanged: bool = False,
     ) -> QualityGateResult:
+        """Runs this project's configured commands and persists the result.
+
+        ``require_nonempty_mandatory_manifest`` (Slice 21.5, default False,
+        backward-compatible): when True, a manifest with zero ``required``
+        commands can never PASS — see ``_compute_passed``.
+
+        ``verify_repository_unchanged`` (Slice 21.5, default False): when
+        True, this is a declared *read-only* run — if HEAD differs before
+        vs. after the configured commands ran, raises
+        ``ReadOnlyValidationViolationError`` instead of returning a result
+        (fail-closed; a "read-only" verification that silently commits is
+        never treated as a legitimate PASS or FAIL). This is a generic
+        primitive for a future QA Final Verification (Slice 22/23) — this
+        slice does not build that engine, only the primitive it needs.
+        """
         cwd = Path(cwd)
         run_id = validation_run_id or self._id_factory()
         commands = self._store.get_project_commands(project_id)
+        self._store.record_manifest(run_id, project_id, commands)
         git_sha = _git_head_sha(cwd)
 
         results: list[ValidationResult] = []
@@ -446,10 +566,17 @@ class QualityGateRunner:
             )
             results.append(result)
 
+        if verify_repository_unchanged:
+            git_sha_after = _git_head_sha(cwd)
+            if git_sha_after != git_sha:
+                raise ReadOnlyValidationViolationError(run_id, git_sha, git_sha_after)
+
         return QualityGateResult(
             validation_run_id=run_id,
             project_id=project_id,
-            passed=_compute_passed(commands, results),
+            passed=_compute_passed(
+                commands, results, require_nonempty_mandatory_manifest=require_nonempty_mandatory_manifest
+            ),
             results=tuple(results),
             mvp_id=mvp_id,
             work_item_id=work_item_id,

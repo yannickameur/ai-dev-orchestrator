@@ -1,7 +1,31 @@
 # Status
 
-Dernière mise à jour : Slice 21 — arbitrage utilisateur (2026-09-14).
+Dernière mise à jour : Slice 21.5 — evidence/SHA hardening (2026-09-14).
 
+- **Slice 21.5 — Evidence / SHA hardening : DONE.** Quatre points
+  techniques relevés par l'audit Codex de Slice 21, **relus/reproduits
+  dans le vrai code avant correction** (jamais pris pour argent
+  comptant) : (A) manifest QA obligatoire vide produisait `passed=True`
+  — corrigé via `require_nonempty_mandatory_manifest` opt-in (défaut
+  `False`, rétrocompatible) sur `QualityGateRunner.run_gate`/
+  `_compute_passed` ; (B) `ValidationStore.get_gate_result` recalculait
+  `passed` depuis la config *courante* du projet, pas celle appliquée au
+  run — corrigé via `record_manifest`/`get_manifest_for_run` (nouvelle
+  table insert-only, snapshot du manifest par `validation_run_id`) ; (C)
+  aucune vérification d'invariance du HEAD après exécution — corrigé via
+  `verify_repository_unchanged` opt-in, lève
+  `ReadOnlyValidationViolationError` fail-closed si le HEAD change ; (D)
+  **merge TOCTOU/head drift réel** dans `git_governance.py::merge` —
+  fusionnait par nom de branche, jamais par SHA pinné, reproduit avec un
+  vrai dépôt temporaire (eligibility pour H2, work branch avancée à H3,
+  merge aurait fusionné H3 sur la preuve de H2) — corrigé : `merge()`
+  exige désormais que le tip réel de `work_branch` soit strictement égal
+  à `eligibility.head_sha`, sinon `GitHeadDriftError` fail-closed, `main`
+  jamais touchée. Voir `ROADMAP.md`, Slice 21.5, `docs/GIT_GOVERNANCE.md`
+  et `docs/QA_STRATEGY.md` §8.1 pour le détail. Primitives génériques
+  seulement — `InternalQAEngine` n'est pas construit (reste Slice 23).
+  892 tests offline PASS (876 + 16, dont des tests "confirms" qui
+  reproduisent chaque bug avant sa correction).
 - **Slice 21 — QA Architecture + Build-vs-Adopt Study : DONE, arbitrage
   utilisateur (2026-09-14).** Deux études indépendantes : Claude
   (`docs/QA_BUILD_VS_ADOPT_REPORT_CLAUDE.md`, recherche web réelle,
@@ -116,10 +140,12 @@ Dernière mise à jour : Slice 21 — arbitrage utilisateur (2026-09-14).
     aucun downgrade ; aucun bug Slice 17/18 découvert. Preuve versionnée
     (sanitizée) : `docs/reports/real-cross-worker-resume-2026-09-13.html`
   - `~/projects/ralph-spike` original : non modifié (vérifié avant/après)
-- **Next : Slice 21.5 — Evidence / SHA hardening**, avant Slice 22 (voir
-  `ROADMAP.md` et `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`). OmniRoute
-  reste une qualification future optionnelle, hors roadmap principale
-  (voir `docs/OMNIROUTE_ARBITRATION.md`).
+- **Next : Slice 22 — QA Governance + Regression Knowledge Base** (voir
+  `ROADMAP.md` et `docs/QA_STRATEGY.md`) — reste centrée gouvernance
+  engine-independent, non couplée à un fournisseur externe ; ne démarre
+  pas avant une future session. OmniRoute reste une qualification future
+  optionnelle, hors roadmap principale (voir
+  `docs/OMNIROUTE_ARBITRATION.md`).
 
 Détail complet des slices, de la vision cible et du découpage incrémental :
 voir `ROADMAP.md` (source de vérité fonctionnelle).
