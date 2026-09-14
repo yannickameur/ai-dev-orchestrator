@@ -247,6 +247,16 @@ class RealizationReport:
     git_merged_sha: str | None = None
     git_pull_request_number: int | None = None
     git_pull_request_url: str | None = None
+    qa_run_id: str | None = None
+    qa_engine_id: str | None = None
+    qa_phase: str | None = None
+    qa_verdict_status: str | None = None
+    qa_expected_head_sha: str | None = None
+    qa_observed_head_sha: str | None = None
+    qa_tests_executed_count: int | None = None
+    qa_passed_count: int | None = None
+    qa_failed_count: int | None = None
+    qa_regressions: tuple[str, ...] = ()
     executions: tuple[ExecutionEntry, ...] = ()
     recommendations: tuple[RecommendationEntry, ...] = ()
     decisions: tuple[DecisionEntry, ...] = ()
@@ -494,6 +504,11 @@ def _serialize(report: RealizationReport) -> str:
         "git_merge_status": report.git_merge_status, "git_merged_sha": report.git_merged_sha,
         "git_pull_request_number": report.git_pull_request_number,
         "git_pull_request_url": report.git_pull_request_url,
+        "qa_run_id": report.qa_run_id, "qa_engine_id": report.qa_engine_id, "qa_phase": report.qa_phase,
+        "qa_verdict_status": report.qa_verdict_status,
+        "qa_expected_head_sha": report.qa_expected_head_sha, "qa_observed_head_sha": report.qa_observed_head_sha,
+        "qa_tests_executed_count": report.qa_tests_executed_count, "qa_passed_count": report.qa_passed_count,
+        "qa_failed_count": report.qa_failed_count, "qa_regressions": list(report.qa_regressions),
         "executions": [_encode_execution(e) for e in report.executions],
         "recommendations": [_encode_recommendation(r) for r in report.recommendations],
         "decisions": [_encode_decision(d) for d in report.decisions],
@@ -518,6 +533,11 @@ def _deserialize(raw: str) -> RealizationReport:
         git_merge_status=d.get("git_merge_status"), git_merged_sha=d.get("git_merged_sha"),
         git_pull_request_number=d.get("git_pull_request_number"),
         git_pull_request_url=d.get("git_pull_request_url"),
+        qa_run_id=d.get("qa_run_id"), qa_engine_id=d.get("qa_engine_id"), qa_phase=d.get("qa_phase"),
+        qa_verdict_status=d.get("qa_verdict_status"),
+        qa_expected_head_sha=d.get("qa_expected_head_sha"), qa_observed_head_sha=d.get("qa_observed_head_sha"),
+        qa_tests_executed_count=d.get("qa_tests_executed_count"), qa_passed_count=d.get("qa_passed_count"),
+        qa_failed_count=d.get("qa_failed_count"), qa_regressions=tuple(d.get("qa_regressions") or ()),
         executions=tuple(_decode_execution(e) for e in d["executions"]),
         recommendations=tuple(_decode_recommendation(r) for r in d["recommendations"]),
         decisions=tuple(_decode_decision(x) for x in d["decisions"]),
@@ -648,6 +668,7 @@ class RealizationReportService:
         recommendation_store=None,
         decision_store=None,
         git_work_item_store=None,
+        qa_run_store=None,
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
     ) -> None:
@@ -661,6 +682,7 @@ class RealizationReportService:
         self._recommendation_store = recommendation_store
         self._decision_store = decision_store
         self._git_work_item_store = git_work_item_store
+        self._qa_run_store = qa_run_store
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or _default_id_factory
 
@@ -706,13 +728,26 @@ class RealizationReportService:
             if self._git_work_item_store is not None and git_work_item is not None else ()
         )
 
+        qa_run = (
+            self._qa_run_store.latest_for_work_item(work_item_id)
+            if self._qa_run_store is not None else None
+        )
+        qa_result = (
+            self._qa_run_store.get_result(qa_run.run_id)
+            if self._qa_run_store is not None and qa_run is not None else None
+        )
+        qa_events = (
+            tuple(self._qa_run_store.list_events(qa_run.run_id))
+            if self._qa_run_store is not None and qa_run is not None else ()
+        )
+
         incidents = _collect_incidents(
             work_item=work_item, executions=executions, validations=validations, reviews=reviews,
         )
         timeline = _build_timeline(
             executions=executions, recommendations=recommendations, decisions=decisions,
             handoffs=handoffs, validations=validations, reviews=reviews, waits=waits,
-            git_events=git_events,
+            git_events=git_events, qa_events=qa_events,
         )
 
         git_sha_initial = executions[0].git_sha_before if executions else None
@@ -736,6 +771,16 @@ class RealizationReportService:
             git_merged_sha=git_work_item.merged_sha if git_work_item is not None else None,
             git_pull_request_number=git_work_item.pull_request_number if git_work_item is not None else None,
             git_pull_request_url=git_work_item.pull_request_url if git_work_item is not None else None,
+            qa_run_id=qa_run.run_id if qa_run is not None else None,
+            qa_engine_id=qa_run.engine_id if qa_run is not None else None,
+            qa_phase=qa_run.phase.value if qa_run is not None else None,
+            qa_verdict_status=qa_run.verdict.status.value if qa_run is not None and qa_run.verdict is not None else None,
+            qa_expected_head_sha=qa_run.expected_head_sha if qa_run is not None else None,
+            qa_observed_head_sha=qa_result.observed_head_sha if qa_result is not None else None,
+            qa_tests_executed_count=len(qa_result.tests_executed) if qa_result is not None else None,
+            qa_passed_count=qa_result.passed_count if qa_result is not None else None,
+            qa_failed_count=qa_result.failed_count if qa_result is not None else None,
+            qa_regressions=qa_result.regressions if qa_result is not None else (),
             executions=executions, recommendations=recommendations, decisions=decisions, handoffs=handoffs,
             validations=validations, reviews=reviews, waits=waits, incidents=incidents, timeline=timeline,
         )
@@ -824,6 +869,7 @@ def _build_timeline(
     decisions: tuple[DecisionEntry, ...], handoffs: tuple[HandoffEntry, ...],
     validations: tuple[ValidationEntry, ...], reviews: tuple[ReviewEntry, ...], waits: tuple[WaitEntry, ...],
     git_events: tuple[tuple[str, str, datetime], ...] = (),
+    qa_events: tuple[tuple[str, str, datetime], ...] = (),
 ) -> tuple[TimelineEntry, ...]:
     entries: list[TimelineEntry] = []
 
@@ -890,6 +936,12 @@ def _build_timeline(
         entries.append(TimelineEntry(
             timestamp=created_at, entry_type=event_type,
             summary=f"Git governance: {event_type} — {detail}",
+            references=(),
+        ))
+    for event_type, detail, created_at in qa_events:
+        entries.append(TimelineEntry(
+            timestamp=created_at, entry_type=f"qa_{event_type}",
+            summary=f"QA: {event_type} — {detail}",
             references=(),
         ))
 
@@ -981,6 +1033,17 @@ th { background: #f6f8fa; }
                 f"#{_esc(report.git_pull_request_number)}</a>"
                 if report.git_pull_request_url else ""
             )
+            + "</p>"
+        )
+    if report.qa_run_id is not None:
+        parts.append(
+            "<p><strong>QA:</strong> "
+            f"engine={_esc(report.qa_engine_id)}, phase={_esc(report.qa_phase)}, "
+            f"verdict={_esc(report.qa_verdict_status)}, "
+            f"head={_esc(report.qa_expected_head_sha)}/observed={_esc(report.qa_observed_head_sha)}, "
+            f"tests_executed={report.qa_tests_executed_count}, "
+            f"passed={report.qa_passed_count}, failed={report.qa_failed_count}"
+            + (f", regressions={_esc(', '.join(report.qa_regressions))}" if report.qa_regressions else "")
             + "</p>"
         )
 

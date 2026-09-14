@@ -36,6 +36,7 @@ workers:
       - release_planning
       - roadmap_synthesis
       - complexity_estimation
+      - qa_testing
 
     default_profile_id: standard
     estimator_profile_id: economy
@@ -69,6 +70,7 @@ workers:
       - release_planning
       - roadmap_synthesis
       - complexity_estimation
+      - qa_testing
 
     default_profile_id: standard
     estimator_profile_id: economy

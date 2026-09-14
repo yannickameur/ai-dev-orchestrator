@@ -6,13 +6,14 @@ conceptuels et les décisions déjà tranchées. Voir `ROADMAP.md`, section
 « Découpage incrémental », pour le séquencement retenu (Slices 21-25).
 
 **Statut d'implémentation (2026-09-15)** : Slice 21 (arbitrage
-build-vs-adopt) et Slice 21.5 (evidence/SHA hardening) sont DONE ; Slice
-22 (socle QA provider-independent — contrats/persistence/`.qa/`/baseline
-de tests protégés, sans `InternalQAEngine` ni intégration `MVPManager`)
-est DONE — voir `docs/QA_GOVERNANCE.md` pour la description factuelle du
+build-vs-adopt), Slice 21.5 (evidence/SHA hardening), Slice 22 (socle QA
+provider-independent) et Slice 23 (`InternalQAEngine`, Python/pytest
+uniquement — smoke réel PASS, self-dogfood BLOCKED_BY_PROVIDER honnête)
+sont DONE — voir `docs/QA_GOVERNANCE.md` pour la description factuelle du
 comportement réellement implémenté (ce document-ci reste l'étude
 d'architecture d'origine, non mise à jour rétroactivement à chaque
-détail d'implémentation). Slices 23-25 restent non implémentées.
+détail d'implémentation). Slice 24 (intégration MVPManager/merge/
+release) et Slice 25 (conditionnelle) restent non implémentées.
 
 Contexte : depuis Slice 20, l'orchestrateur gouverne le cycle de vie Git
 d'un WorkItem (branche, SHA, éligibilité au merge, review liée au SHA

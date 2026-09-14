@@ -1579,33 +1579,109 @@ contract/E2E) — un verdict LLM seul n'est jamais une preuve de PASS.
   hardening réutilisées verbatim) ; prépare Slice 23/24 sans les
   anticiper.
 
-**Slice 23 — QA Engine MVP**
-- Dépend entièrement de la décision Slice 21 — cette Slice garde
-  délibérément ouvertes les options `InternalQAEngine`,
-  `TestSpriteQAEngine`, un autre `*QAEngine` externe, ou une première
-  implémentation `HYBRID_QA` ; le choix concret n'est pas pris
-  maintenant
-- Si `InternalQAEngine` retenu : intégration au mécanisme adaptatif
-  existant (`role=qa_testing` → pre-flight complexité → minimum
-  `QualityTier` → `WorkerSelector` → profil → `AdaptiveExecutionDecision`
-  — réutilisation stricte de Slice 16/17/19, aucune seconde
-  implémentation) ; `qa_worker_id != author_worker_id` obligatoire à
-  étudier/confirmer, `qa_worker_id != reviewer_worker_id` préféré mais
-  pas nécessairement obligatoire (sujet à trancher avec preuve, pas figé
-  d'avance)
-- Si un moteur externe retenu : sa sélection est basée sur
-  capability/stack plutôt que sur `QualityTier` LLM — distinction
-  explicite entre « AI worker selection » (Slice 17/19) et « QA engine
-  selection » (cette Slice), jamais confondues
-- `INCONCLUSIVE` est un statut de premier ordre distinct de `PASS`/`FAIL`
-  (environnement indisponible, dépendance externe cassée, spec
-  contradictoire, test impossible à exécuter) — un `INCONCLUSIVE` n'est
-  jamais traité comme un `PASS`
-- Indisponibilité d'un moteur externe requis : jamais de remplacement
-  silencieux par une vérification plus faible — `WAITING`/
-  `INCONCLUSIVE`/`BLOCKED` selon policy explicite ; si le moteur externe
-  est seulement optionnel, le système peut continuer selon policy
-  explicite (jamais implicite)
+**Slice 23 — QA Engine MVP — ✅ DONE (Python/pytest uniquement)**
+- Nouveau `src/orchestrator/internal_qa_engine.py` : `InternalQAEngine`
+  (implémente le `QAEngine` de Slice 22, `run()` synchrone — enveloppe
+  interne `asyncio.run` de son propre pipeline async), `InternalQAPlan`
+  (zones impactées, tests sélectionnés, invariants requis, commandes
+  ciblées/régression, rationale — inclus dans l'evidence du `QARun`),
+  `InternalQATestAuthor` (authoring adaptatif), `run_qa_cycle` (séquence
+  complète `QARun` create→RUNNING→…→`QAVerdict`→terminal, persistance
+  avant tout retour). Composition stricte de l'existant — aucune seconde
+  implémentation : `QualityGateRunner` (jamais un second runner de
+  subprocess ; une commande ciblée pytest est juste un `ValidationCommand`
+  de plus, exécuté via un `project_id` synthétique éphémère par run pour
+  ne jamais muter la config durable du vrai projet), `analyze_test_impact_deterministic`
+  (Slice 22, verbatim), `run_final_verification_gate`/`ProtectedTestBaseline`
+  (Slice 21.5/22, verbatim), `evaluate_qa_verdict` (jamais dupliqué —
+  l'engine ne calcule jamais lui-même PASS/FAIL/INCONCLUSIVE).
+- **Scope honnête Python/pytest uniquement** : détection de stack minimale
+  (`pyproject.toml`/`pytest.ini`/`setup.cfg`/`tox.ini`) ; absence =>
+  `UnsupportedStackError` => run `FAILED` => `INCONCLUSIVE` (jamais
+  `PASS`) ; aucune prétention JS/Java/mobile/browser/Playwright/
+  BrowserStack/TestSprite/Momentic nulle part (code, docs, tests dédiés).
+- Sélection des tests déterministe (Slice 22, réutilisée) : chemins
+  modifiés → `regression-map`/`critical-paths` → tests/invariants liés ;
+  IDs pytest (`fichier.py`, `::test`, `::Classe::test`) supportés tels
+  quels, aucun parseur pytest construit. Stratégie deux temps : commande
+  ciblée (TEST_AUTHORING, fast feedback) puis régression complète du
+  projet en plus (FINAL_VERIFICATION, regression confidence). Aucune
+  sélection + régression globale configurée => celle-ci sert de repli ;
+  aucune sélection et aucune régression configurée =>
+  `NoEvidenceAvailableError` => run `FAILED` => `INCONCLUSIVE`, jamais
+  `PASS` sur preuve vide.
+- Tests connus flaky (`.qa/known-flaky.yaml`) isolés dans leur propre
+  commande (attribution correcte de l'échec, impossible en les
+  regroupant dans une seule invocation pytest) ; re-run borné (budget
+  extrait de `retry_policy`, jamais infini, testé jusqu'à épuisement du
+  budget) ; toute tentative — succès ou échec final — reste dans
+  `QAResult.risks`, jamais silencieusement supprimée ; un test qui échoue
+  systématiquement reste un vrai échec malgré sa présence dans
+  `known-flaky.yaml` (jamais un skip list).
+- QA Test Authoring adaptatif : réutilise **exactement** le mécanisme
+  existant (`ComplexityEstimationRequest` → `ExecutionRecommendationService`
+  → `AdaptiveExecutionSelector` → `RalphExecutionEngine`, Slice 16/17/19,
+  aucune seconde implémentation). Capability logique `qa_testing` ajoutée
+  à `config/workers.yaml` (alice et victor — aucun worker dédié fabriqué).
+  `qa_worker_id != developer_worker_id` **obligatoire** dès qu'un auteur
+  existe (forwardé comme `author_worker_id`, la gouvernance
+  `WorkerSelector` déjà existante, jamais réimplémentée) ;
+  `qa_worker_id != reviewer_worker_id` **préféré, pas requis** — tentative
+  avec exclusion, repli automatique sans exclusion si elle ne laisse
+  aucun candidat (jamais de blocage avec seulement deux workers).
+- Phase TEST_AUTHORING : le worker QA peut ajouter/modifier uniquement
+  des tests/fixtures explicitement autorisés et `.qa/`, jamais le code de
+  production. Après exécution, faits Git vérifiés **indépendamment**
+  (`verify_authoring_git_facts` — jamais une confiance aveugle dans le
+  payload structuré `qa.authoring.completed` que le worker émet
+  lui-même) ; toute mutation de fichier de production détectée =>
+  violation, fail closed, aucune réparation automatique. Un test protégé
+  existant modifié sans `TestChangeAuthorization` valide reste bloquant
+  (réutilise `qa_protection.py`, Slice 22, verbatim) ; un nouveau test
+  peut toujours être ajouté. Bruit runtime (`.ralph/`, `__pycache__`,
+  `.pytest_cache`, n'importe quelle profondeur de chemin) et fichiers
+  `test_*.py`/`*_test.py` en dehors d'un dossier `tests/` (convention de
+  découverte pytest elle-même, pas seulement une convention par
+  répertoire) explicitement jamais des violations — trouvé et corrigé
+  suite au smoke réel (voir plus bas).
+- Événement applicatif strict `qa.authoring.completed`/`qa.authoring.failed`
+  (jamais un topic Ralph réservé) : payload JSON structuré
+  (`tests_added`/`tests_modified`/`fixtures_added`/`fixtures_modified`/
+  `production_files_modified`/`findings`/`risks`/`recommended_actions`) ;
+  absent ou invalide => échec fermé (`InvalidQAAuthoringEventError`),
+  jamais un fallback permissif comme `review.parse_findings`.
+- Classification des échecs déterministe d'abord : `TIMEOUT`/`ERROR` =>
+  `ENVIRONMENT_FAILURE` ; un échec pytest brut reste `UNKNOWN` sans plus
+  de contexte (jamais deviné `REGRESSION`/`TEST_DEFECT`/`EXPECTED_CHANGE`
+  sans preuve) — conservateur, accepté explicitement par le brief.
+- `RealizationReport` (Slice 18/20/21.5) enrichi en option (`qa_run_store`
+  optionnel, même motif opt-in) : moteur/phase/verdict/SHA
+  attendu-observé/compteurs/regressions dans le résumé + timeline
+  (`qa_run_created`, `qa_verdict_recorded`, …) — compatible sans store QA
+  (section masquée), HTML toujours une projection jamais une source de
+  vérité (testé explicitement).
+- Aucune intégration `MVPManager`/`compute_merge_eligibility`/
+  `ReleaseManager` — confirmé, ces fichiers non modifiés. Aucun moteur
+  externe implémenté ; les faux moteurs externes de Slice 22 restent
+  compatibles avec le même `evaluate_qa_verdict` (`TestExternalEngineCompatibility`).
+- **Smoke réel exécuté et PASS** (`scripts/smoke_internal_qa_real.py`,
+  manuel, jamais lancé par pytest) : vrai worker `alice`
+  (anthropic/claude_code/sonnet) sélectionné par le mécanisme adaptatif
+  réel (aucun worker codé en dur) sur une copie jetable de
+  `~/projects/ralph-spike` (bug connu `add()` retourne `a - b`) ; un test
+  de régression réel ajouté (`test_review_candidate.py`) prouvant le bug
+  (RED confirmé, exécution pytest réelle) ; **aucune modification du code
+  de production** ; verdict gouverné `FAIL` +
+  `requires_coding_agent=True` (jamais de correction automatique) ;
+  `~/projects/ralph-spike` original inchangé (vérifié avant/après). Deux
+  bugs réels trouvés et corrigés grâce à ce smoke (voir ci-dessus :
+  fichiers `test_*.py` hors `tests/`, bruit `__pycache__` imbriqué).
+- Voir `docs/QA_GOVERNANCE.md` pour le détail complet, y compris le
+  résultat de l'acceptance self-dogfood (dev réel → QA réel sur une copie
+  jetable complète de ce dépôt lui-même).
+- Dépend de : Slice 22 (contrats/persistence/`.qa/`/protection), Slice 17
+  (mécanisme adaptatif), Slice 21.5 (primitives read-only/manifest).
+  Prépare Slice 24 (intégration MVPManager/merge/release) sans l'anticiper.
 
 **Slice 24 — QA/Rework/Review/Merge Integration**
 - Workflow cible en deux phases (voir `docs/QA_STRATEGY.md` §
@@ -1950,8 +2026,18 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     provider-independent, réutilisation verbatim des primitives Slice
     21.5. Aucun `InternalQAEngine`, aucune intégration `MVPManager`/
     merge/release (restent Slice 23/24). 1004 tests offline PASS.
-- **Next : Slice 23 — QA Engine MVP (`InternalQAEngine`, Python/pytest
-  first).** Voir l'entrée détaillée ci-dessus, `docs/QA_GOVERNANCE.md` et
+  - **Slice 23 (QA Engine MVP) — DONE, Python/pytest uniquement** : voir
+    l'entrée détaillée ci-dessus — `src/orchestrator/internal_qa_engine.py`
+    (`InternalQAEngine`/`InternalQATestAuthor`/`run_qa_cycle`), composition
+    stricte de `QualityGateRunner`/Slice 22/`evaluate_qa_verdict` (jamais
+    dupliqués), QA Test Authoring adaptatif (capability `qa_testing`
+    ajoutée à `config/workers.yaml`), author-exclusion obligatoire,
+    aucune intégration `MVPManager`/merge/release. 1074 tests offline
+    PASS. Smoke réel PASS ; self-dogfood acceptance BLOCKED_BY_PROVIDER
+    (honnête — dev réel réussi, QA bloquée faute d'un second provider
+    disponible, dépôt source vérifié inchangé).
+- **Next : Slice 24 — QA/Rework/Review/Merge Integration.** Voir l'entrée
+  détaillée ci-dessus, `docs/QA_GOVERNANCE.md` et
   `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`. Slice 25 reste conditionnelle
   (non obligatoire tant que le besoin n'est pas établi). Le prochain
   point de contrôle utilisateur explicite reste celui prévu par le

@@ -1,14 +1,17 @@
-# QA Governance (Slice 22)
+# QA Governance (Slice 22 + Slice 23)
 
 Source of truth for the behavior implemented in
-`src/orchestrator/qa.py`, `src/orchestrator/qa_knowledge.py`, and
-`src/orchestrator/qa_protection.py`. This document is descriptive, not
+`src/orchestrator/qa.py`, `src/orchestrator/qa_knowledge.py`,
+`src/orchestrator/qa_protection.py` (Slice 22 — provider-independent
+contracts/persistence/knowledge base), and
+`src/orchestrator/internal_qa_engine.py` (Slice 23 — the first real
+engine, Python/pytest only). This document is descriptive, not
 aspirational — everything below is implemented and tested
 (`tests/test_qa.py`, `tests/test_qa_knowledge.py`,
-`tests/test_qa_protection.py`).
+`tests/test_qa_protection.py`, `tests/test_internal_qa_engine.py`).
 
-Plays the same role for Slice 22 that `docs/GIT_GOVERNANCE.md` plays for
-Slice 20.
+Plays the same role for Slice 22/23 that `docs/GIT_GOVERNANCE.md` plays
+for Slice 20.
 
 ## Why this exists
 
@@ -221,23 +224,179 @@ equivalent evidence — concrete proof, not just a documentation claim,
 that `QARun`/`QAVerdict`/`QAPolicy`/the knowledge base never need to
 change to add a new engine.
 
-## What was deliberately left out of this slice
+## What Slice 22 deliberately left out (now addressed by Slice 23)
 
-- No `InternalQAEngine`, `TestSpriteQAEngine`, `MomenticQAEngine`,
-  `BrowserStackQAEngine`, or `DiffblueQAEngine` — Slice 23 (decided:
-  `InternalQAEngine` MVP, Python/pytest first) and beyond.
-- No wiring into `MVPManager`'s development → review → merge cycle at
-  all — Slice 24.
-- No change to `compute_merge_eligibility` or `ReleaseManager` to require
-  `QAVerdict.PASS` — also Slice 24. `QAVerdict` already carries every
-  fact that integration will need; nothing here is connected to it yet.
-- No `QAEngineSelector` — Slice 22 defines capabilities and contracts
-  only; real selection logic is Slice 23+.
-- No `RealizationReport` extension — evaluated and deferred; it would
-  have meaningfully grown this slice's scope for no behavior this slice
-  needs to prove. A future, genuinely opt-in extension (mirroring how
-  Slice 20/21.5 extended it) remains straightforward later.
+- ~~No `InternalQAEngine`~~ — built in Slice 23, see below.
+  `TestSpriteQAEngine`/`MomenticQAEngine`/`BrowserStackQAEngine`/
+  `DiffblueQAEngine` remain unbuilt, per the Slice 21 arbitration
+  (`docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`: `HYBRID-READY` architecture,
+  `BUILD_INTERNAL_MINIMAL` immediate implementation).
+- ~~No `RealizationReport` extension~~ — added in Slice 23 (opt-in
+  `qa_run_store`, mirrors the Slice 20/21.5 pattern exactly).
+- No `QAEngineSelector` — Slice 23 has exactly one engine
+  (`InternalQAEngine`); real multi-engine selection logic remains
+  future work once a second engine exists.
 - No full human-approval workflow for `TestChangeAuthorization` — only
   the contract (`ExpectedChangeSource` + justification + timestamp).
 - No AST/dependency-graph/semantic Test Impact Analysis — only the
   minimal, directly-derivable-from-`.qa/` prefix-matching analyzer.
+
+## What Slice 23 deliberately still leaves out (Slice 24)
+
+- No wiring into `MVPManager`'s development → review → merge cycle at
+  all — confirmed unmodified.
+- No change to `compute_merge_eligibility` or `ReleaseManager` to require
+  `QAVerdict.PASS` — confirmed unmodified. `QAVerdict` already carries
+  every fact that integration will need.
+- No automatic QA-FAIL → coding-agent → rework loop — `InternalQAEngine`
+  only ever returns `requires_coding_agent=True` with evidence; it never
+  launches a coding agent itself.
+
+## Slice 23 — InternalQAEngine (Python/pytest MVP)
+
+`src/orchestrator/internal_qa_engine.py` is the first real `QAEngine`
+implementation (Slice 22's `Protocol`, satisfied by a synchronous
+`run()` that internally wraps its own async pipeline). Honestly scoped:
+Python/pytest only — a project with none of `pyproject.toml`/
+`pytest.ini`/`setup.cfg`/`tox.ini` is an unsupported stack, and the
+engine never attempts a command for it (the run resolves to
+`INCONCLUSIVE`, never `PASS`). No JavaScript/Java/mobile/browser/
+Playwright/BrowserStack/TestSprite/Momentic claim anywhere.
+
+### Composition, never reimplementation
+
+| Piece | Reused from | Never |
+|---|---|---|
+| Test execution | `validation.QualityGateRunner` — a targeted pytest command is just one more `ValidationCommand`, run under a synthetic, per-run `project_id` so it never mutates a project's durable config | A second subprocess test runner |
+| Deterministic test selection | `qa_knowledge.analyze_test_impact_deterministic` (Slice 22) | A new impact analyzer |
+| Read-only Final Verification | `qa.run_final_verification_gate` (Slice 21.5's `verify_repository_unchanged`) | A second read-only detector |
+| Protected-test enforcement | `qa_protection` (Slice 22) | A second baseline mechanism |
+| Governed verdict | `qa.evaluate_qa_verdict` (Slice 22) | The engine computing PASS/FAIL/INCONCLUSIVE itself |
+| QA Test Authoring worker selection/execution | `ComplexityEstimationRequest` → `ExecutionRecommendationService` → `AdaptiveExecutionSelector` → `RalphExecutionEngine` (Slice 16/17/19) | A second worker-selection or execution mechanism |
+
+### `InternalQAPlan` and test selection
+
+`build_plan()` loads `.qa/` (via `load_qa_knowledge_base`), runs the
+deterministic Test Impact analyzer, and produces an `InternalQAPlan`
+(impacted areas, selected tests, required invariants, targeted/
+regression `ValidationCommand`s, rationale) — included in evidence, not
+a hidden intermediate.
+
+Known-flaky selected tests (`.qa/known-flaky.yaml`, with a
+`retry_policy`) get their **own** `ValidationCommand`, never bundled
+into the main targeted-pytest invocation — a bundled failure can't be
+attributed to one specific test without parsing pytest's own output,
+which this MVP deliberately does not do. `_run_with_flaky_retry` then
+re-runs just that command, bounded by the retry budget parsed from
+`retry_policy` (never infinite); every attempt — pass or fail — is a
+real, separately persisted `QualityGateRunner` run, and the full attempt
+history is recorded in `QAResult.risks`, never silently dropped. A test
+that fails every attempt stays a real failure despite being listed in
+`known-flaky.yaml` — that file is never a skip list.
+
+Two-phase strategy: `TEST_AUTHORING` runs the targeted command only
+(fast feedback); `FINAL_VERIFICATION` runs the targeted command **and**
+the project's full configured regression suite (regression confidence).
+If nothing is selected and no regression command is configured, the
+engine raises `NoEvidenceAvailableError` — the caller (`run_qa_cycle`)
+turns this into a `FAILED` run, which `evaluate_qa_verdict` already maps
+to `INCONCLUSIVE` — never a `COMPLETED` run with an empty manifest that
+would otherwise be forced to `FAIL`.
+
+### Failure classification
+
+Deterministic-first (`classify_validation_status`): `TIMEOUT`/`ERROR` →
+`ENVIRONMENT_FAILURE`; a plain pytest failure stays `UNKNOWN` without
+more context — never guessed into `REGRESSION`/`TEST_DEFECT`/
+`EXPECTED_CHANGE` from a bare exit code. Conservative, and explicitly
+acceptable.
+
+### QA Test Authoring
+
+`InternalQATestAuthor.select_worker` requires `developer_worker_id`
+exclusion (forwarded as `author_worker_id` to the existing adaptive
+selector — the same governance `WorkerSelector` already enforces for
+review independence, never reimplemented) whenever a real development
+author exists; it is `None` only for a standalone QA analysis with no
+author at all (the Part R smoke). A distinct `reviewer_worker_id` is
+only *preferred*: tried first via `excluded_worker_ids`, and — only if
+that leaves zero eligible candidates — retried without excluding the
+reviewer, so a two-worker configuration is never blocked over a soft
+preference. `config/workers.yaml` gained a `qa_testing` capability on
+both `alice` and `victor` — no dedicated worker fabricated.
+
+`run_authoring` executes a real `ExecutionRequest` via
+`RalphExecutionEngine` with a `qa.authoring.start`/
+`qa.authoring.completed`/`qa.authoring.failed` application-level event
+(never a reserved Ralph topic). The payload is parsed strictly
+(`parse_qa_authoring_event`) — absent or malformed fails closed
+(`InvalidQAAuthoringEventError`), unlike `review.parse_findings`'s
+lenient raw-text fallback. The worker's own claim is **never** trusted
+alone: `verify_authoring_git_facts` independently diffs the workspace
+against `base_sha` and flags any file outside `tests/`/`fixtures/`/
+`.qa/` **and** outside pytest's own `test_*.py`/`*_test.py` filename
+convention (a real smoke run against `~/projects/ralph-spike` — a flat
+repo with no `tests/` directory — found this gap directly) **and**
+outside recognized runtime noise (`.ralph/`, `__pycache__`,
+`.pytest_cache`, matched as a path segment at any depth — the same real
+smoke run found a nested `__pycache__/*.pyc` wrongly flagged). Any
+remaining flagged file is an `AuthoringViolationError` condition — fail
+closed, no auto-repair. A protected existing test's mutation, detected
+via the Slice 22 baseline, is blocked unless a valid
+`TestChangeAuthorization` is supplied; a brand-new test is always
+allowed.
+
+### `RealizationReport` extension (opt-in)
+
+`RealizationReportService` gained an optional `qa_run_store` parameter
+(same pattern as Slice 20/21.5's `git_work_item_store`). When supplied,
+the latest `QARun` for a WorkItem surfaces its engine/phase/verdict/
+expected-vs-observed SHA/counts/regressions in the report summary, and
+its events (`qa_run_created`, `qa_verdict_recorded`, …) appear in the
+timeline. Omitted entirely (`qa_run_id is None`) when no store is
+configured — fully backward compatible, verified against the existing
+Slice 18/20/21.5 test suite. HTML stays a pure, deterministic projection
+— never re-parsed as a source of truth anywhere in this codebase.
+
+### Real validation
+
+`scripts/smoke_internal_qa_real.py` (manual, never run by pytest): a
+real `qa_testing`-capable worker, chosen by the real adaptive mechanism
+(never hardcoded), analyzes a disposable copy of `~/projects/ralph-spike`
+(whose `review_candidate.py::add()` has a known, pre-existing bug),
+adds a real regression test proving it (RED, real pytest execution),
+never touches production code, and the governed verdict comes back
+`FAIL` + `requires_coding_agent=True` — proving the engine never treats
+"a real bug exists and is now provably covered" as a reason to fabricate
+a `PASS`. Run 2026-09-15, result: **PASS**, with `alice`
+(anthropic/claude_code/sonnet). `~/projects/ralph-spike` verified
+byte-identical before/after.
+
+`scripts/self_dogfood_dev_qa_real.py` (manual, never run by pytest): a
+full disposable copy of **this repository itself**, a real controlled
+defect (`classify_validation_status(TIMEOUT)` deliberately mapped to
+the wrong classification), a confirmed real negative control (RED before
+any fix), a real DEVELOPMENT worker that genuinely fixes the defect
+without touching any test file, then a real, *distinct* QA Test
+Authoring worker selection — enforced via the same mandatory
+author-exclusion described above. Run 2026-09-15: the development phase
+completed successfully and for real (`alice`, haiku); the QA phase
+correctly and honestly reported `BLOCKED_BY_PROVIDER` (only `anthropic`
+was available this session — `openai`/Codex was quota-exhausted, so no
+second, distinct `qa_testing` worker existed) rather than falling back
+to the same worker as the developer. The control plane
+(`~/projects/ai-dev-orchestrator`) was verified byte-identical before
+and after (`git rev-parse HEAD` and `git status --short` both
+unchanged) — no historical report was generated for this run, since the
+scenario never reached that point. This is the accepted, non-failing
+outcome the task brief explicitly sanctions for a missing provider —
+full self-dogfood acceptance (`QAVerdict.PASS` end-to-end plus the
+negative control) remains to be re-run once a second real provider is
+available.
+
+Both real smoke scripts independently surfaced and led to fixing two
+production-code gaps in `verify_authoring_git_facts` (the `tests/`-only
+prefix assumption, and the root-level `__pycache__` prefix-only match) —
+concrete evidence that the "reproduce, don't fake" discipline this
+project applies throughout (Slice 21.5, the OmniRoute/QA audits) extends
+to its own real-worker smoke tests too.
