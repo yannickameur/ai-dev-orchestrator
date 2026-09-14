@@ -108,6 +108,30 @@ branch, until governance itself has been trusted. The `True` path is
 fully implemented and tested against real temporary repositories
 (`TestAutoMergeTrueMergesInTempRepo`) — it is simply not the default.
 
+### Head-drift hardening at merge time (Slice 21.5)
+
+`merge_ff_only` merges by **branch name** — `git merge --ff-only
+<work_branch>` always picks up whatever the branch's live tip is at the
+moment it runs, not a pinned SHA. `compute_merge_eligibility` and
+`merge()` are always two separate calls, so a window exists between them:
+if the work branch advances again after eligibility was computed for SHA
+H2 (a stray or concurrent execution lands a further commit at H3, still a
+clean fast-forward child of H2), a naive `merge()` would silently fold in
+H3 on the strength of gate/review evidence that only ever covered H2 —
+`git` itself has no opinion here, since H3 is still perfectly
+fast-forwardable from `base_branch`.
+
+`GitGovernanceService.merge()` closes this window: before switching to
+`base_branch` or merging anything, it re-reads the work branch's actual
+current tip and requires it to equal `eligibility.head_sha` exactly. Any
+mismatch raises `GitHeadDriftError` — fail-closed, no rebase, no reset, no
+force, and `base_branch` is never touched. A `base_branch` that has
+meanwhile diverged incompatibly is still caught separately, by
+`merge_ff_only` itself re-validating ancestry at merge time (the existing
+`MergeRefusedError`/`CONFLICT` path above) — no extra locking is
+introduced, this is a minimal, fail-closed re-check, never a distributed
+lock. See `tests/test_git_governance.py::TestMergeHeadDriftHardening`.
+
 ## Restart recovery
 
 `GitGovernanceService.reconcile(...)` reconstructs state from

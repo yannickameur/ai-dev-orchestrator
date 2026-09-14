@@ -1441,6 +1441,64 @@ contract/E2E) — un verdict LLM seul n'est jamais une preuve de PASS.
   `MULTI_ENGINE_BY_STACK`, ou `DEFER_EXTERNAL_QA` — avec preuve à
   l'appui, jamais par défaut
 
+**Slice 21.5 — Evidence / SHA hardening — ✅ DONE**
+- Quatre points techniques relevés par l'audit Codex (Slice 21) et
+  **relus/reproduits dans le vrai code avant toute correction** (jamais
+  pris pour argent comptant) :
+  - **A. Manifest QA obligatoire vide** : `validation.py::_compute_passed`
+    — un manifest sans aucune commande `required` produisait déjà
+    `passed=True`, reproduit par un test dédié. Comportement légal
+    conservé par défaut (ex. un gate entièrement optionnel) ; nouveau
+    paramètre opt-in `require_nonempty_mandatory_manifest` (défaut
+    `False`, rétrocompatible) sur `_compute_passed`/`QualityGateRunner.
+    run_gate`/`ValidationStore.get_gate_result` — quand `True`, un
+    manifest vide ou entièrement optionnel ne peut plus jamais produire
+    PASS. Primitive prête pour la future QA Final Verification
+    obligatoire (Slice 22/23), non construite ici.
+  - **B. Policy/manifest snapshot** : `ValidationStore.get_gate_result`
+    recalculait `passed` à partir de `get_project_commands` — la
+    configuration **courante**, pas celle réellement appliquée au moment
+    du run. Reproduit : un ancien PASS pouvait silencieusement devenir
+    FAIL (ou l'inverse) après un simple changement de policy, sans
+    qu'aucune preuve n'ait changé. Corrigé par
+    `ValidationStore.record_manifest`/`get_manifest_for_run` — nouvelle
+    table insert-only, un `validation_run_id` reste lié au manifest
+    exact appliqué à l'exécution ; `get_gate_result` l'utilise en
+    priorité, ne retombant sur la config courante que pour les runs
+    antérieurs à cette Slice (aucun manifest enregistré).
+  - **C. Invariance read-only** : `QualityGateRunner.run_gate` capturait
+    le SHA avant exécution mais ne vérifiait rien après. Nouveau
+    paramètre opt-in `verify_repository_unchanged` — si activé et que le
+    HEAD a changé pendant l'exécution des commandes configurées, lève
+    `ReadOnlyValidationViolationError` (fail closed) au lieu de renvoyer
+    un résultat qui pourrait être confondu avec un PASS/FAIL légitime.
+    Primitive pour la future QA Phase 2 (read-only), non construite ici.
+  - **D. Merge TOCTOU / head drift** : `git_governance.py::merge` fusionnait
+    par **nom de branche** (`merge_ff_only(record.work_branch)`), jamais
+    par SHA pinné — reproduit avec un vrai dépôt temporaire : eligibility
+    calculée pour un head H2, puis la work branch avance à H3 (toujours
+    fast-forwardable depuis H2), puis `merge()` fusionnait H3 sur la
+    seule preuve de H2. Corrigé : `merge()` relit désormais le tip réel
+    de `work_branch` et exige qu'il soit strictement égal à
+    `eligibility.head_sha` avant toute mutation de `base_branch` — sinon
+    `GitHeadDriftError`, fail closed, aucun rebase/reset/force ; `main`
+    n'est jamais touchée dans ce cas. La divergence de `base_branch`
+    elle-même reste couverte nativement par `merge_ff_only` (aucune
+    logique de verrouillage supplémentaire ajoutée).
+- Tests réels dédiés (jamais un mock de `git`) : `TestMandatoryManifest
+  Hardening`/`TestPolicySnapshotHardening`/`TestReadOnlyVerification
+  Hardening` (`tests/test_validation.py`, 12 tests, dont les scénarios
+  "confirms" qui reproduisent le bug avant la correction) et
+  `TestMergeHeadDriftHardening` (`tests/test_git_governance.py`, 3
+  tests, dépôts git temporaires réels). 892 tests offline PASS (876 +
+  16).
+- Voir `docs/GIT_GOVERNANCE.md` (§ « Head-drift hardening ») et
+  `docs/QA_STRATEGY.md` (§ 8.1) pour le détail.
+- N'implémente pas `InternalQAEngine` (reste Slice 23) — uniquement les
+  primitives génériques nécessaires.
+- Dépend de : Slice 20 (Git governance), Slice 8 (QualityGateRunner) ;
+  prépare Slice 22/23 sans les anticiper.
+
 **Slice 22 — QA Governance + Regression Knowledge Base**
 - `QARun`/`QAVerdict`/`QAFinding`/`FailureClassification`/`QAResultStore`
   — chaque run QA lié à project/MVP/WorkItem/base_sha/head_sha/engine/
@@ -1832,11 +1890,16 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     immédiate `BUILD_INTERNAL_MINIMAL`, Slice 23 = `InternalQAEngine` MVP
     mince Python/pytest first. Aucun fournisseur externe approuvé comme
     gate final aujourd'hui.
-- **Next : Slice 21.5 — Evidence / SHA hardening**, avant Slice 22 (voir
-  `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`). Reste centrée gouvernance
-  engine-independent, non couplée à un fournisseur externe. Slice 25
-  reste conditionnelle (non obligatoire tant que le besoin n'est pas
-  établi). Le prochain point de contrôle utilisateur explicite reste
+  - **Slice 21.5 (Evidence / SHA hardening) — DONE** : voir l'entrée
+    détaillée ci-dessus — quatre points de l'audit Codex reproduits puis
+    corrigés (manifest QA obligatoire vide, policy/manifest snapshot,
+    invariance read-only, merge TOCTOU/head drift). 892 tests offline
+    PASS.
+- **Next : Slice 22 — QA Governance + Regression Knowledge Base.** Voir
+  l'entrée détaillée ci-dessus et `docs/QA_STRATEGY.md`. Reste centrée
+  gouvernance engine-independent, non couplée à un fournisseur externe.
+  Slice 25 reste conditionnelle (non obligatoire tant que le besoin n'est
+  pas établi). Le prochain point de contrôle utilisateur explicite reste
   celui prévu par le principe du projet (entre deux grandes versions
   stables). OmniRoute reste une qualification future optionnelle, hors
   roadmap principale — voir `docs/OMNIROUTE_ARBITRATION.md`.

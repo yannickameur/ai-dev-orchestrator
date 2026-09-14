@@ -272,7 +272,35 @@ n'autorise jamais le merge d'un nouveau SHA. Aucune décision LLM dans
 l'éligibilité (cohérent avec `compute_merge_eligibility`, Slice 20, qui
 reste une fonction pure déterministe).
 
-### 8.1 Boucle QA FAIL
+### 8.1 Primitives d'evidence hardening déjà disponibles (Slice 21.5)
+
+Avant même la Slice 22/23, trois primitives génériques nécessaires à une
+future QA Final Verification obligatoire existent déjà dans
+`src/orchestrator/validation.py`, ajoutées en Slice 21.5 suite à l'audit
+Codex (rejoué et confirmé, pas simplement fait confiance) :
+
+- `QualityGateRunner.run_gate(..., require_nonempty_mandatory_manifest=True)`
+  — un manifest de checks obligatoires vide (ou entièrement optionnel) ne
+  peut plus jamais produire `passed=True` quand ce flag est activé (reste
+  `False` par défaut, rétrocompatible). Une future QA Final Verification
+  obligatoire devra toujours passer ce flag à `True`.
+- `ValidationStore.record_manifest`/`get_manifest_for_run` — un
+  `validation_run_id` reste lié au manifest (quelle commande, `required`
+  ou non) réellement appliqué au moment du run, jamais recalculé depuis la
+  configuration *courante* du projet lors d'une relecture
+  (`get_gate_result`). Un changement de policy après coup ne peut plus
+  faire dériver silencieusement le sens d'un ancien verdict.
+- `QualityGateRunner.run_gate(..., verify_repository_unchanged=True)` —
+  un run déclaré read-only (le futur mode QA Phase 2, §7) lève
+  `ReadOnlyValidationViolationError` si le HEAD change pendant l'exécution
+  des commandes configurées, au lieu de renvoyer un résultat qui pourrait
+  être confondu avec un PASS/FAIL légitime.
+
+Ces trois primitives ne construisent pas `InternalQAEngine` (toujours
+Slice 23) — elles sont le socle que Slice 22/23 réutiliseront sans
+seconde implémentation.
+
+### 8.2 Boucle QA FAIL
 
 QA FAIL -> classification de l'échec -> coding/rework agent -> nouveau
 HEAD -> tests/gates/re-review/QA. Les cycles doivent être bornés (même
