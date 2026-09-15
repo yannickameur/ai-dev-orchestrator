@@ -1,7 +1,40 @@
 # Status
 
-Dernière mise à jour : Slice 23 — QA Engine MVP (2026-09-15).
+Dernière mise à jour : Slice 24 — QA/Rework/Review/Merge Integration (2026-09-15).
 
+- **Slice 24 — QA/Rework/Review/Merge Integration : CODE_DONE,
+  ACCEPTANCE_PENDING_PROVIDER.** QA devient une capacité opt-in de plus
+  de `MVPManager` (`qa_engine`/`qa_policy`/`qa_run_store`/
+  `qa_protected_paths`), utilisée exclusivement via le `Protocol`
+  `QAEngine` — aucun `isinstance`/import de `InternalQAEngine` dans
+  `mvp_manager.py` (preuve directe : deux faux moteurs de forme
+  différente traversent la même intégration,
+  `tests/test_mvp_manager_qa_integration.py::TestProviderIndependence`).
+  Workflow réel : Development → QA Test Authoring (optionnel, adaptatif,
+  avant les gates) → Quality Gates → Review indépendante → Final QA
+  Verification (read-only, après review APPROVED ou directement après
+  les gates sans review) → Merge Eligibility → Merge. QA FAIL avec
+  `requires_coding_agent=True` → REWORK (chemin adaptatif existant,
+  aucun nouveau routeur) ; un FAIL après Final QA invalide naturellement
+  la review déjà APPROVED (SHA-binding existant) → nouvelle review
+  obligatoire. `QAPolicy.max_qa_cycles` compté durablement, indépendant
+  de `ReviewPolicy.max_review_cycles`. `compute_merge_eligibility`
+  (4 kwargs additifs, défaut rétrocompatible) et `ReleaseManager`
+  (check `qa-verdict-pass`) étendus sans jamais importer `orchestrator.qa`
+  ni appeler de moteur QA. `WaitPhase.QA_AUTHORING` + reprise `RUNNING`
+  (jamais `READY`, le développement n'est jamais rejoué) ; recovery d'une
+  exécution `qa_testing` orpheline traitée comme une exécution
+  `developer`. Bug réel trouvé/corrigé pendant l'intégration :
+  `InternalQATestAuthor.run_authoring`'s `base_sha` doit être le head
+  juste avant la QA (post-dev), jamais le `base_sha` global du WorkItem.
+  1089 tests offline PASS (1074 + 15, `tests/test_mvp_manager_qa_integration.py`).
+  **Self-dogfood : `CODE_DONE` mais non `ACCEPTANCE_DONE`** — probe quota
+  réel (lecture seule, 2026-09-15) : anthropic disponible, openai
+  toujours en quota épuisé ; avec un seul provider réel, l'exclusion
+  auteur≠QA ne peut être satisfaite → `BLOCKED_BY_PROVIDER` déterministe
+  (déjà prouvé offline, aucune session réelle supplémentaire dépensée
+  pour reconfirmer un résultat déjà certain). Voir `docs/QA_GOVERNANCE.md`
+  § « Slice 24 » pour le détail et la justification complète.
 - **Slice 23 — QA Engine MVP : DONE (Python/pytest uniquement).** Nouveau
   `src/orchestrator/internal_qa_engine.py` — `InternalQAEngine` (implémente
   le `QAEngine` Slice 22), `InternalQAPlan`, `InternalQATestAuthor`,
@@ -220,12 +253,12 @@ Dernière mise à jour : Slice 23 — QA Engine MVP (2026-09-15).
     aucun downgrade ; aucun bug Slice 17/18 découvert. Preuve versionnée
     (sanitizée) : `docs/reports/real-cross-worker-resume-2026-09-13.html`
   - `~/projects/ralph-spike` original : non modifié (vérifié avant/après)
-- **Next : Slice 24 — QA/Rework/Review/Merge Integration** (voir
-  `ROADMAP.md`) — branche `InternalQAEngine` dans `MVPManager`,
-  `compute_merge_eligibility`, `ReleaseManager`, et la boucle QA
-  FAIL→rework bornée ; ne démarre pas avant une future session. OmniRoute
-  reste une qualification future optionnelle, hors roadmap principale
-  (voir `docs/OMNIROUTE_ARBITRATION.md`).
+- **Next : revue de roadmap avec l'utilisateur.** Toutes les Slices
+  21-24 du cycle QA sont `CODE_DONE` — point de contrôle prévu par le
+  projet avant toute nouvelle Slice. Cette session ne décide pas seule
+  si un POC QA externe ou la Slice 25 (conditionnelle) sont réellement
+  utiles. OmniRoute reste une qualification future optionnelle, hors
+  roadmap principale (voir `docs/OMNIROUTE_ARBITRATION.md`).
 
 Détail complet des slices, de la vision cible et du découpage incrémental :
 voir `ROADMAP.md` (source de vérité fonctionnelle).

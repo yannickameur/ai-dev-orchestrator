@@ -50,6 +50,7 @@ from orchestrator.execution_store import ExecutionStatus, ExecutionStore
 from orchestrator.git_governance import GitWorkItemStatus, GitWorkItemStore
 from orchestrator.handoff import HandoffStore
 from orchestrator.project_state import MVP, ProjectStateStore, WorkItemStatus
+from orchestrator.qa import QAPhase, QARunStore, QAVerdictStatus
 from orchestrator.activity_report import (
     ActivityReport,
     ActivityReportStore,
@@ -112,6 +113,7 @@ class ReleaseManager:
         activity_report_store: ActivityReportStore,
         *,
         git_work_item_store: GitWorkItemStore | None = None,
+        qa_run_store: QARunStore | None = None,
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
     ) -> None:
@@ -123,6 +125,7 @@ class ReleaseManager:
         self._release_store = release_store
         self._activity_report_store = activity_report_store
         self._git_work_item_store = git_work_item_store
+        self._qa_run_store = qa_run_store
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or _default_id_factory
 
@@ -250,7 +253,46 @@ class ReleaseManager:
         checks = (all_completed_check, gate_check, review_check, running_check)
         if self._git_work_item_store is not None:
             checks += (self._build_git_merge_check(completed_ids),)
+        if self._qa_run_store is not None:
+            checks += (self._build_qa_verdict_check(completed_ids),)
         return checks
+
+    def _build_qa_verdict_check(self, completed_ids: list[str]) -> ReleaseCheck:
+        """Slice 24: a COMPLETED WorkItem this project actually tracked QA
+        runs for must have a passing Final Verification ``QAVerdict`` on
+        record — provider-independent (only ever reads ``QARunStore``,
+        never a specific engine). A WorkItem with no QA run at all (QA not
+        used for it) is never counted here, mirroring
+        ``_build_git_merge_check``'s own "only tighten what opted in"
+        rule. SHA-binding is not re-derived here — ``evaluate_qa_verdict``
+        (Slice 22) and ``compute_merge_eligibility`` (Slice 24) already
+        enforce it; this check only confirms a passing record exists.
+        """
+        tracked = [
+            work_item_id for work_item_id in completed_ids
+            if self._qa_run_store.list_for_work_item(work_item_id)
+        ]
+        missing_or_failed = [wi for wi in tracked if not self._has_passed_final_qa(wi)]
+        return ReleaseCheck(
+            check_id="qa-verdict-pass",
+            passed=not missing_or_failed,
+            summary=(
+                f"{len(tracked) - len(missing_or_failed)}/{len(tracked)} QA-tracked completed "
+                "work items have a passing final QA verdict"
+                if tracked else "no QA-tracked work items for this MVP"
+            ),
+            related_ids=tuple(missing_or_failed),
+        )
+
+    def _has_passed_final_qa(self, work_item_id: str) -> bool:
+        final_runs = [
+            run for run in self._qa_run_store.list_for_work_item(work_item_id)
+            if run.phase is QAPhase.FINAL_VERIFICATION
+        ]
+        if not final_runs:
+            return False
+        latest = final_runs[-1]  # list_for_work_item is ordered created_at ASC
+        return latest.verdict is not None and latest.verdict.status is QAVerdictStatus.PASS
 
     def _build_git_merge_check(self, completed_ids: list[str]) -> ReleaseCheck:
         """Slice 20: a COMPLETED WorkItem that is *governed* (has a

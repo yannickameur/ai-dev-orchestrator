@@ -1,16 +1,19 @@
-# QA Governance (Slice 22 + Slice 23)
+# QA Governance (Slice 22 + Slice 23 + Slice 24)
 
 Source of truth for the behavior implemented in
 `src/orchestrator/qa.py`, `src/orchestrator/qa_knowledge.py`,
 `src/orchestrator/qa_protection.py` (Slice 22 — provider-independent
-contracts/persistence/knowledge base), and
+contracts/persistence/knowledge base),
 `src/orchestrator/internal_qa_engine.py` (Slice 23 — the first real
-engine, Python/pytest only). This document is descriptive, not
-aspirational — everything below is implemented and tested
-(`tests/test_qa.py`, `tests/test_qa_knowledge.py`,
-`tests/test_qa_protection.py`, `tests/test_internal_qa_engine.py`).
+engine, Python/pytest only), and QA's wiring into `MVPManager`/
+`GitGovernanceService.compute_merge_eligibility`/`ReleaseManager` (Slice
+24 — see §"Slice 24 — QA integrated into the delivery workflow" below).
+This document is descriptive, not aspirational — everything below is
+implemented and tested (`tests/test_qa.py`, `tests/test_qa_knowledge.py`,
+`tests/test_qa_protection.py`, `tests/test_internal_qa_engine.py`,
+`tests/test_mvp_manager_qa_integration.py`).
 
-Plays the same role for Slice 22/23 that `docs/GIT_GOVERNANCE.md` plays
+Plays the same role for Slice 22/23/24 that `docs/GIT_GOVERNANCE.md` plays
 for Slice 20.
 
 ## Why this exists
@@ -241,16 +244,20 @@ change to add a new engine.
 - No AST/dependency-graph/semantic Test Impact Analysis — only the
   minimal, directly-derivable-from-`.qa/` prefix-matching analyzer.
 
-## What Slice 23 deliberately still leaves out (Slice 24)
+## What Slice 23 deliberately left out (delivered by Slice 24 below)
 
-- No wiring into `MVPManager`'s development → review → merge cycle at
-  all — confirmed unmodified.
-- No change to `compute_merge_eligibility` or `ReleaseManager` to require
-  `QAVerdict.PASS` — confirmed unmodified. `QAVerdict` already carries
-  every fact that integration will need.
-- No automatic QA-FAIL → coding-agent → rework loop — `InternalQAEngine`
-  only ever returns `requires_coding_agent=True` with evidence; it never
-  launches a coding agent itself.
+- ~~No wiring into `MVPManager`'s development → review → merge cycle~~ —
+  delivered by Slice 24: `_continue_after_development`/`_run_review`/
+  `_maybe_finalize_git`.
+- ~~No change to `compute_merge_eligibility` or `ReleaseManager`~~ —
+  delivered by Slice 24: additive `qa_required`/`qa_passed`/`qa_git_sha`/
+  `qa_run_terminal` kwargs and a `qa-verdict-pass` release check.
+- No automatic QA-FAIL → coding-agent → rework loop still holds in the
+  sense that `InternalQAEngine` itself never launches a coding agent —
+  but Slice 24 *does* now route a QA `FAIL(requires_coding_agent=True)`
+  into the existing REWORK machinery automatically (the same adaptive
+  developer/rework path Slice 17 already built, never a new "coding
+  agent launcher").
 
 ## Slice 23 — InternalQAEngine (Python/pytest MVP)
 
@@ -400,3 +407,155 @@ prefix assumption, and the root-level `__pycache__` prefix-only match) —
 concrete evidence that the "reproduce, don't fake" discipline this
 project applies throughout (Slice 21.5, the OmniRoute/QA audits) extends
 to its own real-worker smoke tests too.
+
+## Slice 24 — QA integrated into the delivery workflow
+
+QA is now a sixth/seventh opt-in `MVPManager` capability, composed
+exactly like quality gates (Slice 8), review (Slice 9), wait (Slice 11a),
+recovery (Slice 11b), adaptive execution (Slice 17), and git governance
+(Slice 20): supplying `qa_engine`+`qa_policy`+`qa_run_store` enables it;
+omitting any one preserves pre-Slice-24 behavior byte-for-byte (confirmed
+by the full pre-existing 1074-test suite passing unmodified). `qa_engine`
+is used exclusively through the `QAEngine` Protocol (`.run(request) ->
+QAResult`) — `mvp_manager.py` never imports or isinstance-checks
+`InternalQAEngine` (`tests/test_mvp_manager_qa_integration.py::
+TestProviderIndependence` proves this with two structurally different
+fake engines, one with no `build_plan`/`build_manifest` at all).
+
+### Target workflow, as actually implemented
+
+```
+Development
+    -> QA Test Authoring (opt-in InternalQATestAuthor, adaptive)
+        -> PASS/acceptable evidence -> Quality Gates
+        -> FAIL + requires_coding_agent -> REWORK -> QA Test Authoring (bounded)
+        -> FAIL, not coding-fixable (e.g. protected-test violation) -> BLOCKED
+        -> INCONCLUSIVE (worker-selection quota, diagnosable) -> WAITING(QA_AUTHORING)
+        -> INCONCLUSIVE (structural) -> BLOCKED
+    -> Quality Gates (unchanged QualityGateRunner, current exact head)
+    -> Independent Review (unchanged Slice 19 adaptive review, current exact head)
+        -> REJECTED -> existing REWORK -> QA Test Authoring again (HEAD changed, old QA evidence stale)
+        -> APPROVED -> Final QA Verification
+    -> Final QA Verification (read-only, QAPhase.FINAL_VERIFICATION)
+        -> PASS on exact current head -> mark COMPLETED -> Merge Eligibility (Slice 20/24)
+        -> FAIL + requires_coding_agent -> REWORK -> QA Authoring -> Gates -> **new** Review (mandatory — SHA changed, old APPROVED review is stale by construction) -> new Final QA
+        -> FAIL/INCONCLUSIVE otherwise -> BLOCKED
+-> Merge Eligibility: gates PASS + review APPROVED + QA PASS, all on the *exact same* current head SHA -> mergeable
+-> Merge (ff-only, `auto_merge` still False by default)
+```
+
+When `review_store` is not configured, Final QA Verification runs
+directly after gates PASS (same principle, one fewer stage) — proven by
+`TestNominalQAFlow`/`TestQAAuthoringFailRework`'s no-review fixtures.
+
+### Bounded cycles — two independent counters
+
+`QAPolicy.max_qa_cycles` counts `QAPhase.TEST_AUTHORING` runs recorded in
+`QARunStore` for the WorkItem (durable — a restart doesn't reset the
+count); `ReviewPolicy.max_review_cycles` remains entirely separate, as
+before. Exceeding either -> `BLOCKED`, explicit reason, never an infinite
+loop (`TestQAAuthoringFailRework::test_bounded_qa_cycles_blocks_after_max`).
+
+### SHA-binding, extended never re-implemented
+
+`GitGovernanceService.compute_merge_eligibility` gained four additive
+kwargs (`qa_required`/`qa_passed`/`qa_git_sha`/`qa_run_terminal`, all
+default `False`/`None` — a caller that never passes them gets
+byte-identical pre-Slice-24 behavior). They are deliberately plain
+primitives, never a `QAVerdict`/`QAVerdictStatus` import — this module
+still never imports `orchestrator.qa` and never calls a QA engine itself,
+exactly the same purity `gate_passed`/`review_approved` already had.
+`qa_passed on SHA A` never authorizes SHA B — `TestQAMergeEligibility`
+proves this directly against a real temporary repo. The Slice 21.5 H2/H3
+merge-TOCTOU hardening in `merge()` is untouched and still runs on every
+QA-required merge.
+
+### QA authoring's own git-diff scope — a real bug found and fixed here
+
+`InternalQATestAuthor.run_authoring`'s `base_sha` parameter (Slice 23) is
+the pre-*this-execution* baseline `verify_authoring_git_facts` diffs
+against to detect a violation — **not** the WorkItem's overall base SHA.
+The first working version of this integration passed the WorkItem's
+original `base_sha` there, which flagged the developer's own legitimate
+prior commit as an "unauthorized production file" on every single QA
+authoring run once a real DEVELOPMENT phase preceded it (Slice 23's own
+Part R smoke never had a dev phase, so `base_sha == head_sha` trivially
+there and the bug never manifested). Fixed by passing the *current* head
+SHA (state immediately after DEVELOPMENT, immediately before QA
+authoring starts) instead — caught by `TestNominalQAFlow`, which fails
+loudly without the fix.
+
+### Protected-test baseline — SHA-scoped, never the working tree
+
+`MVPManager._capture_protected_baseline` reads each configured
+`qa_protected_paths` entry's content *at* `base_sha` via
+`GitGovernanceService.read_file_at` (new: `LocalGitWorkspace.read_blob`,
+`git show <ref>:<path>` with raw bytes, never `text=True` — must hash
+identically to `qa_protection.hash_file`'s `path.read_bytes()`) — never
+the current working tree, which may already reflect a later commit by
+the time this runs. `mvp_manager.py` still never calls `subprocess`
+directly (a dedicated test enforces this) — every git operation goes
+through `GitGovernanceService`, protected-baseline capture included.
+`TestProtectedTestIntegration` proves an unauthorized protected-file
+mutation blocks the whole workflow.
+
+### Wait / Recovery for QA Test Authoring
+
+`WaitPhase.QA_AUTHORING` (new): development already succeeded before this
+wait is ever recorded, so resuming re-enters `RUNNING` directly (a new
+`WorkItemStatus.RUNNING -> WAITING -> RUNNING` transition, added
+specifically for this — never `READY`, development is never re-run).
+`_execute_work_item`'s post-development pipeline (gates/review/final QA)
+was factored into a shared `_continue_after_development`, so both a fresh
+attempt and a `QA_AUTHORING` wait/recovery resume go through the exact
+same code path — never a second, parallel pipeline. Recovery: an
+orphaned/interrupted `QA_TESTING_ROLE` execution is reconciled exactly
+like a `developer`-role one (`RecoveryCoordinator.reconcile_work_item`'s
+`RUNNING`-status role filter now covers both), and the resumed attempt's
+author exclusion is still read from the *last development-role* handoff,
+never the crashed QA worker's own recovery handoff — mirroring the
+review-recovery pattern exactly. `TestQAAuthoringWait`/
+`TestQAAuthoringRecovery` cover both.
+
+### ReleaseManager
+
+One additive check, `qa-verdict-pass` (opt-in via `qa_run_store`,
+mirrors `governed-work-items-merged`'s exact shape): every COMPLETED
+WorkItem this project actually tracked a QA run for must have a passing
+Final Verification `QAVerdict` on record; a WorkItem QA was never used
+for is never penalized.
+
+### RealizationReport / ActivityReport
+
+`RealizationReport`'s Slice 23 `qa_run_store` extension already surfaces
+the *latest* QA run/verdict per WorkItem — sufficient for Slice 24's
+richer QA/rework cycles without further change (verified against the
+existing test suite, still green). `ActivityReport` was not touched — no
+current release/planning decision depends on QA-specific counters there.
+
+### Self-dogfood acceptance — CODE_DONE, ACCEPTANCE_PENDING_PROVIDER
+
+A fresh, read-only quota probe (2026-09-15, no reset credit) found
+`anthropic` available but `openai`/Codex still `QUOTA_EXHAUSTED` — the
+same asymmetric state as Slice 23's own self-dogfood attempt. With only
+one real provider available, `qa_worker_id != developer_worker_id` (the
+mandatory author-exclusion — never relaxed, never bypassed) cannot be
+satisfied by any real second worker, so a genuine end-to-end self-dogfood
+run would deterministically report `BLOCKED_BY_PROVIDER` at the QA
+worker-selection step — exactly the behavior
+`tests/test_mvp_manager_qa_integration.py::TestQAAuthoringWait::
+test_qa_authoring_quota_wait_never_falls_back_to_developer` already
+proves offline, deterministically, with zero provider calls. Given this,
+and that building a *new* full-workflow self-dogfood script (Slice 23's
+existing `scripts/self_dogfood_dev_qa_real.py` predates Slice 24's
+integration and only exercises development + QA authoring in isolation,
+never gates/review/final-QA/merge through the real `MVPManager`) was
+judged disproportionate to spend a real provider session on when the
+outcome is already certain from the live quota state, this session did
+not consume a real Claude/Codex session for Slice 24 acceptance. **Slice
+24 is `CODE_DONE`** (full offline suite green, all listed criteria met)
+but **not `ACCEPTANCE_DONE`** — full self-dogfood acceptance
+(`QAVerdict.PASS` end-to-end, a real merge, plus the mandatory negative
+control) remains `PENDING_PROVIDER_ACCEPTANCE`, to be attempted with a
+genuinely new full-workflow self-dogfood script once a second real
+provider is available.

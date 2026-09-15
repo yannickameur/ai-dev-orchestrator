@@ -73,6 +73,14 @@ class WaitPhase(str, Enum):
     DEVELOPMENT = "development"
     REWORK = "rework"
     REVIEW = "review"
+    #: Slice 24: a QA Test Authoring worker-selection failure diagnosable
+    #: as quota. Development already succeeded before this wait is ever
+    #: recorded, so resuming re-enters RUNNING directly, never READY —
+    #: only QA authoring onward is retried, development is never re-run.
+    #: Final Verification is deliberately not represented here — it is
+    #: read-only/deterministic and has no comparable "no eligible worker"
+    #: failure mode to wait out (see docs/QA_GOVERNANCE.md).
+    QA_AUTHORING = "qa_authoring"
 
 
 class WaitReason(str, Enum):

@@ -322,7 +322,7 @@ def main() -> int:
         mvp_id=MVP_ID, work_item_id=WORK_ITEM_ID,
     )
     try:
-        qa_worker = asyncio.run(qa_author.select_worker(
+        qa_worker, qa_model, qa_reasoning_effort = asyncio.run(qa_author.select_worker(
             estimation_request=qa_estimation, developer_worker_id=dev_selection.worker.worker_id,
         ))
     except NoEligibleWorkerError as exc:
@@ -336,10 +336,13 @@ def main() -> int:
         return 1
 
     assert qa_worker.worker_id != dev_selection.worker.worker_id, "author independence violated"
-    print(f"[self-dogfood] real, DISTINCT QA worker: {qa_worker.worker_id} ({qa_worker.provider}/{qa_worker.backend})")
+    print(
+        f"[self-dogfood] real, DISTINCT QA worker: {qa_worker.worker_id} "
+        f"({qa_worker.provider}/{qa_worker.backend}, model={qa_model}, reasoning_effort={qa_reasoning_effort})"
+    )
 
     qa_outcome = asyncio.run(qa_author.run_authoring(
-        worker=qa_worker, model=qa_worker.profile().model, reasoning_effort=qa_worker.profile().reasoning_effort,
+        worker=qa_worker, model=qa_model, reasoning_effort=qa_reasoning_effort,
         task_id=WORK_ITEM_ID, workspace=workspace,
         objective="Check regression coverage for the classify_validation_status TIMEOUT-mapping fix",
         acceptance_criteria=(f"{DEFECT_TEST_ID} exists and actually exercises this mapping",),

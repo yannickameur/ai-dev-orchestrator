@@ -203,6 +203,23 @@ class LocalGitWorkspace:
         result = self._run(["rev-parse", ref])
         return result.stdout.strip()
 
+    def read_blob(self, ref: str, path: str) -> bytes | None:
+        """Raw bytes of ``path`` exactly as they existed at ``ref`` (``git
+        show <ref>:<path>``) — never the current working tree. Returns
+        ``None`` when the path did not exist at that ref (e.g. added
+        later). Deliberately its own raw ``subprocess.run`` (not
+        ``self._run``, which decodes with ``text=True``) so the returned
+        bytes hash identically to ``qa_protection.hash_file``'s
+        ``path.read_bytes()`` on the current working tree — a text-mode
+        round-trip could otherwise introduce a newline-translation
+        mismatch."""
+        self._require_repository()
+        result = subprocess.run(
+            [self._git_binary, "show", f"{ref}:{path}"], cwd=str(self._repository_path),
+            capture_output=True, timeout=30,
+        )
+        return result.stdout if result.returncode == 0 else None
+
     def try_rev_parse(self, ref: str) -> str | None:
         """Like ``head_sha`` but returns ``None`` instead of raising for an
         unknown ref — the primitive missing-branch/drift detection needs."""
@@ -929,6 +946,14 @@ class GitGovernanceService:
 
     # --- post-execution facts ---------------------------------------------
 
+    def read_file_at(self, repository_path: str | Path, *, ref: str, path: str) -> bytes | None:
+        """Raw bytes of ``path`` as they existed at ``ref`` — never the
+        current working tree. Used by QA protected-test baseline capture
+        (Slice 24) so a baseline reflects exactly what existed at
+        ``base_sha``, regardless of what the working tree looks like by
+        the time it is captured."""
+        return self._workspace(repository_path).read_blob(ref, path)
+
     def capture_head(self, work_item_id: str, *, repository_path: str | Path) -> GitWorkItemRecord:
         record = self._store.get(work_item_id)
         ws = self._workspace(repository_path)
@@ -966,6 +991,10 @@ class GitGovernanceService:
         gate_git_sha: str | None,
         review_approved: bool | None,
         review_git_sha: str | None,
+        qa_required: bool = False,
+        qa_passed: bool | None = None,
+        qa_git_sha: str | None = None,
+        qa_run_terminal: bool | None = None,
     ) -> MergeEligibilityResult:
         """Pure, deterministic: never an LLM call, never "probably fine".
 
@@ -977,6 +1006,20 @@ class GitGovernanceService:
         itself, so it works identically whether those facts came from live
         objects in the current process or were reloaded after a cold
         restart.
+
+        ``qa_required``/``qa_passed``/``qa_git_sha``/``qa_run_terminal``
+        (Slice 24, additive, default ``False``/``None``/``None``/``None``
+        — fully backward compatible: a caller that never passes them gets
+        byte-identical pre-Slice-24 behavior): the exact same pattern as
+        ``gate_passed``/``gate_git_sha`` above, deliberately kept as plain
+        primitives (never a ``QAVerdict``/``QAVerdictStatus`` import) so
+        this module never depends on ``orchestrator.qa`` and never calls a
+        QA engine itself — it only ever receives an already-governed QA
+        fact, exactly like every other evidence source here. When
+        ``qa_required`` is True, mergeable additionally requires a
+        terminal QA run whose verdict passed for this exact head SHA;
+        anything else (absent, FAIL, INCONCLUSIVE, a stale SHA, or a
+        non-terminal run) is ``NOT_MERGEABLE``.
         """
         now = self._clock()
         record = self._store.try_get(work_item_id)
@@ -1015,6 +1058,16 @@ class GitGovernanceService:
             if review_git_sha != record.current_head_sha:
                 return _not_mergeable(
                     f"review evidence is for an old SHA ({review_git_sha!r} != {record.current_head_sha!r})"
+                )
+
+        if qa_required:
+            if qa_run_terminal is not True:
+                return _not_mergeable("required QA run is not terminal")
+            if qa_passed is not True:
+                return _not_mergeable("required QA verdict has not passed")
+            if qa_git_sha != record.current_head_sha:
+                return _not_mergeable(
+                    f"QA evidence is for an old SHA ({qa_git_sha!r} != {record.current_head_sha!r})"
                 )
 
         ws = self._workspace(repository_path)

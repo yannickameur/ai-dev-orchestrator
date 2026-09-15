@@ -744,8 +744,9 @@ class TestQATestAuthorWorkerSelection:
         alice, victor = _qa_worker("alice"), _qa_worker("victor", provider="openai", backend="codex")
         selector = _adaptive_selector(tmp_path, [alice, victor])
         author = InternalQATestAuthor(adaptive_execution_selector=selector, worker_selector=_real_worker_selector([alice, victor]), execution_engine=None)
-        worker = asyncio.run(author.select_worker(estimation_request=_estimation_request(tmp_path), developer_worker_id="alice"))
+        worker, model, reasoning_effort = asyncio.run(author.select_worker(estimation_request=_estimation_request(tmp_path), developer_worker_id="alice"))
         assert worker.worker_id == "victor"
+        assert model is not None  # the real adaptive decision snapshot, not Worker.profile()'s default
 
     def test_author_worker_always_excluded(self, tmp_path: Path) -> None:
         alice = _qa_worker("alice")
@@ -777,7 +778,7 @@ class TestQATestAuthorWorkerSelection:
         author = InternalQATestAuthor(adaptive_execution_selector=selector, worker_selector=_real_worker_selector([alice, victor]), execution_engine=None)
         # developer=alice, reviewer=victor -> excluding both leaves zero
         # candidates; the soft preference must fall back rather than block.
-        worker = asyncio.run(author.select_worker(
+        worker, model, reasoning_effort = asyncio.run(author.select_worker(
             estimation_request=_estimation_request(tmp_path), developer_worker_id="alice", reviewer_worker_id="victor",
         ))
         assert worker.worker_id == "victor"  # only remaining eligible worker
@@ -786,7 +787,7 @@ class TestQATestAuthorWorkerSelection:
         alice, victor, wendy = _qa_worker("alice"), _qa_worker("victor", provider="openai", backend="codex"), _qa_worker("wendy")
         selector = _adaptive_selector(tmp_path, [alice, victor, wendy])
         author = InternalQATestAuthor(adaptive_execution_selector=selector, worker_selector=_real_worker_selector([alice, victor, wendy]), execution_engine=None)
-        worker = asyncio.run(author.select_worker(
+        worker, model, reasoning_effort = asyncio.run(author.select_worker(
             estimation_request=_estimation_request(tmp_path), developer_worker_id="alice", reviewer_worker_id="victor",
         ))
         assert worker.worker_id not in ("alice", "victor")

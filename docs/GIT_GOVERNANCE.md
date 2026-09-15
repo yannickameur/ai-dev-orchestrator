@@ -74,6 +74,19 @@ completion has no live `QualityGateResult` object, only durable state).
 Either way the eligibility computation itself is a pure function of its
 inputs — never an LLM call, never "probably fine".
 
+**Slice 24 addition:** `compute_merge_eligibility` gained four additive,
+optional keyword parameters — `qa_required`, `qa_passed`, `qa_git_sha`,
+`qa_run_terminal` — following the exact same "pre-resolved facts only"
+discipline as the gate/review parameters above. When a WorkItem has QA
+enabled, `MVPManager` resolves the governed `QAVerdict` (never the raw
+engine-reported `QAResult`) and passes its facts in; `qa_git_sha` must
+equal `current_head_sha` exactly, or eligibility is `NOT_MERGEABLE` with
+an explicit stale-evidence reason, mirroring how gate/review SHA binding
+already works. `GitGovernanceService` still never imports the QA domain
+and never calls a QA engine itself. Omitting all four keeps pre-Slice-24
+behavior byte-for-byte. Full QA workflow detail:
+`docs/QA_GOVERNANCE.md`.
+
 ## Merge strategy: fast-forward-only
 
 The default (and, for this slice, only) merge strategy is fast-forward:
