@@ -166,17 +166,20 @@ def main() -> int:
         # No development-fix phase in this smoke (Part R scope: QA
         # analysis only, against already-broken code) — no author to
         # exclude, so developer_worker_id is genuinely None here.
-        worker = asyncio.run(author.select_worker(estimation_request=estimation_request))
+        worker, qa_model, qa_reasoning_effort = asyncio.run(author.select_worker(estimation_request=estimation_request))
     except Exception as exc:  # NoEligibleWorkerError et al.
         print(f"[smoke] BLOCKED_BY_PROVIDER: no eligible qa_testing worker: {exc}")
         _print_result("BLOCKED_BY_PROVIDER", quota=quota)
         shutil.rmtree(ctx_dir, ignore_errors=True)
         return 1
 
-    print(f"[smoke] real QA worker selected: {worker.worker_id} ({worker.provider}/{worker.backend})")
+    print(
+        f"[smoke] real QA worker selected: {worker.worker_id} ({worker.provider}/{worker.backend}, "
+        f"model={qa_model}, reasoning_effort={qa_reasoning_effort})"
+    )
 
     outcome = asyncio.run(author.run_authoring(
-        worker=worker, model=worker.profile().model, reasoning_effort=worker.profile().reasoning_effort,
+        worker=worker, model=qa_model, reasoning_effort=qa_reasoning_effort,
         task_id=WORK_ITEM_ID, workspace=workspace,
         objective="review_candidate.py::add(a, b) is suspected buggy — analyze and add a regression test.",
         acceptance_criteria=(

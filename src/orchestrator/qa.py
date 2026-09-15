@@ -153,7 +153,16 @@ class QAVerdictStatus(str, Enum):
 @dataclass(frozen=True, slots=True)
 class QARequest:
     """What is being asked of a ``QAEngine`` — provider-independent, never
-    a fourre-tout. No vendor field (token/project id/workspace) here."""
+    a fourre-tout. No vendor field (token/project id/workspace) here.
+
+    ``phase`` (Slice 24, additive, default ``None`` for full backward
+    compatibility with every Slice 22/23 caller that never set it): lets a
+    generic engine distinguish ``TEST_AUTHORING`` from
+    ``FINAL_VERIFICATION`` through the single ``QAEngine.run()`` Protocol
+    method — without it, a provider-independent caller (``MVPManager``)
+    would have no way to ask *any* engine, internal or external, for a
+    read-only run through the Protocol alone.
+    """
 
     project_id: str
     mvp_id: str
@@ -169,6 +178,7 @@ class QARequest:
     review_findings: tuple[str, ...] = ()
     required_invariants: tuple[str, ...] = ()
     required_test_ids: tuple[str, ...] = ()
+    phase: "QAPhase | None" = None
 
     def __post_init__(self) -> None:
         for name in ("project_id", "mvp_id", "work_item_id", "workspace", "base_sha", "head_sha", "objective"):
@@ -178,6 +188,8 @@ class QARequest:
             "review_findings", "required_invariants", "required_test_ids",
         ):
             object.__setattr__(self, name, _tuple_of_str(getattr(self, name), field_name=f"QARequest.{name}"))
+        if self.phase is not None and not isinstance(self.phase, QAPhase):
+            raise TypeError(f"QARequest.phase must be a QAPhase or None, got {type(self.phase)!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +221,17 @@ class QAResult:
     artifacts: tuple[str, ...] = ()
     failed_invariant_ids: tuple[str, ...] = ()
     engine_reported_status: str | None = None
+    #: Slice 24, additive, default ``False`` (backward compatible with
+    #: every Slice 22/23 caller): a normalized, provider-independent
+    #: signal that a declared-read-only (``FINAL_VERIFICATION``) run
+    #: actually mutated the workspace, or that the engine could not even
+    #: prove it stayed read-only — direct inputs for
+    #: ``evaluate_qa_verdict``'s ``read_only_violation``/
+    #: ``read_only_unprovable`` kwargs. Part of the normalized result
+    #: contract so any engine (internal or external) can report them
+    #: without ``MVPManager`` needing engine-specific knowledge.
+    read_only_violation: bool = False
+    read_only_unprovable: bool = False
 
     def __post_init__(self) -> None:
         _require_non_empty_str(self.engine_id, field_name="QAResult.engine_id")
@@ -223,6 +246,9 @@ class QAResult:
                 raise ValueError(f"QAResult.{name} must be a non-negative int, got {value!r}")
         if not isinstance(self.requires_coding_agent, bool):
             raise TypeError("QAResult.requires_coding_agent must be a bool")
+        for name in ("read_only_violation", "read_only_unprovable"):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"QAResult.{name} must be a bool")
         for name in (
             "risks", "tests_selected", "tests_added", "tests_executed", "regressions",
             "coverage_gaps", "recommended_actions", "artifacts", "failed_invariant_ids",

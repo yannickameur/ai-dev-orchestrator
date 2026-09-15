@@ -391,15 +391,23 @@ class TestWaitingTransitions:
         assert updated == []
         assert store.get_work_item("wi-b").status is WorkItemStatus.PLANNED
 
-    def test_running_cannot_go_directly_to_waiting(self, tmp_path: Path) -> None:
+    def test_running_to_waiting_to_running_again(self, tmp_path: Path) -> None:
+        # Slice 24: a QA Test Authoring worker-selection failure diagnosable
+        # as quota happens while the WorkItem is still RUNNING (development
+        # already succeeded) — resuming re-enters RUNNING directly (never
+        # READY, since re-running development itself would be wrong; only
+        # QA authoring onward is retried).
         store = _store(tmp_path)
         _seed_project_and_mvp(store, tmp_path)
         store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
         store.refresh_readiness("mvp-1")
         store.mark_work_item_running("wi-a")
 
-        with pytest.raises(InvalidWorkItemTransitionError):
-            store.mark_work_item_waiting("wi-a")  # RUNNING itself never waits, only READY/NEEDS_REWORK/REVIEWING
+        waiting = store.mark_work_item_waiting("wi-a")
+        assert waiting.status is WorkItemStatus.WAITING
+
+        resumed = store.mark_work_item_running("wi-a")
+        assert resumed.status is WorkItemStatus.RUNNING
 
     def test_terminal_work_item_cannot_move_to_waiting(self, tmp_path: Path) -> None:
         store = _store(tmp_path)

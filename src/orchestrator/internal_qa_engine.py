@@ -52,7 +52,7 @@ import re
 import subprocess
 import sys
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Mapping, Sequence
@@ -470,9 +470,21 @@ class InternalQAEngine:
         return asyncio.run(self.run_async(request))
 
     async def run_async(self, request: QARequest, *, plan: InternalQAPlan | None = None) -> QAResult:
+        """The ``QAEngine`` Protocol's real async body (``run()`` just wraps
+        this in ``asyncio.run``). Slice 24: phase-aware via
+        ``request.phase`` — this is what lets a generic,
+        provider-independent caller (``MVPManager``) reach the read-only
+        Final Verification path through the single Protocol method,
+        without ever needing engine-specific knowledge of
+        ``run_final_verification``."""
         workspace = Path(request.workspace)
         if not self.stack_supported(workspace):
             raise UnsupportedStackError(workspace)
+        if request.phase is QAPhase.FINAL_VERIFICATION:
+            result, read_only_violation, read_only_unprovable = await self.run_final_verification(request, plan=plan)
+            return replace(
+                result, read_only_violation=read_only_violation, read_only_unprovable=read_only_unprovable,
+            )
         plan = plan or self.build_plan(request)
         return await self._execute_plan(request, plan, project_suffix="targeted")
 
@@ -804,7 +816,7 @@ class InternalQATestAuthor:
     async def select_worker(
         self, *, estimation_request: ComplexityEstimationRequest, developer_worker_id: str | None = None,
         reviewer_worker_id: str | None = None,
-    ) -> Worker:
+    ) -> tuple[Worker, str | None, str | None]:
         """``qa_testing`` worker selection. ``developer_worker_id`` exclusion
         is MANDATORY whenever a real development author exists (forwarded
         as ``author_worker_id`` — the exact same governance
@@ -816,6 +828,15 @@ class InternalQATestAuthor:
         ``excluded_worker_ids``, and — only if that leaves zero eligible
         candidates — retried without excluding the reviewer, so a
         two-worker configuration is never blocked over a soft preference.
+
+        Returns ``(worker, model, reasoning_effort)`` — the exact
+        ``AdaptiveExecutionDecision`` snapshot this call resolved (Slice
+        24 fix: previously only ``Worker`` was returned and both real
+        smoke scripts fell back to ``Worker.profile()``'s *default*
+        profile for ``run_authoring``, silently discarding the adaptive
+        decision's actual model/reasoning choice — the exact
+        no-silent-downgrade bug Slice 17 already fixed for development/
+        review, now fixed here too).
         """
         excluded = frozenset({reviewer_worker_id}) if reviewer_worker_id else frozenset()
         try:
@@ -825,7 +846,7 @@ class InternalQATestAuthor:
                     required_capabilities=frozenset({QA_TESTING_CAPABILITY}),
                     author_worker_id=developer_worker_id, excluded_worker_ids=excluded,
                 )
-                return selection.worker
+                return selection.worker, selection.decision.model, selection.decision.reasoning_effort
         except (NoEligibleWorkerError, ReviewIndependenceError):
             pass
         selection = await self._adaptive_execution_selector.select(
@@ -833,7 +854,7 @@ class InternalQATestAuthor:
             required_capabilities=frozenset({QA_TESTING_CAPABILITY}),
             author_worker_id=developer_worker_id,
         )
-        return selection.worker
+        return selection.worker, selection.decision.model, selection.decision.reasoning_effort
 
     async def run_authoring(
         self,

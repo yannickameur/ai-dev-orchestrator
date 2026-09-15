@@ -1683,7 +1683,63 @@ contract/E2E) — un verdict LLM seul n'est jamais une preuve de PASS.
   (mécanisme adaptatif), Slice 21.5 (primitives read-only/manifest).
   Prépare Slice 24 (intégration MVPManager/merge/release) sans l'anticiper.
 
-**Slice 24 — QA/Rework/Review/Merge Integration**
+**Slice 24 — QA/Rework/Review/Merge Integration — ✅ CODE_DONE (2026-09-15), ACCEPTANCE_PENDING_PROVIDER**
+- QA devient une 6e/7e capacité opt-in de `MVPManager` (`qa_engine`/
+  `qa_policy`/`qa_run_store`, plus `qa_protected_paths`), composée
+  exactement comme les précédentes — omise, le comportement pré-Slice-24
+  reste identique au bit près (suite existante de 1074 tests inchangée et
+  toujours verte). `qa_engine` n'est utilisé qu'à travers le `Protocol`
+  `QAEngine` (`.run(request) -> QAResult`) — `mvp_manager.py` n'importe et
+  ne `isinstance`-check jamais `InternalQAEngine` (preuve directe :
+  `tests/test_mvp_manager_qa_integration.py::TestProviderIndependence`,
+  deux faux moteurs de forme différente traversent la même intégration).
+- Workflow réellement implémenté : Development → QA Test Authoring
+  (optionnel, adaptatif, avant les gates) → Quality Gates → Review
+  indépendante → Final QA Verification (read-only, après review APPROVED,
+  ou directement après les gates si review non configurée) → Merge
+  Eligibility → Merge. QA FAIL avec `requires_coding_agent=True` → REWORK
+  (réutilise entièrement le chemin adaptatif REWORK existant, aucun
+  nouveau routeur) ; un FAIL après Final QA invalide naturellement la
+  review déjà APPROVED (le HEAD a changé, SHA-binding existant) — une
+  nouvelle review est donc obligatoire, jamais sautée. `QAPolicy.
+  max_qa_cycles` (compté durablement via `QARunStore`) reste indépendant
+  de `ReviewPolicy.max_review_cycles`.
+- `compute_merge_eligibility` (git_governance.py) gagne 4 kwargs additifs
+  (`qa_required`/`qa_passed`/`qa_git_sha`/`qa_run_terminal`, défaut
+  `False`/`None` — rétrocompatibilité totale) ; reste un module pur, ne
+  connaît toujours ni `orchestrator.qa` ni aucun moteur QA. `ReleaseManager`
+  gagne un check additif `qa-verdict-pass` (même motif que
+  `governed-work-items-merged`, Slice 20).
+- `WaitPhase.QA_AUTHORING` (nouveau) : une reprise réentre directement en
+  `RUNNING` (jamais `READY` — le développement ne doit jamais être rejoué,
+  nouvelle transition d'état `RUNNING -> WAITING -> RUNNING`). Recovery :
+  une exécution `qa_testing` orpheline est reconciliée comme une exécution
+  `developer` (filtre de rôle étendu dans `RecoveryCoordinator`), l'auteur
+  exclu reste celui du dernier handoff de développement, jamais le worker
+  QA interrompu. `_execute_work_item` factorisé en
+  `_continue_after_development`, point de câblage unique partagé par le
+  chemin frais et la reprise QA.
+- Bug réel trouvé et corrigé pendant l'intégration : `InternalQATestAuthor.
+  run_authoring`'s `base_sha` (Slice 23) doit être le head *juste avant*
+  l'exécution QA (post-développement), jamais le `base_sha` global du
+  WorkItem — sinon chaque commit légitime du développeur est signalé à
+  tort comme fichier de production non autorisé.
+- Tests : `tests/test_mvp_manager_qa_integration.py` (15 tests, vrais
+  dépôts git temporaires, sélection adaptative réelle via
+  `AdaptiveExecutionSelector`+`WorkerSelector` réels, moteur QA factice
+  scriptable) + ajustements ciblés dans `tests/test_project_state.py`
+  (nouvelles transitions `RUNNING↔WAITING`). 1089 tests offline PASS
+  (1074 + 15).
+- Self-dogfood : `CODE_DONE`, mais **`ACCEPTANCE_PENDING_PROVIDER`** —
+  probe quota réel (lecture seule, 2026-09-15) : anthropic disponible,
+  openai toujours en quota épuisé ; avec un seul provider réel, l'exclusion
+  obligatoire auteur≠QA ne peut être satisfaite par aucun second worker
+  réel — résultat déterministe `BLOCKED_BY_PROVIDER`, déjà prouvé offline
+  (`TestQAAuthoringWait`). Aucune session réelle supplémentaire consommée
+  ce cycle (voir `docs/QA_GOVERNANCE.md` § Slice 24 pour la justification
+  complète) ; acceptance complète à rejouer avec un futur script
+  self-dogfood full-workflow une fois un second provider réel disponible.
+- Voir `docs/QA_GOVERNANCE.md` § « Slice 24 » pour le détail complet.
 - Workflow cible en deux phases (voir `docs/QA_STRATEGY.md` §
   « Position dans le workflow ») : **QA Phase 1 — Test Design/Authoring**
   (avant la review finale ; peut analyser l'impact, créer tests/fixtures,
@@ -2036,14 +2092,25 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     PASS. Smoke réel PASS ; self-dogfood acceptance BLOCKED_BY_PROVIDER
     (honnête — dev réel réussi, QA bloquée faute d'un second provider
     disponible, dépôt source vérifié inchangé).
-- **Next : Slice 24 — QA/Rework/Review/Merge Integration.** Voir l'entrée
-  détaillée ci-dessus, `docs/QA_GOVERNANCE.md` et
-  `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`. Slice 25 reste conditionnelle
-  (non obligatoire tant que le besoin n'est pas établi). Le prochain
-  point de contrôle utilisateur explicite reste celui prévu par le
-  principe du projet (entre deux grandes versions stables). OmniRoute
-  reste une qualification future optionnelle, hors roadmap principale —
-  voir `docs/OMNIROUTE_ARBITRATION.md`.
+  - **Slice 24 (QA/Rework/Review/Merge Integration) — CODE_DONE,
+    ACCEPTANCE_PENDING_PROVIDER** : voir l'entrée détaillée ci-dessus et
+    `docs/QA_GOVERNANCE.md` § « Slice 24 » — QA intégrée comme capacité
+    opt-in de `MVPManager` (workflow complet Development → QA Authoring →
+    Gates → Review → Final QA → Merge Eligibility → Merge), extension
+    additive de `compute_merge_eligibility`/`ReleaseManager`, wait/recovery
+    QA, cycles bornés indépendants. 1089 tests offline PASS. Self-dogfood
+    non rejoué faute de second provider réel disponible (probe quota lu
+    seul, 2026-09-15) — `BLOCKED_BY_PROVIDER` déterministe, déjà prouvé
+    offline ; acceptance complète reste à faire dans une session future.
+- **Next : revue de roadmap avec l'utilisateur.** Toutes les Slices 21-24
+  du cycle QA sont maintenant `CODE_DONE` — c'est le point de contrôle
+  prévu par le principe du projet avant toute nouvelle Slice. Cette
+  session ne décide **pas** seule si un POC QA externe ou la Slice 25
+  (Advanced QA / External E2E, restée conditionnelle) sont réellement
+  utiles — voir `docs/QA_GOVERNANCE.md` et
+  `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`. OmniRoute reste une
+  qualification future optionnelle, hors roadmap principale — voir
+  `docs/OMNIROUTE_ARBITRATION.md`.
 
 ## Comment reprendre ce projet à froid
 

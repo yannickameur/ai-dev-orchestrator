@@ -47,6 +47,11 @@ IdFactory = Callable[[], str]
 
 DEVELOPER_ROLE = "developer"
 REVIEWER_ROLE = "reviewer"
+#: Slice 24: a QA Test Authoring execution also runs while the WorkItem is
+#: RUNNING (after development, before gates/review) — an orphaned/
+#: interrupted QA-authoring execution must be reconciled exactly like a
+#: development one, never silently ignored.
+QA_TESTING_ROLE = "qa_testing"
 
 RECOVERY_OPEN_ISSUE = "execution interrupted / recovery required"
 RECOVERY_NEXT_ACTION = "continue work from persisted state"
@@ -108,8 +113,17 @@ class RecoveryCoordinator:
         if work_item.status not in (WorkItemStatus.RUNNING, WorkItemStatus.REVIEWING):
             return None
 
-        role = REVIEWER_ROLE if work_item.status is WorkItemStatus.REVIEWING else DEVELOPER_ROLE
-        relevant = [e for e in self._execution_store.list_for_task(work_item.work_item_id) if e.role == role]
+        # RUNNING covers both a development/rework execution and a QA Test
+        # Authoring one (Slice 24) — only one of them is ever legitimately
+        # in flight for a given WorkItem at a time (the state machine is
+        # mutually exclusive), so matching either role and taking the last
+        # one is exactly as precise as matching a single role, never a
+        # broader heuristic.
+        role_filter = (
+            frozenset({REVIEWER_ROLE}) if work_item.status is WorkItemStatus.REVIEWING
+            else frozenset({DEVELOPER_ROLE, QA_TESTING_ROLE})
+        )
+        relevant = [e for e in self._execution_store.list_for_task(work_item.work_item_id) if e.role in role_filter]
         if not relevant:
             return None
         last = relevant[-1]

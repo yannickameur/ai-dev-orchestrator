@@ -130,6 +130,21 @@ _WORK_ITEM_TRANSITIONS: dict[WorkItemStatus, frozenset[WorkItemStatus]] = {
             WorkItemStatus.FAILED,
             WorkItemStatus.REVIEWING,
             WorkItemStatus.RECOVERY_REQUIRED,
+            # Slice 24 (QA Test Authoring runs while status is still
+            # RUNNING, right after a successful DEVELOPMENT/REWORK
+            # execution, before quality gates/review): a QA-authoring
+            # worker-selection failure diagnosable as quota is a WAITING
+            # transition exactly like the pre-existing READY/NEEDS_REWORK
+            # ones; a QA verdict of FAIL(requires_coding_agent) is a
+            # NEEDS_REWORK transition exactly like a review rejection;
+            # anything else unrecoverable (e.g. an unauthorized
+            # protected-test mutation, or max_qa_cycles exhausted) is
+            # BLOCKED — the same three terminal-ish outcomes already used
+            # elsewhere in this state machine, only newly reachable from
+            # RUNNING too.
+            WorkItemStatus.WAITING,
+            WorkItemStatus.NEEDS_REWORK,
+            WorkItemStatus.BLOCKED,
         }
     ),
     WorkItemStatus.REVIEWING: frozenset(
@@ -144,10 +159,17 @@ _WORK_ITEM_TRANSITIONS: dict[WorkItemStatus, frozenset[WorkItemStatus]] = {
     WorkItemStatus.NEEDS_REWORK: frozenset({WorkItemStatus.RUNNING, WorkItemStatus.WAITING}),
     # WAITING only ever resumes into the exact state it was waiting to
     # re-attempt (READY/NEEDS_REWORK for a new development-side selection,
-    # REVIEWING for a new reviewer-side selection) or gives up to BLOCKED
-    # when no reliable retry moment remains — never "in place".
+    # REVIEWING for a new reviewer-side selection, RUNNING for a new
+    # QA-authoring-side selection — Slice 24: development already
+    # succeeded before a QA_AUTHORING wait was recorded, so resuming never
+    # re-runs development, only re-enters RUNNING to retry QA authoring
+    # onward) or gives up to BLOCKED when no reliable retry moment remains
+    # — never "in place".
     WorkItemStatus.WAITING: frozenset(
-        {WorkItemStatus.READY, WorkItemStatus.NEEDS_REWORK, WorkItemStatus.REVIEWING, WorkItemStatus.BLOCKED}
+        {
+            WorkItemStatus.READY, WorkItemStatus.NEEDS_REWORK, WorkItemStatus.REVIEWING,
+            WorkItemStatus.RUNNING, WorkItemStatus.BLOCKED,
+        }
     ),
     # RECOVERY_REQUIRED has no deadline to wait out (unlike WAITING): it is
     # immediately re-orchestrable, always via a *new* execution — resuming
