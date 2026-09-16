@@ -206,12 +206,13 @@ import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from orchestrator.adaptive_execution import AdaptiveExecutionSelector
 from orchestrator.complexity_estimation import ComplexityEstimationRequest
 from orchestrator.execution_store import ExecutionStatus, ExecutionStore, UnknownExecutionError
-from orchestrator.git_governance import GitGovernanceService
+from orchestrator.git_governance import GitGovernanceService, GitWorkItemRecord
 from orchestrator.handoff import HandoffRecord, HandoffStore
 from orchestrator.internal_qa_engine import (
     AuthoringViolationError,
@@ -1276,9 +1277,7 @@ class MVPManager:
 
         base_sha: str | None = None
         if self._git_governance_service is not None:
-            record = self._git_governance_service.assert_review_target(
-                work_item.work_item_id, repository_path=project.workspace,
-            )
+            record = self._reconcile_governed_head(work_item.work_item_id, project.workspace)
             base_sha = record.base_sha
 
         dev_facts = _RecoveredExecutionResult(
@@ -1614,6 +1613,53 @@ class MVPManager:
             work_item=work_item, handoff=handoff, gate_result=gate_result, review_result=review_result,
         )
 
+    #: Real, independently-verified evidence (Slice 24 self-dogfood
+    #: acceptance) that Ralph itself always commits under this prefix as
+    #: pure internal bookkeeping — never authored content. Matches the
+    #: same convention already used for QA-authoring's own unauthorized-
+    #: file detection (``internal_qa_engine._RUNTIME_NOISE_SEGMENTS``).
+    _RALPH_HOUSEKEEPING_PREFIX = (".ralph/",)
+
+    def _reconcile_governed_head(self, work_item_id: str, workspace: str | Path) -> GitWorkItemRecord:
+        """Re-verifies the governed branch is exactly where MVPManager
+        expects before a review reads it — tolerating a HEAD drift only
+        when it is provably legitimate, via either of two independent,
+        content-verified signals (Slice 24 fix, found via real-provider
+        self-dogfood acceptance — Ralph itself commits its own ``.ralph/``
+        housekeeping state on every real execution it runs, including a
+        read-only complexity-estimation execution (``role="estimator"``,
+        adaptive execution's own pre-flight) that this module never
+        expected to move HEAD, since only development and QA authoring
+        call ``capture_head`` explicitly):
+
+        1. The new head matches a real, persisted ``ExecutionRecord`` for
+           this exact WorkItem (when ``execution_store`` is configured).
+           Estimation executions are keyed by content fingerprint, not
+           this WorkItem's id, so in practice this alone never explains an
+           estimator-caused drift — kept as a second, independent signal
+           for any future/legitimate SHA-audited case, never relied upon
+           alone here.
+        2. Every file that actually changed between the expected and
+           actual head — independently computed via ``git diff
+           --name-only``, never trusted from any caller's claim — falls
+           under ``.ralph/``. A single non-noise file anywhere in that
+           diff still fails closed (``GitHeadDriftError``): this never
+           widens what counts as legitimate, it only recognizes Ralph's
+           own already-accepted (Slice 23/24) housekeeping noise.
+        """
+        assert self._git_governance_service is not None
+        known_execution_shas: frozenset[str] = frozenset()
+        if self._execution_store is not None:
+            known_execution_shas = frozenset(
+                record.git_sha_after
+                for record in self._execution_store.list_for_task(work_item_id)
+                if record.git_sha_after
+            )
+        return self._git_governance_service.reconcile(
+            work_item_id, repository_path=workspace, known_execution_shas=known_execution_shas,
+            noise_path_prefixes=self._RALPH_HOUSEKEEPING_PREFIX,
+        )
+
     async def _run_review(
         self,
         *,
@@ -1689,9 +1735,7 @@ class MVPManager:
             return review, work_item, "no eligible independent reviewer — blocked pending manual intervention", True
 
         if self._git_governance_service is not None:
-            governed_record = self._git_governance_service.assert_review_target(
-                work_item.work_item_id, repository_path=project.workspace,
-            )
+            governed_record = self._reconcile_governed_head(work_item.work_item_id, project.workspace)
             base_sha = governed_record.base_sha
 
         if reviewer_model is None:
@@ -1897,9 +1941,10 @@ class MVPManager:
             gate_passed=gate_passed, gate_git_sha=gate_git_sha,
             review_approved=review_approved, review_git_sha=review_git_sha,
             qa_required=qa_required, qa_passed=qa_passed, qa_git_sha=qa_git_sha,
-            qa_run_terminal=qa_run_terminal,
+            qa_run_terminal=qa_run_terminal, noise_path_prefixes=self._RALPH_HOUSEKEEPING_PREFIX,
         )
         if eligibility.mergeable and self._git_governance_service.policy.auto_merge:
             self._git_governance_service.merge(
                 work_item.work_item_id, repository_path=project.workspace, eligibility=eligibility,
+                noise_path_prefixes=self._RALPH_HOUSEKEEPING_PREFIX,
             )

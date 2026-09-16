@@ -630,7 +630,7 @@ class InternalQAEngine:
         ran_commands = bool(results)
         coverage_gaps = plan.required_invariants if (plan.required_invariants and not ran_commands) else ()
 
-        real_head = self._observed_head(Path(request.workspace)) or request.head_sha
+        real_head = self._observed_head(Path(request.workspace), expected_head_sha=request.head_sha) or request.head_sha
         return QAResult(
             engine_id=ENGINE_ID, engine_run_id=gate.validation_run_id, observed_head_sha=real_head,
             started_at=started_at, finished_at=finished_at,
@@ -645,7 +645,19 @@ class InternalQAEngine:
         )
 
     @staticmethod
-    def _observed_head(workspace: Path) -> str | None:
+    def _observed_head(workspace: Path, *, expected_head_sha: str | None = None) -> str | None:
+        """Live ``git rev-parse HEAD`` — normalized to ``expected_head_sha``
+        when the two differ by nothing but runtime noise (Slice 24 fix,
+        found via real-provider self-dogfood acceptance): Ralph itself
+        commits its own internal bookkeeping (``.ralph/`` etc., already
+        recognized elsewhere in this module via ``_is_runtime_noise``) on
+        every real execution it runs — including a review execution this
+        module never expected to touch git, which can advance the real
+        branch tip after ``expected_head_sha`` was captured but before
+        Final QA Verification reads it. This never widens what counts as
+        a real change (a single non-noise file anywhere in the diff still
+        reports the true, differing tip) and never touches
+        ``evaluate_qa_verdict`` itself, which stays a pure function."""
         try:
             result = subprocess.run(
                 ["git", "rev-parse", "HEAD"], cwd=str(workspace), capture_output=True, text=True, timeout=10,
@@ -654,7 +666,22 @@ class InternalQAEngine:
             return None
         if result.returncode != 0:
             return None
-        return result.stdout.strip() or None
+        tip = result.stdout.strip() or None
+        if tip is None or expected_head_sha is None or tip == expected_head_sha:
+            return tip
+        try:
+            diff = subprocess.run(
+                ["git", "diff", "--name-only", expected_head_sha, tip], cwd=str(workspace),
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return tip
+        if diff.returncode != 0:
+            return tip
+        changed = [line for line in diff.stdout.splitlines() if line]
+        if changed and all(_is_runtime_noise(f) for f in changed):
+            return expected_head_sha
+        return tip
 
 
 # --- top-level orchestration: one QA run, start to finish -----------------
@@ -750,14 +777,28 @@ def _build_qa_authoring_instructions(
         "- If coverage is already sufficient, add nothing — do not "
         "fabricate a duplicate test just to have something to report.\n\n"
         "You may modify ONLY: new or explicitly authorized test files, "
-        "explicitly authorized fixtures, and .qa/ files if policy allows.\n\n"
+        "explicitly authorized fixtures, and .qa/ files if policy allows. "
+        "Every other file in this repository is OUT OF SCOPE for you, with "
+        "no exceptions — this is checked independently after you finish, "
+        "against the exact file list, not against your own report.\n\n"
         "You must NEVER:\n"
         "- modify production/source code;\n"
         "- modify or weaken an existing protected test's assertions;\n"
         "- make a failing test pass by rewriting its expectations instead "
         "of fixing the underlying behavior (you cannot fix behavior — "
         "that is the coding agent's job, not yours);\n"
-        "- fabricate a green result.\n\n"
+        "- fabricate a green result;\n"
+        "- modify README, CHANGELOG, documentation, or any configuration/"
+        "manifest/lock file (pyproject.toml, uv.lock, package.json, "
+        "package-lock.json, poetry.lock, Pipfile.lock, Gemfile.lock, "
+        "go.sum, Cargo.lock, or equivalent) — even if it looks stale, "
+        "incomplete, or like an obviously helpful update;\n"
+        "- run any dependency/package-manager command (uv sync, uv add, "
+        "uv lock, pip install, npm install, poetry install, or "
+        "equivalent). The execution environment is already fully prepared "
+        "for you; do not try to fix, sync, or update it yourself. If you "
+        "believe the environment is broken, say so in the failure event "
+        "below instead of attempting to repair it.\n\n"
         "When done, emit exactly one structured event as a single-line "
         "JSON object with fields: tests_added, tests_modified, "
         "fixtures_added, fixtures_modified, production_files_modified "
