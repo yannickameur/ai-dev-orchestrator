@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -42,6 +43,7 @@ from orchestrator.providers.adapter import ProviderAdapter
 from orchestrator.providers.contracts import ProviderAvailability, ProviderState
 from orchestrator.qa import (
     FailureClassification,
+    QAPhase,
     QAPolicy,
     QARequest,
     QARunStore,
@@ -52,10 +54,12 @@ from orchestrator.quota_manager import QuotaManager, QuotaPolicy
 from orchestrator.ralph_execution_engine import ExecutionResult
 from orchestrator.release_manager import ReleaseManager
 from orchestrator.review import ReviewPolicy, ReviewStatus, ReviewStore
+from orchestrator.validation import QualityGateRunner, ValidationCommand, ValidationKind, ValidationStore
 from orchestrator.wait import WaitStore
 from orchestrator.worker_selector import ExecutionProfile, QualityTier, Worker
 
 UTC_NOW = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
+PY = sys.executable
 
 
 # --- git repo helpers (mirrors test_mvp_manager_git_governance.py) ---------
@@ -1043,3 +1047,94 @@ class TestRuntimeArtifactsNeverEnterProductHistory:
         assert _run_git(repo, "ls-files", "--", ".ralph").stdout == ""
         assert _run_git(repo, "status", "--porcelain").stdout == ""
         assert LocalGitWorkspace(repo).head_sha("main") == wi2_record.merged_sha
+
+
+# --- Slice 25 (L/M): after a real QA-authoring promotion (H1 -> H2), the
+# FINAL_VERIFICATION QAVerdict and the next Quality Gate must both operate
+# on H2, the real promoted content — never a stale H1 that no longer
+# reflects what is actually on disk.
+
+
+class TestQAPromotionBindsDownstreamStagesToH2:
+    def test_final_verification_and_quality_gate_both_run_on_the_promoted_h2(self, tmp_path: Path) -> None:
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+        selector = _adaptive_selector(tmp_path, [alice, victor])
+        engine = GitCommittingFakeEngine()
+        git_service, git_store = _git_service(
+            tmp_path, policy=GitGovernancePolicy(auto_merge=True, require_required_gates=False),
+        )
+        review_store = ReviewStore(tmp_path / "review.sqlite3", clock=lambda: UTC_NOW)
+        qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
+
+        # A REAL quality gate: it only passes if the QA-authored file
+        # (promoted onto the target by the orchestrator, never the worker
+        # itself) is genuinely present on disk at gate-run time — proving
+        # the gate executed against H2's real content, not a stale H1.
+        validation_store = ValidationStore(tmp_path / "validation.sqlite3", clock=lambda: UTC_NOW)
+        validation_store.set_project_commands(
+            "proj-1",
+            [ValidationCommand(
+                validation_id="promoted-file-present", kind=ValidationKind.UNIT_TEST,
+                argv=(PY, "-c", "import pathlib, sys; sys.exit(0 if pathlib.Path('test_qa_added.py').exists() else 1)"),
+            )],
+        )
+        gate_runner = QualityGateRunner(validation_store, clock=lambda: UTC_NOW, id_factory=lambda: "gate-run-1")
+
+        class DynamicQAEngine:
+            engine_id = "fake-qa"
+
+            def __init__(self) -> None:
+                self.requests: list[QARequest] = []
+
+            def run(self, request: QARequest) -> QAResult:
+                self.requests.append(request)
+                return _qa_result(head_sha=request.head_sha)
+
+        qa_engine = DynamicQAEngine()
+
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine,
+            quality_gate_runner=gate_runner,
+            review_store=review_store, review_policy=ReviewPolicy(),
+            adaptive_execution_selector=selector,
+            git_governance_service=git_service,
+            qa_engine=qa_engine, qa_policy=_QA_POLICY, qa_run_store=qa_run_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        record = git_store.get("wi-a")
+        assert record.status is GitWorkItemStatus.MERGED
+
+        authoring_requests = [r for r in qa_engine.requests if r.phase is QAPhase.TEST_AUTHORING]
+        final_requests = [r for r in qa_engine.requests if r.phase is QAPhase.FINAL_VERIFICATION]
+        assert len(authoring_requests) == 1
+        assert len(final_requests) == 1
+
+        # H1: the developer's own commit, before QA authoring ran at all.
+        h1 = authoring_requests[0].base_sha
+        # H2: the real, promoted head AFTER QA authoring — strictly newer
+        # than H1, since the fake engine's QA_TESTING_ROLE path always
+        # adds a real, allowed test file.
+        h2 = final_requests[0].head_sha
+        assert h2 != h1
+
+        # L: the FINAL_VERIFICATION QAVerdict is bound to H2, never H1.
+        final_run = qa_run_store.list_for_work_item("wi-a")[-1]
+        assert final_run.phase is QAPhase.FINAL_VERIFICATION
+        assert final_run.expected_head_sha == h2
+        assert final_run.verdict is not None and final_run.verdict.status is QAVerdictStatus.PASS
+
+        # M: the Quality Gate that ran right after promotion (and before
+        # Review/Final QA) only passes because it executed against H2's
+        # real, on-disk content — the promoted file genuinely exists in
+        # the governed target at gate time.
+        assert (repo / "test_qa_added.py").is_file()
+
+        # The final merged head is exactly H2 promoted onward.
+        assert record.merged_sha == h2
