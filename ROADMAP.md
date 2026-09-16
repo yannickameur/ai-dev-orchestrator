@@ -2174,6 +2174,56 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     non rejoué faute de second provider réel disponible (probe quota lu
     seul, 2026-09-15) — `BLOCKED_BY_PROVIDER` déterministe, déjà prouvé
     offline ; acceptance complète reste à faire dans une session future.
+- **Décision produit (2026-09-16) — `LEAN_FEATURE_FLOW` devient le
+  workflow PAR DÉFAUT de `MVPManager`, `GOVERNED_FULL` (Slices 17-24 :
+  estimation adaptative avant chaque phase, QA Test Authoring isolée +
+  promotion gouvernée, Review isolée en lecture seule, Final QA séparée)
+  devient `DEPRECATED` / `REMOVAL_CANDIDATE`** — voir
+  `src/orchestrator/mvp_manager.py::WorkflowMode` pour la justification
+  complète. Motivation : KISS/YAGNI/Extreme Programming — le pipeline
+  `GOVERNED_FULL`, bien que correctement gouverné (validé sur trois runs
+  externes réels, mars-rover run3/4/5), s'est avéré disproportionné pour
+  une feature quotidienne simple (jusqu'à 8+ exécutions IA réelles et
+  plusieurs heures pour un kata trivial, dont l'essentiel n'était pas dû
+  à la difficulté du problème mais à l'estimation adaptative et à
+  l'isolation systématique).
+  - Nouveau flux nominal : `DEV A` → `DEV B` (second développeur
+    indépendant, correctif — PAS en lecture seule, il corrige et committe
+    directement) → une seule phase `QA` (déterministe, lecture seule,
+    réutilise `QAPhase.FINAL_VERIFICATION` tel quel — aucune nouvelle
+    phase) → merge gouverné (`GitGovernanceService.compute_merge_eligibility`/
+    `merge`, réutilisés à l'identique) → tag Git (`feature/<work-item-id>/done`,
+    nouveau : `LocalGitWorkspace.create_tag`). Au plus 3 exécutions IA sur
+    le chemin nominal.
+  - QA FAIL : jusqu'à 3 tentatives QA au total (`QAPolicy.max_qa_cycles`,
+    déjà 3 par défaut — aucun changement de politique nécessaire) — les
+    2 premiers échecs déclenchent `DEV FIX → QA` (jamais un second DEV B) ;
+    le 3ème échec passe le WorkItem en `BLOCKED` avec un motif
+    `HUMAN_REVIEW_REQUIRED: ...` explicite et ajoute un bloc TODO
+    déterministe (jamais réécrit par un LLM) dans le `ROADMAP.md` **du
+    projet cible**, committé sur sa propre branche de travail.
+  - Aucun nouveau store/table/selector/coordinator : entièrement composé
+    à partir des primitives existantes (`WorkerSelector.select(...,
+    author_worker_id=...)` pour l'indépendance DEV A/DEV B,
+    `GitGovernanceService.prepare_work_item`/`capture_head`/
+    `ensure_runtime_exclusion`, `_run_qa_cycle`, `WaitCoordinator` avec
+    une nouvelle valeur `WaitPhase.DEV_B_REVIEW`). Les états WorkItem
+    existants (`NEEDS_REWORK`, `BLOCKED`, `WAITING`, `COMPLETED`) sont
+    réutilisés tels quels — `HUMAN_REVIEW_REQUIRED` n'est pas un nouveau
+    statut, c'est `BLOCKED` + un motif texte distinctif.
+  - `GOVERNED_FULL` reste sélectionnable explicitement
+    (`workflow_mode=WorkflowMode.GOVERNED_FULL`) et sa suite de tests
+    existante reste intégralement verte (aucune modification de son
+    propre code) — mais il ne reçoit plus de nouvelle capacité, seules
+    les régressions critiques y seront corrigées.
+  - 10 tests ajoutés (`tests/test_mvp_manager_lean_feature_flow.py`,
+    couvrant le flux nominal, DEV B correctif, les 3 tentatives QA bornées
+    + `HUMAN_REVIEW_REQUIRED`, l'intégrité workspace/SHA avant QA, et le
+    wait/resume DEV B), 1154 tests offline PASS au total (contre 1144
+    avant cette décision).
+  - Acceptance réelle : voir `docs/reports/mars-rover-lean-feature-flow-2026-09-16.html`
+    (comparaison factuelle avec le run5 `GOVERNED_FULL` précédent sur le
+    même kata Mars Rover).
 - **Next : revue de roadmap avec l'utilisateur.** Toutes les Slices 21-24
   du cycle QA sont maintenant `CODE_DONE` — c'est le point de contrôle
   prévu par le principe du projet avant toute nouvelle Slice. Cette

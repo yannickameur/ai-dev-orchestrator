@@ -22,7 +22,7 @@ from orchestrator.complexity_estimation import (
 )
 from orchestrator.execution_store import ExecutionRecord, ExecutionStatus, ExecutionStore
 from orchestrator.handoff import HandoffStore
-from orchestrator.mvp_manager import REVIEW_CAPABILITY, MVPManager
+from orchestrator.mvp_manager import REVIEW_CAPABILITY, MVPManager, WorkflowMode
 from orchestrator.project_state import ProjectStateStore, WorkItemStatus
 from orchestrator.ralph_execution_engine import ExecutionResult, RalphEvent, RalphLaunchError
 from orchestrator.recovery import RECOVERY_NEXT_ACTION, RECOVERY_OPEN_ISSUE
@@ -119,6 +119,7 @@ def _manager(project_store, handoff_store, selector, engine) -> MVPManager:
     return MVPManager(
         project_store, handoff_store, selector, engine,
         clock=lambda: UTC_NOW, id_factory=id_factory,
+        workflow_mode=WorkflowMode.GOVERNED_FULL,
     )
 
 
@@ -421,6 +422,7 @@ class TestQualityGateIntegration:
         manager = MVPManager(
             project_store, handoff_store, selector, engine,
             quality_gate_runner=gate_runner, clock=lambda: UTC_NOW,
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -446,6 +448,7 @@ class TestQualityGateIntegration:
         manager = MVPManager(
             project_store, handoff_store, selector, engine,
             quality_gate_runner=gate_runner, clock=lambda: UTC_NOW,
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -477,6 +480,7 @@ class TestQualityGateIntegration:
         manager = MVPManager(
             project_store, handoff_store, selector, engine,
             quality_gate_runner=gate_runner, clock=lambda: UTC_NOW,
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -511,6 +515,7 @@ class TestQualityGateIntegration:
         manager = MVPManager(
             project_store, handoff_store, selector, engine,
             quality_gate_runner=gate_runner, clock=lambda: UTC_NOW,
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         asyncio.run(manager.run_next_work_item("mvp-1"))  # wi-a: execution ok, gate fails
@@ -538,6 +543,7 @@ class TestQualityGateIntegration:
         manager = MVPManager(
             project_store, handoff_store, selector, engine,
             quality_gate_runner=gate_runner, clock=lambda: UTC_NOW,
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -624,6 +630,7 @@ def _review_manager(
         project_store, handoff_store, selector, engine,
         quality_gate_runner=gate_runner, review_store=review_store, review_policy=review_policy,
         clock=lambda: UTC_NOW, id_factory=id_factory,
+        workflow_mode=WorkflowMode.GOVERNED_FULL,
     )
     return manager, review_store
 
@@ -847,6 +854,7 @@ class TestIndependentReview:
         manager = MVPManager(
             project_store, handoff_store, selector, engine, review_store=review_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
         review_id = result.review_result.review_id
@@ -967,6 +975,7 @@ def _wait_manager(
         project_store, handoff_store, selector, engine,
         review_store=review_store, wait_store=wait_store,
         clock=clock, id_factory=_counting_id_factory(),
+        workflow_mode=WorkflowMode.GOVERNED_FULL,
     )
 
 
@@ -1340,6 +1349,7 @@ class TestExecutionRecoveryDevPhase:
         manager = MVPManager(
             project_store, handoff_store, selector, engine, execution_store=execution_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -1376,6 +1386,7 @@ class TestExecutionRecoveryDevPhase:
         manager = MVPManager(
             project_store, handoff_store, selector, engine, execution_store=execution_store,
             quality_gate_runner=gate_runner, clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -1406,6 +1417,7 @@ class TestExecutionRecoveryDevPhase:
         manager = MVPManager(
             project_store, handoff_store, selector, engine, execution_store=execution_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -1432,6 +1444,7 @@ class TestExecutionRecoveryDevPhase:
         manager = MVPManager(
             project_store, handoff_store, selector, engine, execution_store=execution_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -1487,6 +1500,7 @@ class TestExecutionRecoveryDevPhase:
         manager = MVPManager(
             project_store, handoff_store, selector, engine, execution_store=execution_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -1518,6 +1532,7 @@ class TestExecutionRecoveryDevPhase:
         manager = MVPManager(
             project_store, handoff_store, selector, engine, execution_store=execution_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         with pytest.raises(NoEligibleWorkerError):
@@ -1571,6 +1586,7 @@ class TestExecutionRecoveryReviewPhase:
         manager = MVPManager(
             project_store, handoff_store, selector, engine, review_store=review_store,
             execution_store=execution_store, clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -1614,6 +1630,7 @@ class TestExecutionRecoveryReviewPhase:
         manager = MVPManager(
             project_store, handoff_store, selector, engine, review_store=review_store,
             execution_store=execution_store, clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -1672,6 +1689,7 @@ class TestExecutionRecoveryReviewPhase:
             project_store, handoff_store, selector, engine, review_store=review_store,
             quality_gate_runner=gate_runner, execution_store=execution_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -1726,6 +1744,7 @@ def _adaptive_manager(project_store, handoff_store, engine, adaptive_selector, *
         project_store, handoff_store, dead_selector, engine,
         adaptive_execution_selector=adaptive_selector, wait_store=wait_store,
         clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        workflow_mode=WorkflowMode.GOVERNED_FULL,
     )
 
 
@@ -1781,6 +1800,7 @@ class TestAdaptiveDevelopmentSelection:
             project_store, handoff_store, FakeWorkerSelector(worker=_alice()), engine,
             adaptive_execution_selector=adaptive, review_store=review_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -1835,6 +1855,7 @@ class TestAdaptiveDevelopmentSelection:
             project_store, handoff_store, FakeWorkerSelector(error=AssertionError("plain selector must not be used")),
             engine, adaptive_execution_selector=adaptive, quality_gate_runner=gate_runner, review_store=review_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -1917,6 +1938,7 @@ class TestReviewSelectionIsAdaptive:
             project_store, handoff_store, FakeWorkerSelector(error=AssertionError("plain selector must not be used")),
             engine, adaptive_execution_selector=adaptive, review_store=review_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -1960,6 +1982,7 @@ class TestReviewSelectionIsAdaptive:
             project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
             adaptive_execution_selector=adaptive, review_store=review_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -1994,6 +2017,7 @@ class TestReviewSelectionIsAdaptive:
             project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
             adaptive_execution_selector=adaptive, review_store=review_store, wait_store=wait_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         with pytest.raises(NoCapableProfileError):
@@ -2023,6 +2047,7 @@ class TestReviewSelectionIsAdaptive:
             project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
             adaptive_execution_selector=adaptive, review_store=review_store, wait_store=wait_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -2090,6 +2115,7 @@ class TestAdaptiveWaitResume:
             project_store, handoff_store, FakeWorkerSelector(error=AssertionError("plain selector must not be used")), engine,
             adaptive_execution_selector=adaptive, wait_store=wait_store,
             clock=lambda: clock_box["now"], id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         first = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -2126,6 +2152,7 @@ class TestAdaptiveWaitResume:
             project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
             adaptive_execution_selector=adaptive, wait_store=wait_store,
             clock=lambda: clock_box["now"], id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -2149,6 +2176,7 @@ class TestAdaptiveWaitResume:
             project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
             adaptive_execution_selector=adaptive, wait_store=wait_store,
             clock=lambda: clock_box["now"], id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         first = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -2175,6 +2203,7 @@ class TestAdaptiveWaitResume:
             project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
             adaptive_execution_selector=adaptive, wait_store=wait_store,
             clock=lambda: clock_box["now"], id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -2206,6 +2235,7 @@ class TestAdaptiveRecoveryResume:
             project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
             adaptive_execution_selector=adaptive, execution_store=execution_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -2262,6 +2292,7 @@ class TestAdaptiveRecoveryResume:
             project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
             adaptive_execution_selector=adaptive, execution_store=execution_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         with pytest.raises(NoReliableRecommendationError):
@@ -2311,6 +2342,7 @@ class TestAdaptiveReviewResume:
             project_store, handoff_store, FakeWorkerSelector(error=AssertionError("plain selector must not be used")),
             engine, adaptive_execution_selector=adaptive, wait_store=wait_store, review_store=review_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -2361,6 +2393,7 @@ class TestAdaptiveReviewResume:
             project_store, handoff_store, FakeWorkerSelector(error=AssertionError("plain selector must not be used")),
             engine, adaptive_execution_selector=adaptive, execution_store=execution_store, review_store=review_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -2415,6 +2448,7 @@ class TestAdaptiveReviewResume:
             project_store, handoff_store, FakeWorkerSelector(error=AssertionError("unused")), engine,
             adaptive_execution_selector=adaptive, execution_store=execution_store, review_store=review_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))

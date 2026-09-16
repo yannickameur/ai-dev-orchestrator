@@ -37,7 +37,7 @@ from orchestrator.git_governance import (
 )
 from orchestrator.handoff import HandoffStore
 from orchestrator.internal_qa_engine import QA_TESTING_CAPABILITY, QA_TESTING_ROLE
-from orchestrator.mvp_manager import MVPManager
+from orchestrator.mvp_manager import MVPManager, WorkflowMode
 from orchestrator.project_state import ProjectStateStore, WorkItemStatus
 from orchestrator.providers.adapter import ProviderAdapter
 from orchestrator.providers.contracts import ProviderAvailability, ProviderState
@@ -277,6 +277,7 @@ def _manager(
         qa_engine=qa_engine, qa_policy=qa_policy or _QA_POLICY, qa_run_store=qa_run_store,
         qa_protected_paths=qa_protected_paths,
         clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        workflow_mode=WorkflowMode.GOVERNED_FULL,
     )
 
 
@@ -505,6 +506,7 @@ class TestFinalQAWorkspacePrecondition:
             project_store, handoff_store, _real_worker_selector([]), object(),
             git_governance_service=service, qa_engine=qa_engine, qa_run_store=qa_run_store,
             qa_policy=_QA_POLICY, clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
     def test_clean_workspace_lets_final_qa_run(self, tmp_path: Path) -> None:
@@ -1103,6 +1105,7 @@ class TestQAPromotionBindsDownstreamStagesToH2:
             git_governance_service=git_service,
             qa_engine=qa_engine, qa_policy=_QA_POLICY, qa_run_store=qa_run_store,
             clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))

@@ -29,7 +29,7 @@ from orchestrator.git_governance import (
     work_branch_name,
 )
 from orchestrator.handoff import HandoffStore
-from orchestrator.mvp_manager import MVPManager
+from orchestrator.mvp_manager import MVPManager, WorkflowMode
 from orchestrator.project_state import ProjectStateStore, WorkItemStatus
 from orchestrator.ralph_execution_engine import ExecutionResult
 from orchestrator.review import ReviewPolicy, ReviewStatus, ReviewStore
@@ -187,6 +187,7 @@ def _manager(
         wait_store=wait_store, execution_store=execution_store,
         git_governance_service=git_governance_service,
         clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        workflow_mode=WorkflowMode.GOVERNED_FULL,
     )
 
 
@@ -269,6 +270,7 @@ class TestWaitResumeReusesBranch:
         manager = MVPManager(
             project_store, handoff_store, selector, engine, wait_store=wait_store,
             git_governance_service=service, clock=lambda: clock_box["now"], id_factory=_counting_id_factory(),
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         first = asyncio.run(manager.run_next_work_item("mvp-1"))
@@ -617,6 +619,7 @@ class TestReviewToleratesKnownExecutionHeadDrift:
             FakeWorkerSelector(dev=_alice(), reviewer=_victor()), GitCommittingFakeEngine(),
             git_governance_service=service, execution_store=exec_store,
             clock=lambda: UTC_NOW,
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
 
         # A commit MVPManager never called capture_head for, but which IS
@@ -652,6 +655,7 @@ class TestReviewToleratesKnownExecutionHeadDrift:
             FakeWorkerSelector(dev=_alice(), reviewer=_victor()), GitCommittingFakeEngine(),
             git_governance_service=service, execution_store=exec_store,
             clock=lambda: UTC_NOW,
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
         (repo / ".ralph").mkdir()
         (repo / ".ralph" / "loop-state.json").write_text("{}\n")
@@ -681,6 +685,7 @@ class TestReviewToleratesKnownExecutionHeadDrift:
             FakeWorkerSelector(dev=_alice(), reviewer=_victor()), GitCommittingFakeEngine(),
             git_governance_service=service, execution_store=exec_store,
             clock=lambda: UTC_NOW,
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
         (repo / ".ralph").mkdir()
         (repo / ".ralph" / "loop-state.json").write_text("{}\n")
@@ -701,6 +706,7 @@ class TestReviewToleratesKnownExecutionHeadDrift:
             project_store, handoff_store,
             FakeWorkerSelector(dev=_alice(), reviewer=_victor()), GitCommittingFakeEngine(),
             clock=lambda: UTC_NOW,
+            workflow_mode=WorkflowMode.GOVERNED_FULL,
         )
         with pytest.raises(AssertionError):
             manager._reconcile_governed_head("wi-a", repo)
