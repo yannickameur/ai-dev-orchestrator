@@ -43,10 +43,17 @@ Design invariants:
   orchestrator imposes on a target repository it governs. Every git
   operation here relies on the target repository's own configuration (or
   a future configurable policy), never a literal name/email.
-- No worktree manager: this slice operates on a single governed branch
+- No general-purpose worktree manager: each WorkItem's development/QA-
+  authoring/estimation work still happens on a single governed branch
   inside the workspace ``RalphExecutionEngine`` already uses (Ralph's own
   parallel-loop worktrees, if ever used, are a distinct, unrelated
-  mechanism this module does not touch or duplicate).
+  mechanism this module does not touch or duplicate). The one exception
+  is ``IsolatedReviewWorkspace``: a disposable, detached worktree used
+  *only* to run a review execution outside the governed target workspace
+  entirely — added after a real external-project pilot showed a review
+  execution has the same real file-system access as development, with no
+  git-fact enforcement, and could mutate the shared target workspace
+  before the (already-existing) post-execution check could catch it.
 """
 
 from __future__ import annotations
@@ -54,6 +61,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import subprocess
+import tempfile
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -301,6 +309,95 @@ class LocalGitWorkspace:
                 source_branch, reason=f"git merge --ff-only failed: {result.stderr.strip()}"
             )
         return self.head_sha()
+
+    def worktree_add(self, path: str | Path, sha: str) -> None:
+        """``git worktree add --detach <path> <sha>`` — a disposable,
+        DETACHED checkout of an exact commit, sharing this repository's
+        own object database (no clone, no network) but never sharing a
+        working tree with it. Detached (never a branch) so it can never
+        collide with any branch already checked out elsewhere, including
+        this repository's own governed work branch."""
+        self._require_repository()
+        self._run(["worktree", "add", "--detach", str(path), sha])
+
+    def worktree_remove(self, path: str | Path) -> None:
+        """``git worktree remove --force <path>`` then ``git worktree
+        prune`` — best-effort cleanup; never raises if the worktree is
+        already gone (nothing left to leak either way)."""
+        self._require_repository()
+        self._run(["worktree", "remove", "--force", str(path)], check=False)
+        self._run(["worktree", "prune"], check=False)
+
+
+class IsolatedReviewWorkspace:
+    """A disposable, DETACHED git worktree checked out at the EXACT SHA to
+    review — so a review execution's Ralph process never runs inside the
+    governed target workspace at all (added after a real external-project
+    pilot: even a governance check that catches a mutation after the fact
+    still let it briefly exist in the real, shared target workspace).
+
+    Built entirely on ``LocalGitWorkspace.worktree_add``/``worktree_remove``
+    — no clone, no network, no fetch/pull/push, no checkout of any other
+    governed branch, no rebase, no reset of the real target. The worktree
+    shares the target's own object database (so `git worktree add` is
+    instant and needs no network) but has its own working-tree files,
+    completely separate from the target's checked-out branch.
+
+    Used as a context manager: ``__exit__`` removes the worktree unless
+    ``preserve()`` was called first (a governance violation or any other
+    incident should keep it around for forensics — the caller decides,
+    this class never guesses). This is deliberately the *only* worktree
+    mechanism in this codebase, scoped to review isolation — the module's
+    own "no worktree manager" design note (see module docstring) still
+    holds for the single governed branch each WorkItem otherwise uses.
+    """
+
+    def __init__(
+        self, *, source_repository_path: str | Path, sha: str, review_id: str,
+        git_binary: str = DEFAULT_GIT_BINARY, parent_dir: str | Path | None = None,
+    ) -> None:
+        _require_non_empty_str(sha, field_name="IsolatedReviewWorkspace.sha")
+        _require_non_empty_str(review_id, field_name="IsolatedReviewWorkspace.review_id")
+        self._source = LocalGitWorkspace(source_repository_path, git_binary=git_binary)
+        self._sha = sha
+        self._review_id = review_id
+        self._parent_dir = Path(parent_dir) if parent_dir is not None else Path(tempfile.gettempdir())
+        self._path: Path | None = None
+        self._preserved = False
+
+    @property
+    def path(self) -> Path:
+        if self._path is None:
+            raise RuntimeError("IsolatedReviewWorkspace: not created yet — use as a context manager")
+        return self._path
+
+    def preserve(self) -> None:
+        """Marks this worktree to survive ``__exit__``/``cleanup`` — for a
+        governance violation or any other incident worth inspecting."""
+        self._preserved = True
+
+    def __enter__(self) -> "IsolatedReviewWorkspace":
+        self._parent_dir.mkdir(parents=True, exist_ok=True)
+        # `review_id` alone is not safe as a bare, predictable path
+        # component: it is only unique within one MVPManager's own
+        # id_factory counter, so two unrelated runs (e.g. two offline
+        # tests, or two real pipelines sharing a tmp dir) can compute the
+        # exact same "review-<id>" name. `mkdtemp` guarantees a genuinely
+        # unique, empty directory (`git worktree add` accepts a
+        # pre-existing empty target) while keeping `review_id` visible in
+        # the name for a human inspecting `/tmp` during a real run.
+        self._path = Path(tempfile.mkdtemp(dir=self._parent_dir, prefix=f"review-{self._review_id}-"))
+        self._source.worktree_add(self._path, self._sha)
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.cleanup()
+
+    def cleanup(self) -> None:
+        if self._preserved or self._path is None:
+            return
+        self._source.worktree_remove(self._path)
+        self._path = None
 
 
 # --- policy -------------------------------------------------------------
