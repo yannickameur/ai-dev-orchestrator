@@ -472,6 +472,97 @@ class TestFinalQAFailLoop:
         assert latest_review.git_sha_reviewed == git_store.get("wi-a").current_head_sha
 
 
+# --- external pilot finding (Invariant 3): Final QA Verification must never
+# run a single command against a workspace that doesn't functionally match
+# `head_sha` — the existing read-only guarantee (`verify_repository_unchanged`)
+# only ever proves nothing changed *during* the call, never that it started
+# from the right place. A real review execution (found via
+# scripts/run_external_project_pilot.py against a genuine external repo)
+# left real, uncommitted source/test changes behind; Final QA then silently
+# tested that alien state and reported PASS bound to a SHA it didn't
+# actually reflect. Exercises ``MVPManager._run_final_qa_verification``
+# directly — a meaningful decision point in its own right, same pattern as
+# ``_reconcile_governed_head``'s direct tests elsewhere in this suite.
+
+
+class TestFinalQAWorkspacePrecondition:
+    def _base(self, tmp_path: Path):
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        service, git_store = _git_service(tmp_path)
+        project = project_store.get_project("proj-1")
+        work_item = project_store.get_work_item("wi-a")
+        return project_store, handoff_store, service, project, work_item
+
+    def _manager_for(self, tmp_path: Path, project_store, handoff_store, service, qa_engine) -> MVPManager:
+        qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
+        return MVPManager(
+            project_store, handoff_store, _real_worker_selector([]), object(),
+            git_governance_service=service, qa_engine=qa_engine, qa_run_store=qa_run_store,
+            qa_policy=_QA_POLICY, clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+    def test_clean_workspace_lets_final_qa_run(self, tmp_path: Path) -> None:
+        project_store, handoff_store, service, project, work_item = self._base(tmp_path)
+        head = _run_git(project.workspace, "rev-parse", "HEAD").stdout.strip()
+        qa_engine = ScriptedQAEngine([_qa_result(head_sha=head)])
+        manager = self._manager_for(tmp_path, project_store, handoff_store, service, qa_engine)
+
+        updated, next_action, qa_passed = asyncio.run(manager._run_final_qa_verification(
+            project=project, mvp_id="mvp-1", work_item=work_item, base_sha=head, head_sha=head,
+        ))
+
+        assert qa_passed is True
+        assert len(qa_engine.requests) == 1
+
+    def test_uncommitted_tracked_source_change_blocks_before_pytest(self, tmp_path: Path) -> None:
+        project_store, handoff_store, service, project, work_item = self._base(tmp_path)
+        head = _run_git(project.workspace, "rev-parse", "HEAD").stdout.strip()
+        (project.workspace / "README.md").write_text("uncommitted, tracked change\n")
+        qa_engine = ScriptedQAEngine([])  # must never be invoked
+        manager = self._manager_for(tmp_path, project_store, handoff_store, service, qa_engine)
+
+        updated, next_action, qa_passed = asyncio.run(manager._run_final_qa_verification(
+            project=project, mvp_id="mvp-1", work_item=work_item, base_sha=head, head_sha=head,
+        ))
+
+        assert qa_passed is False
+        assert updated.status is WorkItemStatus.BLOCKED
+        assert qa_engine.requests == []
+
+    def test_uncommitted_untracked_test_file_blocks_before_pytest(self, tmp_path: Path) -> None:
+        project_store, handoff_store, service, project, work_item = self._base(tmp_path)
+        head = _run_git(project.workspace, "rev-parse", "HEAD").stdout.strip()
+        (project.workspace / "tests").mkdir()
+        (project.workspace / "tests" / "test_new.py").write_text("def test_x():\n    assert True\n")
+        qa_engine = ScriptedQAEngine([])  # must never be invoked
+        manager = self._manager_for(tmp_path, project_store, handoff_store, service, qa_engine)
+
+        updated, next_action, qa_passed = asyncio.run(manager._run_final_qa_verification(
+            project=project, mvp_id="mvp-1", work_item=work_item, base_sha=head, head_sha=head,
+        ))
+
+        assert qa_passed is False
+        assert updated.status is WorkItemStatus.BLOCKED
+        assert qa_engine.requests == []
+
+    def test_ralph_noise_only_still_lets_final_qa_run(self, tmp_path: Path) -> None:
+        project_store, handoff_store, service, project, work_item = self._base(tmp_path)
+        head = _run_git(project.workspace, "rev-parse", "HEAD").stdout.strip()
+        (project.workspace / ".ralph").mkdir()
+        (project.workspace / ".ralph" / "loop-state.json").write_text("{}")
+        qa_engine = ScriptedQAEngine([_qa_result(head_sha=head)])
+        manager = self._manager_for(tmp_path, project_store, handoff_store, service, qa_engine)
+
+        updated, next_action, qa_passed = asyncio.run(manager._run_final_qa_verification(
+            project=project, mvp_id="mvp-1", work_item=work_item, base_sha=head, head_sha=head,
+        ))
+
+        assert qa_passed is True
+        assert len(qa_engine.requests) == 1
+
+
 # --- SHA binding / merge eligibility -----------------------------------------
 
 

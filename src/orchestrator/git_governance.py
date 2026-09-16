@@ -1198,13 +1198,29 @@ class GitGovernanceService:
         # change behind (e.g. its own session-handoff scratch file,
         # rewritten after its own auto-commit) that would otherwise block
         # `switch` below with "local changes would be overwritten" (Slice
-        # 24 fix, found via real-provider self-dogfood acceptance) — only
-        # ever discarded when every dirty tracked file is noise; a single
-        # real uncommitted change still fails the switch below untouched.
+        # 24 fix, found via real-provider self-dogfood acceptance). A
+        # second real-provider pilot (external project) then found a more
+        # serious case of the same class: a REVIEW execution — with real
+        # shell/file access, never verified read-only anywhere — wrote
+        # actual functional (non-noise) changes to tracked *and*
+        # untracked files without committing them, only surfacing here.
+        # This checks both tracked and untracked dirt explicitly: if
+        # every dirty/untracked path is noise, it is discarded (tracked)
+        # or left alone (untracked noise, e.g. a fresh `.ralph/` event
+        # log — harmless, never collides with `base_branch`'s own
+        # tracked files so `switch` is unaffected by it); a single
+        # non-noise file anywhere — tracked or untracked — fails closed
+        # with ``DirtyWorkingTreeError`` before any branch mutation is
+        # attempted, never a broad `reset --hard`/`checkout .`/`clean -fd`
+        # to make it disappear.
         if noise_path_prefixes:
-            dirty = ws.working_tree_status().tracked_dirty
-            if dirty and all(f.startswith(noise_path_prefixes) for f in dirty):
-                ws.discard_tracked_changes(dirty)
+            status = ws.working_tree_status()
+            all_dirty = (*status.tracked_dirty, *status.untracked)
+            non_noise = [f for f in all_dirty if not f.startswith(noise_path_prefixes)]
+            if non_noise:
+                raise DirtyWorkingTreeError(non_noise)
+            if status.tracked_dirty:
+                ws.discard_tracked_changes(status.tracked_dirty)
 
         ws.switch(record.base_branch)
         try:
