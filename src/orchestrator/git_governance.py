@@ -74,6 +74,20 @@ IdFactory = Callable[[], str]
 
 DEFAULT_GIT_BINARY = "git"
 DEFAULT_BASE_BRANCH = "main"
+
+#: The single canonical source of truth for "Ralph's own runtime
+#: bookkeeping, never product content" in this codebase (found via a real
+#: external-project pilot: these files were becoming TRACKED in a
+#: governed product repository's own history). ``MVPManager`` references
+#: this exact tuple (never redefines it) wherever it needs the same
+#: concept for content-based noise tolerance
+#: (``_same_up_to_noise``/``reconcile``/``compute_merge_eligibility``/
+#: ``merge``). Distinct from ``internal_qa_engine._RUNTIME_NOISE_SEGMENTS``
+#: (a broader, segment-based match used only for QA-authoring's own
+#: unauthorized-file diff check, which also tolerates generic Python
+#: noise like ``__pycache__`` — a different, compatible purpose, not
+#: duplicated here).
+RALPH_RUNTIME_NOISE_PREFIXES: tuple[str, ...] = (".ralph/",)
 _WORK_BRANCH_PREFIX = "work/"
 
 
@@ -327,6 +341,27 @@ class LocalGitWorkspace:
         self._require_repository()
         self._run(["worktree", "remove", "--force", str(path)], check=False)
         self._run(["worktree", "prune"], check=False)
+
+    def git_common_dir(self) -> Path:
+        """``git rev-parse --git-common-dir`` — the ONE directory shared by
+        this repository and every linked worktree of it (unlike the
+        per-worktree ``.git`` file/dir). Installing something under here
+        (e.g. ``info/exclude``) applies to the repository AND every
+        ``IsolatedReviewWorkspace`` worktree created from it, with no
+        extra wiring needed. Resolved to an absolute path regardless of
+        whether git reports it relative to this repository's own path."""
+        self._require_repository()
+        result = self._run(["rev-parse", "--git-common-dir"])
+        raw = Path(result.stdout.strip())
+        return raw if raw.is_absolute() else (self._repository_path / raw).resolve()
+
+    def tracked_files_under(self, prefix: str) -> tuple[str, ...]:
+        """``git ls-files -- <prefix>`` — real, already-committed-or-staged
+        tracked files under a path prefix. Never guesses from a
+        ``.gitignore``/exclude file's own content."""
+        self._require_repository()
+        result = self._run(["ls-files", "--", prefix])
+        return tuple(line for line in result.stdout.splitlines() if line)
 
 
 class IsolatedReviewWorkspace:
@@ -582,6 +617,23 @@ class DirtyWorkingTreeError(GitGovernanceError):
     def __init__(self, dirty_files: Sequence[str]) -> None:
         super().__init__(f"working tree has modified tracked files: {list(dirty_files)!r}")
         self.dirty_files = tuple(dirty_files)
+
+
+class TrackedRuntimeArtifactError(GitGovernanceError):
+    """Raised when a Ralph runtime artifact (e.g. under ``.ralph/``) is
+    already TRACKED in the target repository before
+    ``ensure_runtime_exclusion`` ever gets a chance to keep it out — never
+    silently fixed with ``git rm``/``git rm --cached``/``reset``/``clean``.
+    Whether that file is genuinely meant to be versioned (however
+    unlikely for a Ralph runtime path) is a decision for whoever owns
+    that repository, never this module guessing on their behalf."""
+
+    def __init__(self, tracked_paths: Sequence[str]) -> None:
+        super().__init__(
+            "runtime artifact(s) already tracked; explicit migration required: "
+            f"{list(tracked_paths)!r}"
+        )
+        self.tracked_paths = tuple(tracked_paths)
 
 
 class ProtectedBranchError(GitGovernanceError):
@@ -1027,6 +1079,68 @@ class GitGovernanceService:
 
     def _workspace(self, repository_path: str | Path) -> LocalGitWorkspace:
         return LocalGitWorkspace(repository_path, git_binary=self._git_binary)
+
+    # --- runtime/product git history boundary -------------------------
+
+    def ensure_runtime_exclusion(
+        self, repository_path: str | Path, *, noise_path_prefixes: tuple[str, ...] = RALPH_RUNTIME_NOISE_PREFIXES,
+    ) -> None:
+        """Installs a LOCAL, never-committed git exclusion
+        (``$GIT_COMMON_DIR/info/exclude``) for Ralph's own runtime
+        bookkeeping (default: ``.ralph/``) in a governed external
+        repository — so ``git add -A`` (used internally by Ralph's own
+        auto-commit mechanism) can never stage it in the first place.
+        Found via a real external-project pilot: once such a file becomes
+        tracked (e.g. absorbed into a WorkItem's very first, pre-branch
+        commit), it can propagate into every subsequent commit, into a
+        real merge, and eventually into ``main`` itself — this closes
+        that gap at the source instead of tolerating it after the fact.
+
+        ``prepare_work_item``'s own ``require_clean_worktree`` check is
+        deliberately NEVER weakened by this — a working tree that is
+        *actually* dirty (tracked, non-excluded changes) must still fail
+        closed exactly as before. This method only ever prevents new
+        runtime noise from becoming trackable in the first place.
+
+        FAIL CLOSED, never auto-migrated: if a path matching
+        ``noise_path_prefixes`` is already tracked (``git ls-files``),
+        raises ``TrackedRuntimeArtifactError`` and installs nothing —
+        never ``git rm``/``git rm --cached``/``reset``/``clean``, since
+        that file might have been deliberately, explicitly committed by
+        whoever owns this repository; only they can decide.
+
+        Idempotent: only ever APPENDS patterns that are not already
+        present as an exact line anywhere in the exclude file — never
+        reorders, deduplicates, or touches any other line (including a
+        repository owner's own pre-existing local exclusions, and git's
+        own default template comments in a freshly-initialized repo).
+        Applies to every ``IsolatedReviewWorkspace`` worktree of this same
+        repository too, with no extra wiring: ``info/exclude`` lives under
+        the repository's shared common dir, not any single worktree.
+        """
+        ws = self._workspace(repository_path)
+        ws._require_repository()  # noqa: SLF001 - same module, deliberate reuse
+
+        already_tracked: list[str] = []
+        for prefix in noise_path_prefixes:
+            already_tracked.extend(ws.tracked_files_under(prefix))
+        if already_tracked:
+            raise TrackedRuntimeArtifactError(already_tracked)
+
+        exclude_path = ws.git_common_dir() / "info" / "exclude"
+        exclude_path.parent.mkdir(parents=True, exist_ok=True)
+        existing_text = exclude_path.read_text() if exclude_path.exists() else ""
+        existing_lines = set(existing_text.splitlines())
+
+        missing = [prefix for prefix in noise_path_prefixes if prefix not in existing_lines]
+        if not missing:
+            return  # already fully installed — nothing to append
+
+        addition = "\n".join(
+            ["", "# ai-dev-orchestrator: Ralph runtime artifacts (local only, never product content)", *missing, ""]
+        )
+        with exclude_path.open("a") as fh:
+            fh.write(addition)
 
     # --- preparation -----------------------------------------------------
 

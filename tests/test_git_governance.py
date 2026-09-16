@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from orchestrator.git_governance import (
+    RALPH_RUNTIME_NOISE_PREFIXES,
     DirtyWorkingTreeError,
     DuplicateGitWorkItemError,
     GitBranchMissingError,
@@ -37,6 +38,7 @@ from orchestrator.git_governance import (
     NotAGitRepositoryError,
     NotMergeableError,
     ProtectedBranchError,
+    TrackedRuntimeArtifactError,
     UnknownGitWorkItemError,
     sanitize_branch_component,
     work_branch_name,
@@ -341,6 +343,124 @@ class TestPreparation:
         plain.mkdir()
         with pytest.raises(NotAGitRepositoryError):
             service.prepare_work_item(project_id="p", mvp_id="m", work_item_id="wi-1", repository_path=plain)
+
+
+# --- runtime/product git history boundary -----------------------------------
+
+
+class TestEnsureRuntimeExclusion:
+    """``GitGovernanceService.ensure_runtime_exclusion`` — found via a real
+    external-project pilot (mars-rover run3): Ralph's own runtime
+    bookkeeping (``.ralph/*``) became TRACKED content in a governed
+    repository's real history, which later crashed
+    ``prepare_work_item``'s (correctly strict, never weakened here) clean-
+    worktree check for a SECOND WorkItem. These tests exercise the fix at
+    the ``LocalGitWorkspace``/``.git/info/exclude`` level directly, never
+    by relaxing ``prepare_work_item`` itself (see ``TestPreparation``,
+    unchanged).
+    """
+
+    # A: installs cleanly when nothing is tracked yet.
+    def test_installs_exclusion_in_a_clean_external_repo(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        service = GitGovernanceService(store, clock=lambda: UTC_NOW)
+        repo = _init_repo(tmp_path)
+
+        service.ensure_runtime_exclusion(repo)
+
+        exclude_text = (repo / ".git" / "info" / "exclude").read_text()
+        for prefix in RALPH_RUNTIME_NOISE_PREFIXES:
+            assert prefix in exclude_text.splitlines()
+
+    # B: repeated installs never duplicate a line.
+    def test_repeated_install_is_idempotent_no_duplication(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        service = GitGovernanceService(store, clock=lambda: UTC_NOW)
+        repo = _init_repo(tmp_path)
+
+        service.ensure_runtime_exclusion(repo)
+        service.ensure_runtime_exclusion(repo)
+        service.ensure_runtime_exclusion(repo)
+
+        exclude_lines = (repo / ".git" / "info" / "exclude").read_text().splitlines()
+        for prefix in RALPH_RUNTIME_NOISE_PREFIXES:
+            assert exclude_lines.count(prefix) == 1
+
+    # C: a repository owner's own pre-existing exclusions/comments survive untouched.
+    def test_preserves_pre_existing_user_exclusions(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        service = GitGovernanceService(store, clock=lambda: UTC_NOW)
+        repo = _init_repo(tmp_path)
+        exclude_path = repo / ".git" / "info" / "exclude"
+        original = exclude_path.read_text()  # git's own default template comments
+        exclude_path.write_text(original + "\n*.mytool.local\n")
+
+        service.ensure_runtime_exclusion(repo)
+
+        final_text = exclude_path.read_text()
+        assert "*.mytool.local" in final_text.splitlines()
+        assert final_text.startswith(original)  # nothing reordered ahead of it
+
+    # D: an untracked Ralph artifact is never staged by `git add -A` once installed.
+    def test_untracked_ralph_artifact_not_staged_by_add_dash_a(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        service = GitGovernanceService(store, clock=lambda: UTC_NOW)
+        repo = _init_repo(tmp_path)
+        service.ensure_runtime_exclusion(repo)
+
+        ralph_dir = repo / ".ralph" / "agent"
+        ralph_dir.mkdir(parents=True)
+        (ralph_dir / "handoff.md").write_text("session notes\n")
+
+        _run_git(repo, "add", "-A")
+        staged = _run_git(repo, "diff", "--cached", "--name-only").stdout.splitlines()
+        assert staged == []
+
+    # E: a real product file is still staged normally alongside the exclusion.
+    def test_real_product_file_still_staged_normally(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        service = GitGovernanceService(store, clock=lambda: UTC_NOW)
+        repo = _init_repo(tmp_path)
+        service.ensure_runtime_exclusion(repo)
+
+        (repo / "rover.py").write_text("class Rover: ...\n")
+
+        _run_git(repo, "add", "-A")
+        staged = _run_git(repo, "diff", "--cached", "--name-only").stdout.splitlines()
+        assert staged == ["rover.py"]
+
+    # F: an already-tracked runtime artifact fails closed, with no automatic remediation.
+    def test_already_tracked_runtime_artifact_fails_closed(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        service = GitGovernanceService(store, clock=lambda: UTC_NOW)
+        repo = _init_repo(tmp_path)
+        (repo / ".ralph" / "agent").mkdir(parents=True)
+        _commit_file(repo, ".ralph/agent/handoff.md", "already committed\n", "chore: auto-commit before merge")
+
+        with pytest.raises(TrackedRuntimeArtifactError) as excinfo:
+            service.ensure_runtime_exclusion(repo)
+        assert ".ralph/agent/handoff.md" in excinfo.value.tracked_paths
+
+        # Fails CLOSED: no exclude file installed, and the tracked file is untouched
+        # (never `git rm`/`git rm --cached`/reset/clean).
+        exclude_path = repo / ".git" / "info" / "exclude"
+        if exclude_path.exists():
+            assert RALPH_RUNTIME_NOISE_PREFIXES[0] not in exclude_path.read_text().splitlines()
+        assert ".ralph/agent/handoff.md" in _run_git(repo, "ls-files").stdout.splitlines()
+
+    # G: no broad reset/clean is ever invoked by this mechanism.
+    def test_never_invokes_a_broad_reset_or_clean(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        service = GitGovernanceService(store, clock=lambda: UTC_NOW)
+        repo = _init_repo(tmp_path)
+        (repo / "untouched.txt").write_text("must survive\n")
+
+        service.ensure_runtime_exclusion(repo)
+
+        # An unrelated untracked file is completely unaffected by installing the exclusion.
+        assert (repo / "untouched.txt").read_text() == "must survive\n"
+        status = _run_git(repo, "status", "--porcelain").stdout
+        assert "untouched.txt" in status
 
 
 # --- head capture / review target -------------------------------------------

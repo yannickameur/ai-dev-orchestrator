@@ -906,3 +906,140 @@ class TestQAAuthoringRecovery:
         # authoring onward and completed the WorkItem.
         assert execution_store.get("exec-qa").status.value == "recovery_required"
         assert result.work_item.status is WorkItemStatus.COMPLETED
+
+
+# --- external pilot finding: Ralph runtime artifacts must never enter the
+# governed product's own git history (mars-rover run3). Real evidence: a
+# real Ralph execution — including a supposedly read-only complexity-
+# estimation execution, which runs on ``main`` itself *before*
+# ``prepare_work_item`` ever creates a WorkItem's own branch — performs a
+# real ``git add -A`` + ``chore: auto-commit before merge (loop primary)``
+# commit of its OWN runtime bookkeeping (``.ralph/*``). WI-1's own
+# estimation commits landed on ``main``; WI-1's real merge then carried
+# those tracked ``.ralph/*`` files into ``main``'s own history; WI-2's own
+# estimation then modified an already-TRACKED ``.ralph/agent/handoff.md``,
+# which correctly (and deliberately, never weakened) tripped
+# ``prepare_work_item``'s ``require_clean_worktree`` check — crashing
+# ``run_next_work_item`` outright, since nothing ever caught it.
+#
+# The fix (``GitGovernanceService.ensure_runtime_exclusion``, installed at
+# every pre-flight-estimation call site in ``MVPManager``) prevents the
+# contamination upstream: ``.ralph/*`` never becomes trackable in the
+# first place, so it can never survive a real merge onto ``main``, and a
+# second WorkItem's own estimation noise on ``main`` can never dirty a
+# tracked file. This test reproduces run3's exact end-to-end scenario with
+# fakes only (no real provider), asserting the crash can no longer happen.
+
+
+class RalphNoiseInjectingRecommendationService:
+    """Real evidence, reproduced deterministically: every real Ralph
+    execution role observed in the external pilot (including read-only
+    ones) performed a real, uncoached ``git add -A`` + commit of its own
+    ``.ralph/*`` runtime bookkeeping as a side effect — regardless of
+    which WorkItem or phase triggered it. This fake reproduces exactly
+    that side effect inside ``estimate()`` (the one call
+    ``AdaptiveExecutionSelector.select()`` always makes, for every dev/
+    review/QA-authoring pre-flight), then returns the same canned,
+    always-SIMPLE recommendation ``_FakeRecommendationService`` does.
+
+    If ``ensure_runtime_exclusion`` was never installed (or was installed
+    too late / incorrectly scoped), this ``git add -A`` would stage
+    ``.ralph/*`` and the following commit would make it TRACKED — exactly
+    reproducing run3's contamination. If the fix works, ``git add -A``
+    stages nothing here (nothing else changed), so no commit happens at
+    all.
+    """
+
+    async def estimate(self, request: ComplexityEstimationRequest, *, force_refresh: bool = False):
+        workspace = Path(request.workspace)
+        ralph_dir = workspace / ".ralph" / "agent"
+        ralph_dir.mkdir(parents=True, exist_ok=True)
+        (ralph_dir / "handoff.md").write_text(f"noise for {request.work_item_id}/{request.role}\n")
+        _run_git(workspace, "add", "-A")
+        staged = _run_git(workspace, "diff", "--cached", "--name-only").stdout.strip()
+        if staged:
+            _run_git(workspace, "commit", "-m", "chore: auto-commit before merge (loop primary)")
+        return ExecutionRecommendation(
+            recommendation_id=f"rec-{request.role}-{request.work_item_id}", project_id=request.project_id,
+            role=request.role, estimator_worker_id="alice", estimator_execution_id="exec-est",
+            estimator_profile_id="economy",
+            task_fingerprint=f"fp-{request.role}-{request.work_item_id}-{request.git_sha}",
+            minimum_quality_tier=QualityTier.SIMPLE, reasons=("small change",), created_at=UTC_NOW,
+        )
+
+
+def _noise_injecting_adaptive_selector(tmp_path: Path, workers: list[Worker], suffix: str = "") -> AdaptiveExecutionSelector:
+    store = AdaptiveExecutionDecisionStore(tmp_path / f"decisions{suffix}.sqlite3", clock=lambda: UTC_NOW)
+    return AdaptiveExecutionSelector(
+        store, RalphNoiseInjectingRecommendationService(), _real_worker_selector(workers),
+        clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+    )
+
+
+class TestRuntimeArtifactsNeverEnterProductHistory:
+    def test_wi1_merge_then_wi2_estimation_never_contaminates_main(self, tmp_path: Path) -> None:
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-1", mvp_id="mvp-1", title="Movement")
+        project_store.create_work_item(work_item_id="wi-2", mvp_id="mvp-1", title="Obstacles", dependencies=("wi-1",))
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+        selector = _noise_injecting_adaptive_selector(tmp_path, [alice, victor])
+        # WI-2's QA authoring does not add a *second* test file: the fake
+        # engine's test file name/content is fixed, and it already made it
+        # into `main` via WI-1's merge — nothing to add a second time.
+        engine = GitCommittingFakeEngine(qa_authoring_adds_test=[True, False])
+        git_service, git_store = _git_service(
+            tmp_path, policy=GitGovernancePolicy(auto_merge=True, require_required_gates=False),
+        )
+        review_store = ReviewStore(tmp_path / "review.sqlite3", clock=lambda: UTC_NOW)
+        qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
+
+        class DynamicQAEngine:
+            engine_id = "fake-qa"
+
+            def __init__(self) -> None:
+                self.requests: list[QARequest] = []
+
+            def run(self, request: QARequest) -> QAResult:
+                self.requests.append(request)
+                return _qa_result(head_sha=request.head_sha)
+
+        qa_engine = DynamicQAEngine()
+        manager = _manager(
+            project_store, handoff_store, selector, [alice, victor], engine,
+            git_governance_service=git_service, review_store=review_store,
+            qa_engine=qa_engine, qa_run_store=qa_run_store,
+        )
+
+        # Pre-flight (run4-style check, before anything runs): nothing
+        # tracked yet, workspace clean.
+        assert _run_git(repo, "ls-files", "--", ".ralph").stdout == ""
+        assert _run_git(repo, "status", "--porcelain").stdout == ""
+
+        wi1_result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert wi1_result.work_item.status is WorkItemStatus.COMPLETED
+        wi1_record = git_store.get("wi-1")
+        assert wi1_record.status is GitWorkItemStatus.MERGED
+
+        # --- the exact run3 checkpoint: immediately after WI-1's merge,
+        # BEFORE WI-2's own estimation ever runs ---
+        assert _run_git(repo, "status", "--porcelain").stdout == ""
+        assert _run_git(repo, "ls-files", "--", ".ralph").stdout == ""
+        assert LocalGitWorkspace(repo).head_sha("main") == wi1_record.merged_sha
+
+        # WI-2's own dev-complexity-estimation now runs on `main` itself
+        # (before `work/wi-2` exists) — exactly the step that, pre-fix,
+        # dirtied an already-tracked `.ralph/agent/handoff.md` and crashed
+        # `prepare_work_item`. This call must complete normally.
+        wi2_result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert wi2_result.work_item.status is WorkItemStatus.COMPLETED
+        wi2_record = git_store.get("wi-2")
+        assert wi2_record.status is GitWorkItemStatus.MERGED
+
+        # `.ralph/*` never became trackable at any point across both
+        # WorkItems and a real merge of each.
+        assert _run_git(repo, "ls-files", "--", ".ralph").stdout == ""
+        assert _run_git(repo, "status", "--porcelain").stdout == ""
+        assert LocalGitWorkspace(repo).head_sha("main") == wi2_record.merged_sha

@@ -212,7 +212,12 @@ from typing import Callable
 from orchestrator.adaptive_execution import AdaptiveExecutionSelector
 from orchestrator.complexity_estimation import ComplexityEstimationRequest
 from orchestrator.execution_store import ExecutionStatus, ExecutionStore, UnknownExecutionError
-from orchestrator.git_governance import GitGovernanceService, GitWorkItemRecord, IsolatedReviewWorkspace
+from orchestrator.git_governance import (
+    RALPH_RUNTIME_NOISE_PREFIXES,
+    GitGovernanceService,
+    GitWorkItemRecord,
+    IsolatedReviewWorkspace,
+)
 from orchestrator.handoff import HandoffRecord, HandoffStore
 from orchestrator.internal_qa_engine import (
     AuthoringViolationError,
@@ -595,6 +600,8 @@ class MVPManager:
         """
         if self._adaptive_execution_selector is not None:
             project = self._project_state_store.get_project(mvp.project_id)
+            if self._git_governance_service is not None:
+                self._git_governance_service.ensure_runtime_exclusion(project.workspace)
             estimation_request = self._build_estimation_request(
                 project=project, mvp_id=mvp.mvp_id, work_item=work_item, is_rework=is_rework,
             )
@@ -636,6 +643,8 @@ class MVPManager:
         default, exactly as pre-Slice-19).
         """
         if self._adaptive_execution_selector is not None:
+            if self._git_governance_service is not None:
+                self._git_governance_service.ensure_runtime_exclusion(project.workspace)
             estimation_request = self._build_review_estimation_request(
                 project=project, mvp_id=mvp_id, work_item=work_item,
                 git_sha=git_sha, previous_findings=previous_findings,
@@ -878,6 +887,8 @@ class MVPManager:
             )
 
         if self._qa_test_author is not None:
+            if self._git_governance_service is not None:
+                self._git_governance_service.ensure_runtime_exclusion(project.workspace)
             estimation_request = self._build_qa_estimation_request(
                 project=project, mvp_id=mvp_id, work_item=work_item, base_sha=base_sha, head_sha=head_sha,
             )
@@ -1665,7 +1676,13 @@ class MVPManager:
     #: pure internal bookkeeping — never authored content. Matches the
     #: same convention already used for QA-authoring's own unauthorized-
     #: file detection (``internal_qa_engine._RUNTIME_NOISE_SEGMENTS``).
-    _RALPH_HOUSEKEEPING_PREFIX = (".ralph/",)
+    #: References ``git_governance.RALPH_RUNTIME_NOISE_PREFIXES`` directly
+    #: (found via a real external-project pilot: keeping this as its own,
+    #: separately-declared tuple risked a second, silently-divergent
+    #: taxonomy of "what counts as Ralph runtime noise" from the one
+    #: ``ensure_runtime_exclusion`` actually installs in the target's own
+    #: local git exclude).
+    _RALPH_HOUSEKEEPING_PREFIX = RALPH_RUNTIME_NOISE_PREFIXES
 
     def _reconcile_governed_head(self, work_item_id: str, workspace: str | Path) -> GitWorkItemRecord:
         """Re-verifies the governed branch is exactly where MVPManager
