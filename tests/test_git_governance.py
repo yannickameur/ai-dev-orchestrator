@@ -21,6 +21,7 @@ from orchestrator.git_governance import (
     DirtyWorkingTreeError,
     DuplicateGitWorkItemError,
     GitBranchMissingError,
+    GitCommandError,
     GitGovernanceError,
     GitGovernancePolicy,
     GitGovernanceService,
@@ -492,6 +493,50 @@ class TestMergeEligibility:
         r2 = service.compute_merge_eligibility("wi-1", repository_path=repo, **kwargs)
         assert r1.mergeable == r2.mergeable == True  # noqa: E712
 
+    def test_evidence_still_covers_head_after_noise_only_commits(self, tmp_path: Path) -> None:
+        """Slice 24 fix: gate/review evidence was captured for ``head``,
+        then Ralph's own housekeeping (e.g. during a review execution this
+        module never expected to touch git) advanced the real branch tip
+        further — the evidence still counts, since content-wise nothing
+        relevant changed. ``current_head_sha`` itself DOES advance to the
+        real tip (``capture_head``/``reconcile`` always reflect reality);
+        only the SHA-binding comparison here is noise-tolerant."""
+        service, repo, head = _prepared(tmp_path)
+        LocalGitWorkspace(repo).switch(work_branch_name("wi-1"))
+        (repo / ".ralph").mkdir()
+        new_head = _commit_file(repo, ".ralph/loop-state.json", "{}", "chore: auto-commit before merge (loop primary)")
+        service.capture_head("wi-1", repository_path=repo)
+
+        result = service.compute_merge_eligibility(
+            "wi-1", repository_path=repo, work_item_status="completed",
+            gate_passed=True, gate_git_sha=head, review_approved=True, review_git_sha=head,
+            noise_path_prefixes=(".ralph/",),
+        )
+
+        assert result.mergeable is True
+        assert result.head_sha == new_head  # current_head_sha genuinely advanced
+
+    def test_a_real_change_still_invalidates_evidence_even_with_noise_tolerance(self, tmp_path: Path) -> None:
+        """Noise tolerance never widens what counts as a real change: one
+        actual file alongside noise in the same range still invalidates
+        stale evidence."""
+        service, repo, head = _prepared(tmp_path)
+        LocalGitWorkspace(repo).switch(work_branch_name("wi-1"))
+        (repo / ".ralph").mkdir()
+        (repo / ".ralph" / "loop-state.json").write_text("{}")
+        (repo / "b.txt").write_text("a real rework commit")
+        subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "rework"], cwd=str(repo), check=True, capture_output=True)
+        service.capture_head("wi-1", repository_path=repo)
+
+        result = service.compute_merge_eligibility(
+            "wi-1", repository_path=repo, work_item_status="completed",
+            gate_passed=True, gate_git_sha=head, review_approved=True, review_git_sha=head,
+            noise_path_prefixes=(".ralph/",),
+        )
+
+        assert result.mergeable is False
+
     def test_module_source_never_imports_an_llm_or_worker_selector(self) -> None:
         from orchestrator import git_governance as module
 
@@ -665,6 +710,91 @@ class TestMergeHeadDriftHardening:
         assert record.merged_sha == h3
         assert LocalGitWorkspace(repo).head_sha("main") == h3
 
+    def test_noise_only_advance_after_eligibility_still_merges(self, tmp_path: Path) -> None:
+        """Slice 24 fix, found via real-provider self-dogfood acceptance:
+        the review execution itself made its own Ralph housekeeping
+        commit AFTER eligibility was computed for H2 but BEFORE this
+        call — a real merge must still succeed (H2's own content, plus
+        inert noise, actually lands), never a permanent TOCTOU deadlock."""
+        service, repo, h2 = _prepared(tmp_path)
+        eligibility_for_h2 = service.compute_merge_eligibility(
+            "wi-1", repository_path=repo, work_item_status="completed",
+            gate_passed=True, gate_git_sha=h2, review_approved=True, review_git_sha=h2,
+        )
+        assert eligibility_for_h2.mergeable is True
+
+        LocalGitWorkspace(repo).switch(work_branch_name("wi-1"))
+        (repo / ".ralph").mkdir()
+        noisy_tip = _commit_file(repo, ".ralph/loop-state.json", "{}", "chore: auto-commit before merge (loop primary)")
+
+        record = service.merge(
+            "wi-1", repository_path=repo, eligibility=eligibility_for_h2, noise_path_prefixes=(".ralph/",),
+        )
+
+        assert record.status is GitWorkItemStatus.MERGED
+        assert record.merged_sha == noisy_tip
+        assert LocalGitWorkspace(repo).head_sha("main") == noisy_tip
+
+    def test_a_real_stray_commit_still_fails_closed_even_with_noise_tolerance(self, tmp_path: Path) -> None:
+        service, repo, h2 = _prepared(tmp_path)
+        eligibility_for_h2 = service.compute_merge_eligibility(
+            "wi-1", repository_path=repo, work_item_status="completed",
+            gate_passed=True, gate_git_sha=h2, review_approved=True, review_git_sha=h2,
+        )
+        main_before = LocalGitWorkspace(repo).head_sha("main")
+
+        LocalGitWorkspace(repo).switch(work_branch_name("wi-1"))
+        (repo / ".ralph").mkdir()
+        (repo / ".ralph" / "loop-state.json").write_text("{}")
+        (repo / "c.txt").write_text("unreviewed stray change")
+        subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "mixed commit"], cwd=str(repo), check=True, capture_output=True)
+
+        with pytest.raises(GitHeadDriftError):
+            service.merge(
+                "wi-1", repository_path=repo, eligibility=eligibility_for_h2, noise_path_prefixes=(".ralph/",),
+            )
+        assert LocalGitWorkspace(repo).head_sha("main") == main_before
+
+    def test_dirty_noise_only_working_tree_still_merges(self, tmp_path: Path) -> None:
+        """Slice 24 fix, found via real-provider self-dogfood acceptance:
+        Ralph can leave an UNcommitted, working-tree-only noise change
+        behind (e.g. its own session-handoff scratch file, rewritten after
+        its own auto-commit) — this must not permanently block `switch`
+        with a "local changes would be overwritten" git error."""
+        service, repo, h2 = _prepared(tmp_path)
+        eligibility = service.compute_merge_eligibility(
+            "wi-1", repository_path=repo, work_item_status="completed",
+            gate_passed=True, gate_git_sha=h2, review_approved=True, review_git_sha=h2,
+        )
+        (repo / ".ralph").mkdir()
+        (repo / ".ralph" / "handoff.md").write_text("v1")
+        subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "commit the file so it's tracked"], cwd=str(repo), check=True, capture_output=True)
+        # Now dirty it WITHOUT committing — exactly Ralph's own pattern.
+        (repo / ".ralph" / "handoff.md").write_text("v2, never committed")
+
+        record = service.merge(
+            "wi-1", repository_path=repo, eligibility=eligibility, noise_path_prefixes=(".ralph/",),
+        )
+        assert record.status is GitWorkItemStatus.MERGED
+
+    def test_dirty_real_file_in_working_tree_still_fails_the_switch(self, tmp_path: Path) -> None:
+        """Noise tolerance never discards an actual uncommitted change —
+        only every-file-is-noise triggers the discard."""
+        service, repo, h2 = _prepared(tmp_path)
+        eligibility = service.compute_merge_eligibility(
+            "wi-1", repository_path=repo, work_item_status="completed",
+            gate_passed=True, gate_git_sha=h2, review_approved=True, review_git_sha=h2,
+        )
+        LocalGitWorkspace(repo).switch(work_branch_name("wi-1"))
+        (repo / "a.txt").write_text("uncommitted real change")  # a.txt is tracked (from _prepared)
+
+        with pytest.raises(GitCommandError):
+            service.merge(
+                "wi-1", repository_path=repo, eligibility=eligibility, noise_path_prefixes=(".ralph/",),
+            )
+
 
 # --- reconcile / restart recovery -------------------------------------------
 
@@ -693,6 +823,34 @@ class TestReconcile:
         new_head = _commit_file(repo, "b.txt", "b", "a legitimate, persisted execution's commit")
         reconciled = service.reconcile("wi-1", repository_path=repo, known_execution_shas=frozenset({new_head}))
         assert reconciled.current_head_sha == new_head
+
+    def test_head_drift_reconciled_when_only_noise_paths_changed(self, tmp_path: Path) -> None:
+        """Slice 24 fix: a real execution outside this module's control
+        (e.g. Ralph's own housekeeping commit during a read-only
+        estimation run) may move HEAD without ever being a known,
+        persisted execution for this WorkItem — reconciled instead by
+        independently verifying every changed file falls under a declared
+        noise prefix, never by trusting the commit message/role alone."""
+        service, repo, head = _prepared(tmp_path)
+        LocalGitWorkspace(repo).switch(work_branch_name("wi-1"))
+        (repo / ".ralph").mkdir()
+        new_head = _commit_file(repo, ".ralph/loop-state.json", "{}", "chore: auto-commit before merge (loop primary)")
+        reconciled = service.reconcile("wi-1", repository_path=repo, noise_path_prefixes=(".ralph/",))
+        assert reconciled.current_head_sha == new_head
+
+    def test_head_drift_with_one_real_file_still_fails_closed_even_with_noise(self, tmp_path: Path) -> None:
+        """A single unaccounted-for, non-noise file anywhere in the diff
+        must still fail closed — never averaged away by otherwise-noisy
+        housekeeping changes in the same commit."""
+        service, repo, head = _prepared(tmp_path)
+        LocalGitWorkspace(repo).switch(work_branch_name("wi-1"))
+        (repo / ".ralph").mkdir()
+        (repo / ".ralph" / "loop-state.json").write_text("{}")
+        (repo / "b.txt").write_text("real change")
+        subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "mixed commit"], cwd=str(repo), check=True, capture_output=True)
+        with pytest.raises(GitHeadDriftError):
+            service.reconcile("wi-1", repository_path=repo, noise_path_prefixes=(".ralph/",))
 
     def test_reconcile_terminal_merged_is_a_noop(self, tmp_path: Path) -> None:
         service, repo, head = _prepared(tmp_path)

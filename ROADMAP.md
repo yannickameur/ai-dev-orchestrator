@@ -1683,7 +1683,7 @@ contract/E2E) — un verdict LLM seul n'est jamais une preuve de PASS.
   (mécanisme adaptatif), Slice 21.5 (primitives read-only/manifest).
   Prépare Slice 24 (intégration MVPManager/merge/release) sans l'anticiper.
 
-**Slice 24 — QA/Rework/Review/Merge Integration — ✅ CODE_DONE (2026-09-15), ACCEPTANCE_PENDING_PROVIDER**
+**Slice 24 — QA/Rework/Review/Merge Integration — ✅ DONE (ACCEPTANCE_DONE 2026-09-16)**
 - QA devient une 6e/7e capacité opt-in de `MVPManager` (`qa_engine`/
   `qa_policy`/`qa_run_store`, plus `qa_protected_paths`), composée
   exactement comme les précédentes — omise, le comportement pré-Slice-24
@@ -1730,15 +1730,70 @@ contract/E2E) — un verdict LLM seul n'est jamais une preuve de PASS.
   scriptable) + ajustements ciblés dans `tests/test_project_state.py`
   (nouvelles transitions `RUNNING↔WAITING`). 1089 tests offline PASS
   (1074 + 15).
-- Self-dogfood : `CODE_DONE`, mais **`ACCEPTANCE_PENDING_PROVIDER`** —
-  probe quota réel (lecture seule, 2026-09-15) : anthropic disponible,
-  openai toujours en quota épuisé ; avec un seul provider réel, l'exclusion
-  obligatoire auteur≠QA ne peut être satisfaite par aucun second worker
-  réel — résultat déterministe `BLOCKED_BY_PROVIDER`, déjà prouvé offline
-  (`TestQAAuthoringWait`). Aucune session réelle supplémentaire consommée
-  ce cycle (voir `docs/QA_GOVERNANCE.md` § Slice 24 pour la justification
-  complète) ; acceptance complète à rejouer avec un futur script
-  self-dogfood full-workflow une fois un second provider réel disponible.
+- Self-dogfood : **`ACCEPTANCE_DONE` (2026-09-16)** —
+  `scripts/self_dogfood_full_pipeline_real.py` (nouveau, premier script
+  d'acceptance réel à piloter le vrai `MVPManager.run_next_work_item`
+  de bout en bout, jamais un câblage manuel) a fait passer un WorkItem
+  gouverné, sur une copie jetable du dépôt, avec les deux providers réels
+  (Claude + Codex) : Development → QA Test Authoring → Quality Gate →
+  Review indépendante (APPROVED) → QA Final Verification (PASS) →
+  éligibilité au merge → **merge réel** (`git merge --ff-only`), plus le
+  contrôle négatif obligatoire (même vérification contre le défaut non
+  corrigé → `FAIL`, comme exigé). Plan de contrôle (control plane)
+  vérifié strictement inchangé avant/après. 5 tentatives réelles ont été
+  nécessaires ; chacune a mis au jour un vrai bug d'intégration (jamais
+  un artefact du script), corrigé et couvert par un test offline avant la
+  tentative suivante :
+  1. Le worker QA réel (Codex) modifiait des fichiers hors périmètre
+     (`README.md`, `uv.lock`) → prompt QA-authoring durci
+     (`internal_qa_engine.py`) pour interdire explicitement les
+     commandes de gestion de paquets et les fichiers de config/lock/doc.
+  2. `sqlite3.ProgrammingError` cross-thread : `MVPManager._run_qa_cycle`
+     invoque un `QAEngine` réel via `asyncio.to_thread` (nécessaire
+     puisqu'un moteur synchrone comme `InternalQAEngine` fait son propre
+     `asyncio.run()`), mais sa `ValidationStore` avait été créée sur le
+     thread principal → `ValidationStore.__init__` ouvre désormais sa
+     connexion sqlite avec `check_same_thread=False` (`validation.py`).
+  3. `GitHeadDriftError`/`observed_head_sha` erronés : Ralph committe
+     systématiquement son propre état interne (`.ralph/`) à **chaque**
+     exécution réelle qu'il lance, y compris une estimation de
+     complexité ou une review censées être « analyse seule, jamais de
+     git » — ce qui avançait le HEAD réel sans que la gouvernance s'y
+     attende. Fix général, à la frontière (jamais des `reconcile()`
+     ponctuels avant chaque consommateur) : `GitGovernanceService` gagne
+     un helper partagé `_same_up_to_noise` (vérification par contenu
+     réel via `git diff --name-only`, jamais une étiquette de rôle),
+     utilisé par `reconcile()` **et** `compute_merge_eligibility()`
+     (nouveau paramètre `noise_path_prefixes` sur les deux) ;
+     `InternalQAEngine._observed_head` normalise de même le HEAD observé
+     par rapport au `head_sha` attendu, sans jamais toucher
+     `evaluate_qa_verdict` (qui reste une fonction pure). `current_head_sha`
+     continue de toujours refléter la réalité git ; seules les
+     *comparaisons* de SHA-binding tolèrent le bruit. Aucune review ni
+     verdict QA n'est jamais réattribué à un SHA qu'il n'a pas réellement
+     évalué : `ReviewRecord.git_sha_reviewed`/`qa_git_sha` restent
+     exactement la valeur réellement évaluée.
+  4. Même famille de bug, point non couvert : `GitGovernanceService.merge()`
+     avait sa propre vérification TOCTOU (`actual_tip != eligibility.head_sha`),
+     non tolérante au bruit → étendue avec le même `_same_up_to_noise`
+     (nouveau paramètre `noise_path_prefixes` sur `merge()` aussi).
+  5. Ralph pouvait laisser une modification **non committée** dans
+     `.ralph/` (fichier de handoff de session réécrit après son propre
+     auto-commit), bloquant `git switch` lors du merge (« local changes
+     would be overwritten ») → `merge()` détecte ce cas (tous les
+     fichiers modifiés non committés sont du bruit `.ralph/`) et les
+     annule (`LocalGitWorkspace.discard_tracked_changes`, `git checkout --
+     <fichiers exacts>` uniquement) avant de basculer de branche ; un
+     seul fichier réel modifié non committé continue de faire échouer le
+     switch normalement.
+  1103 tests offline PASS (1089 + 14, nouvelle couverture dans
+  `test_git_governance.py`, `test_mvp_manager_git_governance.py`,
+  `test_internal_qa_engine.py`).
+- **Suivi moyen terme** (non bloquant pour cette slice, voir la section
+  « Éléments non re-séquencés explicitement » plus bas) : isoler les
+  exécutions read-only vis-à-vis du HEAD gouverné, ou contribuer en amont
+  à Ralph pour exposer un réglage explicite désactivant son auto-commit
+  de housekeeping pour les rôles qui n'en ont pas besoin.
 - Voir `docs/QA_GOVERNANCE.md` § « Slice 24 » pour le détail complet.
 - Workflow cible en deux phases (voir `docs/QA_STRATEGY.md` §
   « Position dans le workflow ») : **QA Phase 1 — Test Design/Authoring**
@@ -1791,6 +1846,23 @@ quand le besoin se précise, sans rang fixe) :
   expose des commandes stables (`mvp create`, `workitem run`, `handoff
   show`, etc.) — pas de rang fixe imposé, à ajouter quand l'ergonomie le
   justifie
+- **Isolation des exécutions read-only vis-à-vis du HEAD gouverné**
+  (trouvé pendant l'acceptance réelle Slice 24, court terme déjà corrigé
+  côté `MVPManager._reconcile_governed_head` — voir `docs/QA_GOVERNANCE.md`
+  § Slice 24) : Ralph committe systématiquement son propre état interne
+  (`.ralph/`, message `chore: auto-commit before merge`) à **chaque**
+  exécution réelle qu'il lance, y compris une estimation de complexité
+  supposée « analyse seule, ne touche jamais git ». Le correctif retenu
+  pour l'instant réconcilie ce type de dérive uniquement quand elle
+  correspond à un `ExecutionRecord.git_sha_after` réellement persisté
+  (jamais une heuristique sur le contenu des fichiers). Deux pistes plus
+  profondes restent à évaluer si ce pansement s'avère insuffisant : (a)
+  faire tourner les exécutions strictement read-only (estimation) dans un
+  worktree/copie jetable qui ne touche jamais la branche gouvernée réelle,
+  ou (b) contribuer en amont à Ralph pour exposer un réglage explicite
+  (ex. `landing.auto_commit: false`) désactivant ce commit automatique
+  pour les rôles qui n'en ont pas besoin — jamais recréer Ralph nous-mêmes
+  pour ça (principe REUSE FIRST)
 
 **Explicitement hors périmètre Phase 1 — Ralph fournit déjà (REUSE)** :
 - Event loop, runtime task queue

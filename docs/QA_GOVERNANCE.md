@@ -533,29 +533,150 @@ richer QA/rework cycles without further change (verified against the
 existing test suite, still green). `ActivityReport` was not touched — no
 current release/planning decision depends on QA-specific counters there.
 
-### Self-dogfood acceptance — CODE_DONE, ACCEPTANCE_PENDING_PROVIDER
+### Self-dogfood acceptance — ACCEPTANCE_DONE (2026-09-16)
 
-A fresh, read-only quota probe (2026-09-15, no reset credit) found
-`anthropic` available but `openai`/Codex still `QUOTA_EXHAUSTED` — the
-same asymmetric state as Slice 23's own self-dogfood attempt. With only
-one real provider available, `qa_worker_id != developer_worker_id` (the
-mandatory author-exclusion — never relaxed, never bypassed) cannot be
-satisfied by any real second worker, so a genuine end-to-end self-dogfood
-run would deterministically report `BLOCKED_BY_PROVIDER` at the QA
-worker-selection step — exactly the behavior
-`tests/test_mvp_manager_qa_integration.py::TestQAAuthoringWait::
-test_qa_authoring_quota_wait_never_falls_back_to_developer` already
-proves offline, deterministically, with zero provider calls. Given this,
-and that building a *new* full-workflow self-dogfood script (Slice 23's
-existing `scripts/self_dogfood_dev_qa_real.py` predates Slice 24's
-integration and only exercises development + QA authoring in isolation,
-never gates/review/final-QA/merge through the real `MVPManager`) was
-judged disproportionate to spend a real provider session on when the
-outcome is already certain from the live quota state, this session did
-not consume a real Claude/Codex session for Slice 24 acceptance. **Slice
-24 is `CODE_DONE`** (full offline suite green, all listed criteria met)
-but **not `ACCEPTANCE_DONE`** — full self-dogfood acceptance
-(`QAVerdict.PASS` end-to-end, a real merge, plus the mandatory negative
-control) remains `PENDING_PROVIDER_ACCEPTANCE`, to be attempted with a
-genuinely new full-workflow self-dogfood script once a second real
-provider is available.
+A first attempt (2026-09-15, documented in the previous revision of this
+section) found `anthropic` available but `openai`/Codex `QUOTA_EXHAUSTED`,
+and — since the mandatory `qa_worker_id != developer_worker_id` exclusion
+can never be satisfied by a single real provider — deferred full
+acceptance rather than spend a real session on a deterministically
+`BLOCKED_BY_PROVIDER` outcome.
+
+Once both providers were available, `scripts/self_dogfood_full_pipeline_real.py`
+was built — the first real-provider script to drive the actual
+`MVPManager.run_next_work_item(...)` end to end (neither
+`scripts/self_dogfood_dev_qa_real.py`, Slice 23, nor
+`scripts/smoke_cross_worker_real.py`, Slice 20, ever construct an
+`MVPManager` at all). It runs a governed WorkItem, on a disposable copy of
+this repo, through Development → QA Test Authoring → Quality Gate →
+independent Review → Final QA Verification → Merge Eligibility → a real
+`git merge --ff-only`, with both real Claude and Codex workers, plus the
+mandatory negative control (the same Final Verification against the
+still-broken defect, which must never `PASS`).
+
+**Five real attempts were needed before a clean `PASS`.** This is the
+expected, honest cost of testing against real agent behavior rather than
+fakes — every single failure was a genuine integration bug (never a
+script artifact), reproduced once, fixed with a scoped change, and locked
+in with an offline test before the next attempt:
+
+1. **Unauthorized files from the real QA worker.** Codex, doing QA Test
+   Authoring, modified `README.md` and `uv.lock` — outside its allowed
+   scope (`tests/`, `fixtures/`, `.qa/`). `verify_authoring_git_facts`
+   caught it correctly (governance never trusts the worker's self-report)
+   and blocked the WorkItem exactly as designed — but the underlying
+   cause was a QA-authoring prompt that forbade "production/source code"
+   without naming config/lock/doc files or dependency-manager commands
+   explicitly. Fixed in `_build_qa_authoring_instructions`
+   (`internal_qa_engine.py`): the prompt now explicitly forbids touching
+   README/CHANGELOG/docs/manifests/lock files and running any
+   package-manager command, and states the environment is already
+   prepared. The enforcement itself (`verify_authoring_git_facts`) was
+   never touched — only the instructions got more explicit.
+
+2. **`sqlite3.ProgrammingError: SQLite objects created in a thread can
+   only be used in that same thread.`** `MVPManager._run_qa_cycle` invokes
+   a configured `QAEngine` via `asyncio.to_thread` — necessary because a
+   synchronous engine like `InternalQAEngine.run()` wraps its own
+   `asyncio.run()`, which would otherwise collide with the caller's
+   already-running event loop. But `InternalQAEngine`'s own
+   `ValidationStore` had its sqlite connection created on the main
+   thread, then queried from the `to_thread` worker thread. No offline
+   test ever exercised this (fakes never touch a real `ValidationStore`;
+   Slice 23's script never routes through `asyncio.to_thread`). Fixed:
+   `ValidationStore.__init__` (`validation.py`) opens its connection with
+   `check_same_thread=False` — access here is always sequential (never
+   truly concurrent in `MVPManager`'s design), so no additional locking
+   was needed.
+
+3. **`GitHeadDriftError` / `QAResult.observed_head_sha != expected`.**
+   Ralph itself commits its own internal bookkeeping (`.ralph/` — loop
+   state, event logs, session handoff) on *every* real execution it
+   runs, including a complexity-estimation execution
+   (`role="estimator"`) or a review execution that this module's
+   git-governance layer never expected to touch git at all. This
+   silently advanced the real branch tip past what `MVPManager` had
+   captured, producing false-positive drift errors and SHA mismatches at
+   several different points (before review, and again before Final QA
+   Verification). Root-caused via exact commit-timestamp/
+   `ExecutionRecord` correlation across three real attempts before the
+   general shape was clear.
+
+   **General fix** (at the Ralph-execution boundary, not per-consumer
+   patches): `GitGovernanceService` gained a shared, static
+   `_same_up_to_noise(ws, from_sha, to_sha, noise_path_prefixes)` helper
+   — content-verified via a real `git diff --name-only` between the two
+   exact SHAs, never a role label or commit message taken on trust; a
+   single non-noise file anywhere in that range still means "not the
+   same". This is used by:
+   - `reconcile()` (already existed for `known_execution_shas`; now also
+     tolerates a drift where every changed file is noise).
+   - `compute_merge_eligibility()` (new `noise_path_prefixes` param):
+     `gate_git_sha`/`review_git_sha`/`qa_git_sha` are compared against
+     `current_head_sha` via `_same_up_to_noise` instead of raw `!=`.
+   - `InternalQAEngine._observed_head` (`internal_qa_engine.py`, reusing
+     the module's own existing `_is_runtime_noise`): normalizes a
+     noise-only live-HEAD drift back to `expected_head_sha` *before*
+     `evaluate_qa_verdict` ever sees it — that function itself stays a
+     pure function with zero git/filesystem access, exactly as designed.
+
+   `current_head_sha` itself always advances to the real git tip
+   (`capture_head`/`reconcile` never pin it artificially) — only the
+   *comparisons* against it tolerate noise. This is the load-bearing
+   distinction that keeps the fix honest: **no review or QA verdict is
+   ever reattributed to a SHA it did not actually evaluate** —
+   `ReviewRecord.git_sha_reviewed` and the `qa_git_sha` fed into merge
+   eligibility remain exactly the SHA that was reviewed/verified; only
+   whether that SHA still "counts" against a since-advanced
+   `current_head_sha` became noise-tolerant. `MVPManager` wires
+   `noise_path_prefixes=(".ralph/",)` via one shared
+   `_RALPH_HOUSEKEEPING_PREFIX` class constant into `_reconcile_governed_head`
+   and `_maybe_finalize_git`.
+
+4. **Same family, one uncovered spot: `GitGovernanceService.merge()`'s
+   own TOCTOU re-check.** `merge()` re-reads the work branch's actual
+   current tip and requires it to equal `eligibility.head_sha` exactly
+   (Slice 21.5 hardening, deliberately independent of
+   `compute_merge_eligibility`) — a raw comparison, unaffected by fix #3.
+   Extended with the same `_same_up_to_noise` (new `noise_path_prefixes`
+   param on `merge()` too): a noise-only advance since eligibility was
+   computed still merges (folding in the inert `.ralph/` noise alongside
+   the real, already-evaluated content — never re-attributing the
+   evidence itself), while an actual stray commit still fails closed.
+
+5. **Ralph left an uncommitted noise file behind.** After all of the
+   above, `merge()`'s `ws.switch(base_branch)` failed with git's own
+   "local changes would be overwritten" — Ralph's own session-handoff
+   scratch file (`.ralph/agent/handoff.md`) was rewritten *after* Ralph's
+   own auto-commit, left modified-but-uncommitted in the working tree.
+   Fixed: `merge()` now checks `working_tree_status()` before switching
+   and, only when *every* tracked-dirty file is noise-prefixed, discards
+   them via a new `LocalGitWorkspace.discard_tracked_changes(paths)`
+   (`git checkout -- <exact paths>`, never a broad `git checkout .`/
+   `git clean`) — a single real uncommitted file still fails the switch
+   exactly as before.
+
+**Result**: real run, both providers, `WorkItem.status == COMPLETED`,
+`GitWorkItemStatus.MERGED` with `merged_sha == current_head_sha`, the
+mandatory negative control correctly `FAIL`, and the control plane
+(`~/projects/ai-dev-orchestrator` itself) verified byte-identical
+before/after (HEAD unchanged, no unexpected `git status` changes). 1103
+offline tests pass (1089 + 14 new, across `test_git_governance.py`,
+`test_mvp_manager_git_governance.py`, `test_internal_qa_engine.py`) — no
+governance/enforcement rule was ever weakened to make a run pass; every
+fix either made an instruction more explicit or made a comparison verify
+real file content instead of trusting a raw SHA/role label.
+
+**Slice 24 is `ACCEPTANCE_DONE`.**
+
+**Medium-term follow-up** (not blocking, tracked in `ROADMAP.md`'s
+"Éléments non re-séquencés explicitement"): Ralph's own
+auto-commit-before-merge behavior firing on every execution — including
+ones this project's governance considers strictly read-only — is a
+reused-tool side effect, not something this project should patch around
+indefinitely with more noise-tolerance call sites. Two options remain
+open: isolate genuinely read-only executions (estimation) in a throwaway
+worktree that never touches the governed branch at all, or contribute
+upstream to Ralph for an explicit setting (e.g. `landing.auto_commit:
+false`) — never reimplementing Ralph's own execution loop ourselves
+(REUSE FIRST).

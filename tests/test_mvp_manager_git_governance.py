@@ -16,10 +16,13 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from orchestrator.execution_store import ExecutionRecord, ExecutionStatus, ExecutionStore
 from orchestrator.git_governance import (
     GitGovernancePolicy,
     GitGovernanceService,
+    GitHeadDriftError,
     GitWorkItemStatus,
     GitWorkItemStore,
     LocalGitWorkspace,
@@ -325,6 +328,126 @@ class TestReviewUsesExactHead:
         review = review_store.latest_for_work_item("wi-a")
         assert review.git_sha_reviewed == record.current_head_sha
         assert review.status is ReviewStatus.APPROVED
+
+
+# --- Slice 24 fix: tolerate a HEAD drift only when it is provably
+# legitimate — either it matches a real, persisted execution, or every
+# file it actually touched is Ralph's own ``.ralph/`` housekeeping (e.g. a
+# read-only complexity-estimation execution's auto-commit) — found via
+# real-provider self-dogfood acceptance, never reproduced by any
+# pre-existing offline test since every fake
+# ``ExecutionRecommendationService`` here short-circuits without ever
+# invoking ``execution_engine.execute()`` for estimation, and real
+# estimation executions are keyed by content fingerprint rather than this
+# WorkItem's id (so they can never appear in ``known_execution_shas`` via
+# ``ExecutionStore.list_for_task``, which is exactly what the first real
+# acceptance attempt at this fix revealed). Exercises
+# ``MVPManager._reconcile_governed_head`` directly (the low-level
+# ``GitGovernanceService.reconcile``/``known_execution_shas``/
+# ``noise_path_prefixes`` mechanism itself is already covered by
+# ``tests/test_git_governance.py::TestReconcile``).
+
+
+class TestReviewToleratesKnownExecutionHeadDrift:
+    def test_drift_matching_a_persisted_execution_is_reconciled(self, tmp_path: Path) -> None:
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        service, git_store = _git_service(tmp_path)
+        service.prepare_work_item(project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a", repository_path=repo)
+        service.capture_head("wi-a", repository_path=repo)
+        exec_store = ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW)
+        manager = MVPManager(
+            project_store, handoff_store,
+            FakeWorkerSelector(dev=_alice(), reviewer=_victor()), GitCommittingFakeEngine(),
+            git_governance_service=service, execution_store=exec_store,
+            clock=lambda: UTC_NOW,
+        )
+
+        # A commit MVPManager never called capture_head for, but which IS
+        # persisted as a real ExecutionRecord for this exact WorkItem.
+        _run_git(repo, "commit", "--allow-empty", "-m", "some legitimately-audited commit")
+        new_head = LocalGitWorkspace(repo).head_sha()
+        exec_store.create(
+            execution_id="exec-estimator-1", task_id="wi-a", worker_id="alice",
+            provider="anthropic", backend="claude_code", model="haiku", role="estimator",
+            git_sha_before=git_store.get("wi-a").current_head_sha, started_at=UTC_NOW,
+        )
+        exec_store.mark_succeeded("exec-estimator-1", git_sha_after=new_head)
+
+        record = manager._reconcile_governed_head("wi-a", repo)
+
+        assert record.current_head_sha == new_head
+        assert git_store.get("wi-a").current_head_sha == new_head
+
+    def test_drift_touching_only_ralph_housekeeping_is_reconciled(self, tmp_path: Path) -> None:
+        """The actual real-world case: Ralph's own estimation-execution
+        auto-commit is keyed by a content fingerprint, never this
+        WorkItem's id, so ``known_execution_shas`` (via
+        ``ExecutionStore.list_for_task``) structurally can never see it —
+        only the content-based ``.ralph/``-only check can."""
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        service, git_store = _git_service(tmp_path)
+        service.prepare_work_item(project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a", repository_path=repo)
+        service.capture_head("wi-a", repository_path=repo)
+        exec_store = ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW)
+        manager = MVPManager(
+            project_store, handoff_store,
+            FakeWorkerSelector(dev=_alice(), reviewer=_victor()), GitCommittingFakeEngine(),
+            git_governance_service=service, execution_store=exec_store,
+            clock=lambda: UTC_NOW,
+        )
+        (repo / ".ralph").mkdir()
+        (repo / ".ralph" / "loop-state.json").write_text("{}\n")
+        _run_git(repo, "add", ".ralph/loop-state.json")
+        _run_git(repo, "commit", "-m", "chore: auto-commit before merge (loop primary)")
+        new_head = LocalGitWorkspace(repo).head_sha()
+        # Deliberately no matching ExecutionRecord: this must be reconciled
+        # by the content check alone.
+
+        record = manager._reconcile_governed_head("wi-a", repo)
+
+        assert record.current_head_sha == new_head
+        assert git_store.get("wi-a").current_head_sha == new_head
+
+    def test_drift_touching_a_real_file_still_fails_closed(self, tmp_path: Path) -> None:
+        """Neither signal ever tolerates an actual, unaccounted-for file
+        change — even one committed alongside legitimate-looking
+        ``.ralph/`` noise in the very same commit."""
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        service, git_store = _git_service(tmp_path)
+        service.prepare_work_item(project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a", repository_path=repo)
+        service.capture_head("wi-a", repository_path=repo)
+        exec_store = ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW)
+        manager = MVPManager(
+            project_store, handoff_store,
+            FakeWorkerSelector(dev=_alice(), reviewer=_victor()), GitCommittingFakeEngine(),
+            git_governance_service=service, execution_store=exec_store,
+            clock=lambda: UTC_NOW,
+        )
+        (repo / ".ralph").mkdir()
+        (repo / ".ralph" / "loop-state.json").write_text("{}\n")
+        (repo / "b.txt").write_text("an unauthorized production change\n")
+        _run_git(repo, "add", "-A")
+        _run_git(repo, "commit", "-m", "unexplained, unaccounted-for commit")
+
+        with pytest.raises(GitHeadDriftError):
+            manager._reconcile_governed_head("wi-a", repo)
+
+    def test_without_git_governance_service_reconcile_is_never_called(self, tmp_path: Path) -> None:
+        """Sanity check: with no ``git_governance_service`` configured at
+        all, this method must never be reached — asserted directly since
+        every real call site already guards on ``is not None``."""
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        manager = MVPManager(
+            project_store, handoff_store,
+            FakeWorkerSelector(dev=_alice(), reviewer=_victor()), GitCommittingFakeEngine(),
+            clock=lambda: UTC_NOW,
+        )
+        with pytest.raises(AssertionError):
+            manager._reconcile_governed_head("wi-a", repo)
 
 
 class TestNewCommitInvalidatesOldEvidence:

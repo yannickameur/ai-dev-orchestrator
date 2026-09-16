@@ -318,7 +318,16 @@ class ValidationStore:
 
     def __init__(self, db_path: str | Path, *, clock: Clock | None = None) -> None:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
-        self._conn = sqlite3.connect(str(db_path))
+        # check_same_thread=False: a QAEngine backed by this store (e.g.
+        # InternalQAEngine) is invoked by MVPManager via asyncio.to_thread
+        # (Slice 24, mvp_manager.py's _run_qa_cycle) so a synchronous
+        # engine's own internal asyncio.run() never collides with the
+        # caller's already-running event loop — meaning this connection is
+        # created on the main thread but legitimately queried from that
+        # worker thread. Access here is always sequential (never actually
+        # concurrent: MVPManager runs at most one QA/gate step at a time
+        # for a given WorkItem), so no additional locking is needed.
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         with self._conn:
             self._conn.executescript(_CREATE_TABLES_SQL)

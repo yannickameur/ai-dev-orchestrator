@@ -525,6 +525,46 @@ class TestFinalVerification:
         result = run_store.get_result(run.run_id)
         assert result.observed_head_sha == head
 
+    def test_noise_only_advance_before_verification_still_passes(self, tmp_path: Path) -> None:
+        """Slice 24 fix, found via real-provider self-dogfood acceptance:
+        a review execution this module never expected to touch git can
+        still advance the real branch tip via Ralph's own housekeeping
+        commit BEFORE Final QA Verification even starts — the SHA
+        ``request.head_sha`` names is the one MVPManager governs
+        (unaffected), but the *actual* live tip is now one commit ahead.
+        This must not be reported as a wrong-SHA FAIL."""
+        repo = self._kb_repo(tmp_path)
+        run_store = _qa_run_store(tmp_path)
+        expected_head = _head(repo)
+        (repo / ".ralph").mkdir()
+        _commit_file(repo, ".ralph/loop-state.json", "{}", "chore: auto-commit before merge (loop primary)")
+        run = asyncio.run(run_qa_cycle(
+            engine=_engine(_validation_store(tmp_path)), run_store=run_store,
+            request=_qa_request(repo, changed_files=("src/app.py",), base_sha=expected_head, head_sha=expected_head),
+            phase=QAPhase.FINAL_VERIFICATION, policy=_policy(), clock=lambda: UTC_NOW,
+        ))
+        assert run.verdict.status is QAVerdictStatus.PASS
+        result = run_store.get_result(run.run_id)
+        assert result.observed_head_sha == expected_head
+
+    def test_a_real_change_before_verification_still_fails_wrong_sha(self, tmp_path: Path) -> None:
+        """Noise tolerance never widens what counts as a real change: an
+        actual production-file commit landing before verification starts
+        still fails as a genuine SHA mismatch."""
+        repo = self._kb_repo(tmp_path)
+        run_store = _qa_run_store(tmp_path)
+        expected_head = _head(repo)
+        real_head = _commit_file(repo, "src/other.py", "x = 1\n", "an unaccounted-for real change")
+        run = asyncio.run(run_qa_cycle(
+            engine=_engine(_validation_store(tmp_path)), run_store=run_store,
+            request=_qa_request(repo, changed_files=("src/app.py",), base_sha=expected_head, head_sha=expected_head),
+            phase=QAPhase.FINAL_VERIFICATION, policy=_policy(), clock=lambda: UTC_NOW,
+        ))
+        assert run.verdict.status is QAVerdictStatus.FAIL
+        assert "observed_head_sha" in run.verdict.reason
+        result = run_store.get_result(run.run_id)
+        assert result.observed_head_sha == real_head
+
     def test_inability_to_prove_read_only_is_inconclusive(self, tmp_path: Path) -> None:
         # A non-git workspace: run_final_verification_gate cannot compare
         # SHAs at all -> read_only_unprovable=True -> INCONCLUSIVE.

@@ -229,6 +229,14 @@ class LocalGitWorkspace:
             return None
         return result.stdout.strip() or None
 
+    def changed_files(self, from_ref: str, to_ref: str) -> tuple[str, ...]:
+        """Read-only ``git diff --name-only`` between two refs — used to
+        independently verify *what* actually changed across an unexpected
+        HEAD drift, never to trust a claim about it."""
+        self._require_repository()
+        result = self._run(["diff", "--name-only", from_ref, to_ref])
+        return tuple(line for line in result.stdout.splitlines() if line)
+
     def branch_exists(self, name: str) -> bool:
         self._require_repository()
         result = self._run(["show-ref", "--verify", "--quiet", f"refs/heads/{name}"], check=False)
@@ -261,6 +269,15 @@ class LocalGitWorkspace:
     def switch(self, name: str) -> None:
         self._require_repository()
         self._run(["switch", name])
+
+    def discard_tracked_changes(self, paths: Sequence[str]) -> None:
+        """``git checkout -- <paths>`` — reverts specific TRACKED, modified
+        files to their last-committed content. Never touches any path not
+        explicitly listed, never a broad ``git checkout .``/``git clean``."""
+        if not paths:
+            return
+        self._require_repository()
+        self._run(["checkout", "--", *paths])
 
     def is_ancestor(self, ancestor_ref: str, descendant_ref: str) -> bool:
         self._require_repository()
@@ -886,6 +903,27 @@ class GitGovernanceService:
         self._git_binary = git_binary
         self._pull_request_publisher = pull_request_publisher
 
+    @staticmethod
+    def _same_up_to_noise(
+        ws: "LocalGitWorkspace", from_sha: str, to_sha: str, noise_path_prefixes: tuple[str, ...],
+    ) -> bool:
+        """Whether ``to_sha`` differs from ``from_sha`` by nothing but
+        noise (Slice 24 fix): a real execution outside this module's
+        direct control — Ralph's own internal bookkeeping commit during
+        any real execution, including one this module never expected to
+        touch git at all — can advance a branch tip without ever being a
+        legitimate content change. Content-verified via ``git diff
+        --name-only`` between the two exact SHAs, never trusted from a
+        role label or commit message: a single non-noise file anywhere in
+        that range means they are NOT the same, no matter how many
+        commits separate them or what any of them claim to be."""
+        if from_sha == to_sha:
+            return True
+        if not noise_path_prefixes:
+            return False
+        changed = ws.changed_files(from_sha, to_sha)
+        return bool(changed) and all(f.startswith(noise_path_prefixes) for f in changed)
+
     @property
     def policy(self) -> GitGovernancePolicy:
         return self._policy
@@ -995,6 +1033,7 @@ class GitGovernanceService:
         qa_passed: bool | None = None,
         qa_git_sha: str | None = None,
         qa_run_terminal: bool | None = None,
+        noise_path_prefixes: tuple[str, ...] = (),
     ) -> MergeEligibilityResult:
         """Pure, deterministic: never an LLM call, never "probably fine".
 
@@ -1020,6 +1059,18 @@ class GitGovernanceService:
         terminal QA run whose verdict passed for this exact head SHA;
         anything else (absent, FAIL, INCONCLUSIVE, a stale SHA, or a
         non-terminal run) is ``NOT_MERGEABLE``.
+
+        ``noise_path_prefixes`` (Slice 24, additive, default ``()`` — full
+        backward compatibility): evidence bound to an older SHA is still
+        accepted when every file that changed between it and
+        ``record.current_head_sha`` is noise (Ralph's own housekeeping
+        commits, e.g. during a read-only estimation or review execution
+        this module never expected to touch git) — content-verified via
+        ``git diff --name-only``, never a role label taken on trust. A
+        review/gate/QA verdict is never reattributed to a SHA it did not
+        actually evaluate: this only recognizes that the noise commits
+        themselves changed nothing evidence-relevant, never that the
+        verdict now covers different content.
         """
         now = self._clock()
         record = self._store.try_get(work_item_id)
@@ -1028,6 +1079,7 @@ class GitGovernanceService:
                 work_item_id=work_item_id, head_sha=None, mergeable=False,
                 reason="no governed git record for this work item", evaluated_at=now,
             )
+        ws = self._workspace(repository_path)
 
         def _not_mergeable(reason: str) -> MergeEligibilityResult:
             return MergeEligibilityResult(
@@ -1047,7 +1099,9 @@ class GitGovernanceService:
         if self._policy.require_required_gates:
             if gate_passed is not True:
                 return _not_mergeable("required quality gate has not passed")
-            if gate_git_sha != record.current_head_sha:
+            if gate_git_sha is None or not self._same_up_to_noise(
+                ws, gate_git_sha, record.current_head_sha, noise_path_prefixes,
+            ):
                 return _not_mergeable(
                     f"quality gate evidence is for an old SHA ({gate_git_sha!r} != {record.current_head_sha!r})"
                 )
@@ -1055,7 +1109,9 @@ class GitGovernanceService:
         if self._policy.require_review:
             if review_approved is not True:
                 return _not_mergeable("required review is not approved")
-            if review_git_sha != record.current_head_sha:
+            if review_git_sha is None or not self._same_up_to_noise(
+                ws, review_git_sha, record.current_head_sha, noise_path_prefixes,
+            ):
                 return _not_mergeable(
                     f"review evidence is for an old SHA ({review_git_sha!r} != {record.current_head_sha!r})"
                 )
@@ -1065,12 +1121,13 @@ class GitGovernanceService:
                 return _not_mergeable("required QA run is not terminal")
             if qa_passed is not True:
                 return _not_mergeable("required QA verdict has not passed")
-            if qa_git_sha != record.current_head_sha:
+            if qa_git_sha is None or not self._same_up_to_noise(
+                ws, qa_git_sha, record.current_head_sha, noise_path_prefixes,
+            ):
                 return _not_mergeable(
                     f"QA evidence is for an old SHA ({qa_git_sha!r} != {record.current_head_sha!r})"
                 )
 
-        ws = self._workspace(repository_path)
         if not ws.branch_exists(record.work_branch):
             return _not_mergeable("work branch is missing")
         base_tip = ws.try_rev_parse(record.base_branch)
@@ -1089,7 +1146,10 @@ class GitGovernanceService:
             reason=None, evaluated_at=now,
         )
 
-    def merge(self, work_item_id: str, *, repository_path: str | Path, eligibility: MergeEligibilityResult) -> GitWorkItemRecord:
+    def merge(
+        self, work_item_id: str, *, repository_path: str | Path, eligibility: MergeEligibilityResult,
+        noise_path_prefixes: tuple[str, ...] = (),
+    ) -> GitWorkItemRecord:
         """Performs the actual fast-forward-only merge.
 
         Requires a fresh, already-computed ``eligibility.mergeable is
@@ -1107,13 +1167,19 @@ class GitGovernanceService:
         be fast-forwardable from base. Without this check, ``merge()``
         would silently fold in H3 on the strength of evidence that only
         ever covered H2. So the work branch's *actual* current tip is
-        re-read here and required to equal ``eligibility.head_sha`` exactly
-        before any mutation of ``base_branch`` is attempted — any mismatch
-        fails closed as ``GitHeadDriftError``, never a silent re-merge, no
-        rebase/reset/force. A base branch that has meanwhile diverged
-        incompatibly is still caught by ``merge_ff_only`` itself (git's own
-        ff-only check re-validates ancestry at merge time) via the
-        existing ``MergeRefusedError``/``mark_conflict`` path below.
+        re-read here and required to be H2 *or* a noise-only advance past
+        it (Slice 24 fix, ``noise_path_prefixes``, same content-verified
+        ``_same_up_to_noise`` used by ``reconcile``/``compute_merge_
+        eligibility`` — e.g. Ralph's own housekeeping commit during the
+        review execution itself, landing after eligibility was computed
+        but before this call) — any OTHER mismatch still fails closed as
+        ``GitHeadDriftError``, never a silent re-merge, no rebase/reset/
+        force. A base branch that has meanwhile diverged incompatibly is
+        still caught by ``merge_ff_only`` itself (git's own ff-only check
+        re-validates ancestry at merge time) via the existing
+        ``MergeRefusedError``/``mark_conflict`` path below. The evidence
+        itself is never reattributed: only H2's own content — plus inert
+        noise — is what actually gets merged.
         """
         record = self._store.get(work_item_id)
         if record.status is GitWorkItemStatus.MERGED:
@@ -1123,8 +1189,22 @@ class GitGovernanceService:
 
         ws = self._workspace(repository_path)
         actual_tip = ws.try_rev_parse(record.work_branch)
-        if actual_tip != eligibility.head_sha:
+        if actual_tip is None or eligibility.head_sha is None or not self._same_up_to_noise(
+            ws, eligibility.head_sha, actual_tip, noise_path_prefixes,
+        ):
             raise GitHeadDriftError(work_item_id, eligibility.head_sha, actual_tip or "")
+
+        # Ralph itself can leave an UNcommitted, working-tree-only noise
+        # change behind (e.g. its own session-handoff scratch file,
+        # rewritten after its own auto-commit) that would otherwise block
+        # `switch` below with "local changes would be overwritten" (Slice
+        # 24 fix, found via real-provider self-dogfood acceptance) — only
+        # ever discarded when every dirty tracked file is noise; a single
+        # real uncommitted change still fails the switch below untouched.
+        if noise_path_prefixes:
+            dirty = ws.working_tree_status().tracked_dirty
+            if dirty and all(f.startswith(noise_path_prefixes) for f in dirty):
+                ws.discard_tracked_changes(dirty)
 
         ws.switch(record.base_branch)
         try:
@@ -1139,6 +1219,7 @@ class GitGovernanceService:
     def reconcile(
         self, work_item_id: str, *, repository_path: str | Path, checkout: bool = False,
         known_execution_shas: frozenset[str] = frozenset(),
+        noise_path_prefixes: tuple[str, ...] = (),
     ) -> GitWorkItemRecord:
         """Reconstructs/validates state from the store + the real repository —
         never from "whatever is currently checked out".
@@ -1146,12 +1227,27 @@ class GitGovernanceService:
         A missing work branch while the store still expects one (any
         non-terminal status) fails closed (``GitBranchMissingError``) —
         never silently recreated. A HEAD that no longer matches what the
-        store expects is only reconciled (the stored ``current_head_sha``
-        is updated) when it corresponds exactly to a SHA in
-        ``known_execution_shas`` (a caller-supplied set of persisted,
-        legitimate ``ExecutionRecord.git_sha_after`` values for this
-        WorkItem) — otherwise it fails closed (``GitHeadDriftError``), no
-        broad heuristic.
+        store expects is reconciled (the stored ``current_head_sha`` is
+        updated) in either of two provably-legitimate cases, otherwise it
+        fails closed (``GitHeadDriftError``):
+
+        1. It corresponds exactly to a SHA in ``known_execution_shas`` (a
+           caller-supplied set of persisted, legitimate
+           ``ExecutionRecord.git_sha_after`` values for this WorkItem).
+        2. ``noise_path_prefixes`` is non-empty and *every* file that
+           actually changed between the stored head and the real one
+           (independently computed via ``git diff --name-only``, never
+           trusted from a caller's claim) starts with one of those
+           prefixes (Slice 24 fix, found via real-provider self-dogfood
+           acceptance: Ralph itself commits its own internal bookkeeping —
+           e.g. ``.ralph/`` — on every real execution it runs, including a
+           read-only complexity-estimation execution that is never
+           expected to touch git; those estimation executions are keyed
+           by content fingerprint, not this WorkItem's id, so they can
+           never appear in ``known_execution_shas`` via
+           ``ExecutionStore.list_for_task``). This is a content-based
+           verification, never a role label taken on trust: a single
+           non-noise file in the diff still fails closed.
         """
         record = self._store.get(work_item_id)
         ws = self._workspace(repository_path)
@@ -1168,6 +1264,10 @@ class GitGovernanceService:
         actual_head = ws.try_rev_parse(record.work_branch)
         if record.current_head_sha is not None and actual_head != record.current_head_sha:
             if actual_head in known_execution_shas:
+                return self._store.update_head(work_item_id, actual_head)
+            if actual_head is not None and self._same_up_to_noise(
+                ws, record.current_head_sha, actual_head, noise_path_prefixes,
+            ):
                 return self._store.update_head(work_item_id, actual_head)
             raise GitHeadDriftError(work_item_id, record.current_head_sha, actual_head or "")
         return record
