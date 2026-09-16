@@ -320,6 +320,13 @@ class LocalGitWorkspace:
         self._run(["commit", "-m", message])
         return self.head_sha()
 
+    def create_tag(self, name: str, *, sha: str) -> None:
+        """``git tag <name> <sha>`` — a plain, lightweight tag, never
+        ``-f`` (never silently overwrites an existing tag of the same
+        name; a genuine collision raises ``GitCommandError``)."""
+        self._require_repository()
+        self._run(["tag", name, sha])
+
     def is_ancestor(self, ancestor_ref: str, descendant_ref: str) -> bool:
         self._require_repository()
         result = self._run(["merge-base", "--is-ancestor", ancestor_ref, descendant_ref], check=False)
@@ -1209,6 +1216,13 @@ class GitGovernanceService:
         )
         with exclude_path.open("a") as fh:
             fh.write(addition)
+
+    def try_get(self, work_item_id: str) -> GitWorkItemRecord | None:
+        """Thin, read-only passthrough to the underlying store — lets a
+        caller (e.g. to fetch ``merged_sha`` for tagging right after a
+        merge) read the current governed record without needing its own
+        separate handle on ``GitWorkItemStore``."""
+        return self._store.try_get(work_item_id)
 
     # --- preparation -----------------------------------------------------
 

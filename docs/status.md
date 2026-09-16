@@ -253,6 +253,15 @@ Dernière mise à jour : Slice 24 — QA/Rework/Review/Merge Integration (2026-0
     aucun downgrade ; aucun bug Slice 17/18 découvert. Preuve versionnée
     (sanitizée) : `docs/reports/real-cross-worker-resume-2026-09-13.html`
   - `~/projects/ralph-spike` original : non modifié (vérifié avant/après)
+- **Décision produit (2026-09-16) — `LEAN_FEATURE_FLOW` (DEV A → DEV B
+  correctif → QA unique déterministe → merge → tag) devient le workflow
+  PAR DÉFAUT de `MVPManager` ; l'ancien pipeline (`GOVERNED_FULL`,
+  Slices 17-24) devient `DEPRECATED`/`REMOVAL_CANDIDATE`, encore
+  sélectionnable explicitement, sa suite de tests reste verte.** Détail
+  complet, motivation KISS/YAGNI, et primitives réutilisées : voir
+  `ROADMAP.md`. 1154 tests offline PASS (1144 avant + 10 nouveaux dans
+  `tests/test_mvp_manager_lean_feature_flow.py`). Acceptance réelle :
+  `docs/reports/mars-rover-lean-feature-flow-2026-09-16.html`.
 - **Next : revue de roadmap avec l'utilisateur.** Toutes les Slices
   21-24 du cycle QA sont `CODE_DONE` — point de contrôle prévu par le
   projet avant toute nouvelle Slice. Cette session ne décide pas seule

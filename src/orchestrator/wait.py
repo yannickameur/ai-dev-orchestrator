@@ -81,6 +81,11 @@ class WaitPhase(str, Enum):
     #: read-only/deterministic and has no comparable "no eligible worker"
     #: failure mode to wait out (see docs/QA_GOVERNANCE.md).
     QA_AUTHORING = "qa_authoring"
+    #: LEAN_FEATURE_FLOW (2026-09-16): DEV A already succeeded before this
+    #: wait is ever recorded — resuming re-enters RUNNING directly (like
+    #: QA_AUTHORING above) and re-selects an independent DEV B, never
+    #: re-running DEV A.
+    DEV_B_REVIEW = "dev_b_review"
 
 
 class WaitReason(str, Enum):
