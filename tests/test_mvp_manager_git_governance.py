@@ -129,9 +129,18 @@ class GitCommittingFakeEngine:
     commit in ``request.workspace``; a reviewer execution never touches
     git, and simply succeeds (approves) or fails (rejects) per script."""
 
-    def __init__(self, *, review_outcomes: list[bool] | None = None) -> None:
+    def __init__(
+        self, *, review_outcomes: list[bool] | None = None,
+        reviewer_dirty_file: tuple[str, str] | None = None,
+    ) -> None:
         self._dev_call_count = 0
         self._review_outcomes = list(review_outcomes) if review_outcomes is not None else [True]
+        # (relative_path, content): simulates a real review execution that
+        # emitted its verdict but then also wrote a real, UNCOMMITTED
+        # change before its process actually ended — exactly the external
+        # pilot's real-provider finding, never something the review's own
+        # ExecutionRecord.status alone would reveal.
+        self._reviewer_dirty_file = reviewer_dirty_file
         self.requests: list = []
 
     async def execute(self, request) -> ExecutionResult:
@@ -151,6 +160,12 @@ class GitCommittingFakeEngine:
                 git_sha_before=sha_before, git_sha_after=sha_after,
             )
             return ExecutionResult(record=record, exit_code=0)
+
+        if self._reviewer_dirty_file is not None:
+            rel_path, content = self._reviewer_dirty_file
+            path = request.workspace / rel_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)  # never committed — that is the point
 
         approved = self._review_outcomes.pop(0) if self._review_outcomes else True
         record = ExecutionRecord(
@@ -328,6 +343,94 @@ class TestReviewUsesExactHead:
         review = review_store.latest_for_work_item("wi-a")
         assert review.git_sha_reviewed == record.current_head_sha
         assert review.status is ReviewStatus.APPROVED
+
+
+# --- external pilot finding (Invariants 1 & 4): a review execution has
+# real shell/file access, exactly like development — nothing ever verified
+# it stayed read-only, unlike QA authoring's own independent
+# `verify_authoring_git_facts`. Found via scripts/run_external_project_pilot.py
+# against a genuine external repo: a real reviewer emitted `review.approved`
+# after its first iteration, then kept running and wrote functional,
+# uncommitted changes (implementing a future WorkItem's scope) before being
+# force-stopped by Ralph's own `max_iterations` — the mutation was only
+# discovered several steps later, at the literal `git switch` inside
+# `merge()`. A business event (`review.approved`) is never trusted by
+# itself: the check here runs against the execution's actual, final
+# end-state (`GitCommittingFakeEngine`'s fake reviewer branch below always
+# represents the *whole* execution's real terminal effect — the same
+# guarantee `ExecutionResult` gives for a real Ralph run regardless of how
+# many internal iterations happened before it returned).
+
+
+class TestReviewMustBeStrictlyReadOnly:
+    def test_reviewer_modifying_a_tracked_source_file_blocks_the_work_item(self, tmp_path: Path) -> None:
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        service, git_store = _git_service(tmp_path, policy=GitGovernancePolicy(require_required_gates=False))
+        review_store = ReviewStore(tmp_path / "review.sqlite3", clock=lambda: UTC_NOW)
+        selector = FakeWorkerSelector(dev=_alice(), reviewer=_victor())
+        engine = GitCommittingFakeEngine(reviewer_dirty_file=("README.md", "scope creep by the reviewer\n"))
+        manager = _manager(
+            project_store, handoff_store, selector, engine,
+            git_governance_service=service, review_store=review_store,
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.BLOCKED
+        assert "non-read-only" in (result.work_item.blocked_reason or "")
+        review = review_store.latest_for_work_item("wi-a")
+        assert review.status is ReviewStatus.ERROR
+        record = git_store.get("wi-a")
+        assert record.status is not GitWorkItemStatus.MERGED
+        assert record.status is not GitWorkItemStatus.MERGE_READY
+
+    def test_reviewer_modifying_an_untracked_test_file_also_blocks(self, tmp_path: Path) -> None:
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        service, git_store = _git_service(tmp_path, policy=GitGovernancePolicy(require_required_gates=False))
+        review_store = ReviewStore(tmp_path / "review.sqlite3", clock=lambda: UTC_NOW)
+        selector = FakeWorkerSelector(dev=_alice(), reviewer=_victor())
+        engine = GitCommittingFakeEngine(
+            reviewer_dirty_file=("tests/test_new.py", "def test_x():\n    assert True\n"),
+        )
+        manager = _manager(
+            project_store, handoff_store, selector, engine,
+            git_governance_service=service, review_store=review_store,
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.BLOCKED
+        review = review_store.latest_for_work_item("wi-a")
+        assert review.status is ReviewStatus.ERROR
+        assert review.git_sha_reviewed is not None  # bound to the SHA actually reviewed, never blank
+
+    def test_reviewer_leaving_only_ralph_noise_still_approves_and_merges(self, tmp_path: Path) -> None:
+        """Never widen what counts as a violation: Ralph's own already-
+        accepted housekeeping noise must not suddenly block every review."""
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        service, git_store = _git_service(
+            tmp_path, policy=GitGovernancePolicy(require_required_gates=False, auto_merge=True),
+        )
+        review_store = ReviewStore(tmp_path / "review.sqlite3", clock=lambda: UTC_NOW)
+        selector = FakeWorkerSelector(dev=_alice(), reviewer=_victor())
+        engine = GitCommittingFakeEngine(reviewer_dirty_file=(".ralph/loop-state.json", "{}"))
+        manager = _manager(
+            project_store, handoff_store, selector, engine,
+            git_governance_service=service, review_store=review_store,
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        review = review_store.latest_for_work_item("wi-a")
+        assert review.status is ReviewStatus.APPROVED
+        assert git_store.get("wi-a").status is GitWorkItemStatus.MERGED
 
 
 # --- Slice 24 fix: tolerate a HEAD drift only when it is provably

@@ -220,6 +220,7 @@ from orchestrator.internal_qa_engine import (
     QA_TESTING_CAPABILITY,
     QA_TESTING_ROLE,
     changed_files_since,
+    working_tree_changed_files,
 )
 from orchestrator.project_state import MVP, Project, ProjectStateStore, WorkItem, WorkItemStatus
 from orchestrator.qa import (
@@ -978,7 +979,33 @@ class MVPManager:
         other outcome (FAIL -> REWORK, or BLOCKED) is already fully
         resolved here — the caller must return immediately in that case,
         never mark COMPLETED.
+
+        PRE-condition (external pilot finding): the workspace must
+        functionally match ``head_sha`` *before* a single pytest command
+        runs — the existing read-only guarantee
+        (``run_final_verification_gate``/``verify_repository_unchanged``)
+        only ever proves nothing changed *during* this call; it cannot by
+        itself catch a workspace that was already wrong going in (e.g. a
+        prior review execution left real, uncommitted edits). Verified
+        the same content-based way as everywhere else in this module —
+        never a role label taken on trust.
         """
+        if self._git_governance_service is not None:
+            pre_violations = self._verify_workspace_matches(project.workspace, head_sha)
+            if pre_violations:
+                blocked = self._project_state_store.mark_work_item_blocked(
+                    work_item.work_item_id,
+                    reason=(
+                        f"workspace does not match expected head {head_sha!r} before Final QA "
+                        f"Verification (governance violation): {list(pre_violations)!r}"
+                    ),
+                )
+                return (
+                    blocked,
+                    "workspace integrity violation before Final QA Verification — "
+                    "blocked pending manual intervention",
+                    False,
+                )
         request = QARequest(
             project_id=project.project_id, mvp_id=mvp_id, work_item_id=work_item.work_item_id,
             workspace=str(project.workspace), base_sha=base_sha, head_sha=head_sha,
@@ -1535,14 +1562,25 @@ class MVPManager:
                     dev_result, record=dataclasses.replace(dev_result.record, git_sha_after=current_head_sha),
                 )
 
+        # PRE-condition (external pilot finding, Invariant 2): the
+        # workspace must functionally match `current_head_sha` before the
+        # gate runs a single command against it — never assume "the last
+        # execution said it succeeded" is enough. Same content-based
+        # verification used everywhere else in this module.
+        workspace_violation_before_gate: tuple[str, ...] = ()
         gate_result: QualityGateResult | None = None
         if dev_succeeded and self._quality_gate_runner is not None:
-            gate_result = await self._quality_gate_runner.run_gate(
-                project_id=project.project_id,
-                cwd=project.workspace,
-                mvp_id=mvp_id,
-                work_item_id=work_item.work_item_id,
-            )
+            if self._git_governance_service is not None:
+                workspace_violation_before_gate = self._verify_workspace_matches(
+                    project.workspace, current_head_sha,
+                )
+            if not workspace_violation_before_gate:
+                gate_result = await self._quality_gate_runner.run_gate(
+                    project_id=project.project_id,
+                    cwd=project.workspace,
+                    mvp_id=mvp_id,
+                    work_item_id=work_item.work_item_id,
+                )
         gate_passed = gate_result is None or gate_result.passed
 
         review_result: ReviewRecord | None = None
@@ -1553,6 +1591,15 @@ class MVPManager:
         if not dev_succeeded:
             work_item = self._project_state_store.mark_work_item_failed(work_item.work_item_id)
             next_action = "investigate the failure before retrying — no automatic retry"
+        elif workspace_violation_before_gate:
+            work_item = self._project_state_store.mark_work_item_blocked(
+                work_item.work_item_id,
+                reason=(
+                    f"workspace does not match governed head {current_head_sha!r} before quality "
+                    f"gate (governance violation): {list(workspace_violation_before_gate)!r}"
+                ),
+            )
+            next_action = "workspace integrity violation before quality gate — blocked pending manual intervention"
         elif not gate_passed:
             work_item = self._project_state_store.mark_work_item_failed(work_item.work_item_id)
             next_action = "quality gate failed — investigate before retrying, no automatic retry"
@@ -1660,6 +1707,31 @@ class MVPManager:
             noise_path_prefixes=self._RALPH_HOUSEKEEPING_PREFIX,
         )
 
+    def _verify_workspace_matches(self, workspace: str | Path, expected_sha: str) -> tuple[str, ...]:
+        """Returns the non-noise files that make the LIVE workspace
+        diverge from ``expected_sha`` — committed drift, uncommitted
+        tracked edits, and untracked files are all covered in one pass
+        via ``working_tree_changed_files`` (real ``git diff``/``git
+        status``, never a claim taken on trust). Empty return means the
+        workspace is functionally clean at ``expected_sha`` (only
+        ``.ralph/`` noise, if anything, differs).
+
+        Added after a real external-project pilot (found via
+        ``scripts/run_external_project_pilot.py`` against a genuine
+        third-party repo, never reproduced by self-dogfooding this
+        control plane) showed a REAL review execution — never verified
+        read-only anywhere, unlike development/QA-authoring — could write
+        functional, uncommitted changes that a later Quality Gate or
+        Final QA Verification would then silently execute against,
+        reporting a verdict bound to a SHA that did not reflect what was
+        actually tested. This method never raises itself; callers decide
+        the governance consequence (always ``BLOCKED`` today — a
+        structural integrity problem, never something rework/retry can
+        fix on its own).
+        """
+        changed = working_tree_changed_files(Path(workspace), expected_sha)
+        return tuple(f for f in changed if not f.startswith(self._RALPH_HOUSEKEEPING_PREFIX))
+
     async def _run_review(
         self,
         *,
@@ -1734,9 +1806,11 @@ class MVPManager:
             )
             return review, work_item, "no eligible independent reviewer — blocked pending manual intervention", True
 
+        pre_review_head: str | None = None
         if self._git_governance_service is not None:
             governed_record = self._reconcile_governed_head(work_item.work_item_id, project.workspace)
             base_sha = governed_record.base_sha
+            pre_review_head = governed_record.current_head_sha
 
         if reviewer_model is None:
             reviewer_profile = reviewer.profile()
@@ -1779,6 +1853,47 @@ class MVPManager:
                 work_item.work_item_id, reason="review execution failed to run"
             )
             return review, work_item, "review execution failed — blocked pending manual intervention", True
+
+        # Invariant (external pilot finding): review must be strictly
+        # read-only, verified by real git facts — never trusted from the
+        # reviewer's own emitted verdict, exactly like development/QA-
+        # authoring are never trusted on their say-so either. Checked
+        # AFTER the execution genuinely ends (never mid-loop, never from
+        # the business event alone — a `review.approved` emitted early
+        # followed by more iterations of undefined activity must not
+        # short-circuit this), and BEFORE `_determine_review_verdict` is
+        # even consulted: a real mutation here means the emitted verdict,
+        # whatever it says, is never usable. `git_sha_reviewed` is bound
+        # to `pre_review_head` — the SHA actually in front of the
+        # reviewer before it ran — never silently reattributed to
+        # whatever the workspace looks like now.
+        if self._git_governance_service is not None and pre_review_head is not None:
+            review_violations = self._verify_workspace_matches(project.workspace, pre_review_head)
+            if review_violations:
+                review = ReviewRecord(
+                    review_id=review_id, project_id=project.project_id, mvp_id=mvp_id,
+                    work_item_id=work_item.work_item_id,
+                    author_execution_id=dev_result.record.execution_id,
+                    author_worker_id=dev_result.record.worker_id,
+                    reviewer_execution_id=review_exec_result.record.execution_id,
+                    reviewer_worker_id=reviewer.worker_id, reviewer_provider=reviewer.provider,
+                    reviewer_model=reviewer_model,
+                    started_at=started_at, finished_at=self._clock(), status=ReviewStatus.ERROR,
+                    git_sha_reviewed=pre_review_head,
+                )
+                self._review_store.record(review)
+                work_item = self._project_state_store.mark_work_item_blocked(
+                    work_item.work_item_id,
+                    reason=(
+                        "review execution left non-read-only changes (governance violation): "
+                        f"{list(review_violations)!r}"
+                    ),
+                )
+                return (
+                    review, work_item,
+                    "review produced a workspace integrity violation — blocked pending manual intervention",
+                    True,
+                )
 
         status, findings = self._determine_review_verdict(review_exec_result)
 

@@ -781,7 +781,10 @@ class TestMergeHeadDriftHardening:
 
     def test_dirty_real_file_in_working_tree_still_fails_the_switch(self, tmp_path: Path) -> None:
         """Noise tolerance never discards an actual uncommitted change —
-        only every-file-is-noise triggers the discard."""
+        only every-file-is-noise triggers the discard. Fails closed
+        explicitly (``DirtyWorkingTreeError``, checked before any branch
+        mutation is attempted) rather than surfacing as a raw git error
+        from `switch` itself."""
         service, repo, h2 = _prepared(tmp_path)
         eligibility = service.compute_merge_eligibility(
             "wi-1", repository_path=repo, work_item_status="completed",
@@ -790,7 +793,24 @@ class TestMergeHeadDriftHardening:
         LocalGitWorkspace(repo).switch(work_branch_name("wi-1"))
         (repo / "a.txt").write_text("uncommitted real change")  # a.txt is tracked (from _prepared)
 
-        with pytest.raises(GitCommandError):
+        with pytest.raises(DirtyWorkingTreeError):
+            service.merge(
+                "wi-1", repository_path=repo, eligibility=eligibility, noise_path_prefixes=(".ralph/",),
+            )
+
+    def test_dirty_untracked_real_file_also_fails_closed(self, tmp_path: Path) -> None:
+        """Invariant 2 (external pilot finding): an untracked functional
+        file blocks merge exactly like a modified tracked one — noise
+        tolerance never widens to cover new, unexpected files either."""
+        service, repo, h2 = _prepared(tmp_path)
+        eligibility = service.compute_merge_eligibility(
+            "wi-1", repository_path=repo, work_item_status="completed",
+            gate_passed=True, gate_git_sha=h2, review_approved=True, review_git_sha=h2,
+        )
+        LocalGitWorkspace(repo).switch(work_branch_name("wi-1"))
+        (repo / "new_file.py").write_text("x = 1\n")  # untracked, never staged
+
+        with pytest.raises(DirtyWorkingTreeError):
             service.merge(
                 "wi-1", repository_path=repo, eligibility=eligibility, noise_path_prefixes=(".ralph/",),
             )
