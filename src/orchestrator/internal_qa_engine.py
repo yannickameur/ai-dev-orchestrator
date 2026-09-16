@@ -82,6 +82,7 @@ from orchestrator.qa_knowledge import (
     analyze_test_impact_deterministic,
     load_qa_knowledge_base,
 )
+from orchestrator.git_governance import IsolatedQAWorkspace, LocalGitWorkspace
 from orchestrator.qa_protection import (
     ProtectedTestBaseline,
     TestChangeAuthorization,
@@ -306,14 +307,22 @@ def _looks_like_a_test_filename(path: str) -> bool:
     return (name.startswith("test_") or name.endswith("_test.py")) and name.endswith(".py")
 
 
-def verify_authoring_git_facts(
+def classify_authoring_changes(
     *, cwd: Path, base_sha: str, allowed_prefixes: Sequence[str] = ("tests/", "fixtures/", ".qa/")
-) -> tuple[str, ...]:
-    """Independently computes which files actually changed — never trusts
-    ``QAAuthoringReport.production_files_modified`` alone. Returns the
-    subset of changed files that fall outside ``allowed_prefixes``
-    (production files) — a non-empty result is an ``AuthoringViolationError``
-    condition for the caller to raise.
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Independently computes which files actually changed since
+    ``base_sha`` — committed, staged, unstaged, AND untracked, all in one
+    pass via ``working_tree_changed_files`` (real git facts; never trusts
+    ``QAAuthoringReport``/the worker's own self-report about what it
+    added or modified) — and splits that real change-set into
+    ``(allowed, forbidden)`` using the exact same rule
+    ``verify_authoring_git_facts`` has always used: a path under
+    ``allowed_prefixes``, or matching pytest's own ``test_*.py``/
+    ``*_test.py`` discovery convention, is allowed; anything else is
+    forbidden. Ralph's own runtime noise (``.ralph/``, ``__pycache__``,
+    ``.pytest_cache``) is silently dropped from BOTH halves — it is
+    neither promotable content nor a governance violation, exactly the
+    same convention used everywhere else in this module.
 
     ``base_sha`` must reference a commit where the working tree was
     already clean (no pre-existing untracked files) — exactly what
@@ -323,14 +332,40 @@ def verify_authoring_git_facts(
     this authoring execution" on its own; a caller outside that governed
     path (e.g. a manual smoke script) must establish a clean baseline
     itself before calling this.
+
+    Used by ``InternalQATestAuthor.run_authoring`` (isolated-workspace
+    promotion, Slice 25) to determine the exact change-set eligible for
+    promotion onto the governed target, and by ``verify_authoring_git_facts``
+    (kept, unchanged contract) for a simple "is there any violation at
+    all" check.
     """
     changed = working_tree_changed_files(cwd, base_sha)
-    return tuple(
-        f for f in changed
-        if not any(f.startswith(p) for p in allowed_prefixes)
-        and not _looks_like_a_test_filename(f)
-        and not _is_runtime_noise(f)
-    )
+    allowed: list[str] = []
+    forbidden: list[str] = []
+    for f in changed:
+        if _is_runtime_noise(f):
+            continue
+        if any(f.startswith(p) for p in allowed_prefixes) or _looks_like_a_test_filename(f):
+            allowed.append(f)
+        else:
+            forbidden.append(f)
+    return tuple(allowed), tuple(forbidden)
+
+
+def verify_authoring_git_facts(
+    *, cwd: Path, base_sha: str, allowed_prefixes: Sequence[str] = ("tests/", "fixtures/", ".qa/")
+) -> tuple[str, ...]:
+    """Independently computes which files actually changed — never trusts
+    ``QAAuthoringReport.production_files_modified`` alone. Returns the
+    subset of changed files that fall outside ``allowed_prefixes``
+    (production files) — a non-empty result is an ``AuthoringViolationError``
+    condition for the caller to raise. A thin wrapper over
+    ``classify_authoring_changes`` — kept as its own function since it
+    predates the promotion mechanism and existing tests/call sites
+    already depend on this exact "just the forbidden half" contract.
+    """
+    _, forbidden = classify_authoring_changes(cwd=cwd, base_sha=base_sha, allowed_prefixes=allowed_prefixes)
+    return forbidden
 
 
 # --- failure classification (deterministic-first) ------------------------
@@ -819,7 +854,31 @@ class QAAuthoringOutcome:
     worker's own structured claim (``report``, ``None`` if the event was
     absent/invalid) plus this module's own independently-verified Git
     facts (``unauthorized_files``, always computed, never trusted from
-    the worker alone)."""
+    the worker alone).
+
+    Slice 25 (isolated + governed QA authoring, found via a real
+    external-project pilot: a worker left a real, allowed change
+    uncommitted and self-reported no change at all): the execution itself
+    now always runs in a disposable ``IsolatedQAWorkspace``, never the
+    governed target directly. ``git_sha_after`` reflects the GOVERNED
+    TARGET's real head after this call returns — either unchanged
+    (``head_sha`` passed in, when nothing was promoted) or the new,
+    orchestrator-made promotion commit's sha — never a sha from inside
+    the isolated workspace. ``promoted_files`` is the exact, real
+    change-set (independently computed from git facts, never the
+    worker's self-report) that was actually promoted onto the target;
+    empty when there was nothing to promote OR promotion was blocked.
+    ``promotion_blocked_reason`` is set only when an ALLOWED change-set
+    existed but could not be safely promoted (the governed target had
+    already advanced past ``head_sha``, or was itself dirty) — distinct
+    from ``unauthorized_files`` (a FORBIDDEN path was touched, so nothing
+    is ever promoted, partially or otherwise). ``worker_report_mismatch``
+    is purely informative/auditable: true whenever the worker's own
+    ``tests_added``/``tests_modified`` claim does not match the real,
+    independently-computed allowed change-set — Git is always the
+    authority for what actually happened; this field never blocks
+    anything by itself.
+    """
 
     worker_id: str
     provider: str
@@ -830,6 +889,9 @@ class QAAuthoringOutcome:
     report: QAAuthoringReport | None
     unauthorized_files: tuple[str, ...]
     git_sha_after: str | None
+    promoted_files: tuple[str, ...] = ()
+    promotion_blocked_reason: str | None = None
+    worker_report_mismatch: bool = False
 
 
 class InternalQATestAuthor:
@@ -912,37 +974,141 @@ class InternalQATestAuthor:
         changed_files: Sequence[str],
         existing_coverage: Sequence[str],
     ) -> QAAuthoringOutcome:
-        workspace = Path(workspace)
+        """Runs QA Test Authoring — isolated, governed promotion (Slice 25).
+
+        ``workspace`` is the GOVERNED TARGET repository. The worker's real
+        Ralph execution never runs there directly: it runs inside a
+        disposable ``IsolatedQAWorkspace`` checked out at exactly
+        ``head_sha`` — like Review, but unlike Review this phase is
+        write-CAPABLE, so a change found inside is not itself a violation.
+        After the execution genuinely ends (the full ``ExecutionResult``,
+        never just the ``qa.authoring.completed`` business event), the
+        real git facts inside the isolated workspace (committed, staged,
+        unstaged, AND untracked — never the worker's own self-report) are
+        classified into an allowed and a forbidden subset using the exact
+        same rule ``verify_authoring_git_facts`` has always used:
+
+        - ANY forbidden path -> reject the ENTIRE change-set (never a
+          partial promotion); the governed target is never touched.
+        - Nothing allowed either -> nothing to promote; the governed
+          target legitimately stays at ``head_sha``.
+        - An allowed, non-empty change-set -> promoted onto the governed
+          target transactionally: the target's real current head and
+          working tree are re-verified to still be exactly ``head_sha``/
+          clean immediately before writing anything (a target that
+          advanced or is already dirty blocks promotion outright — no
+          rebase, no merge, no retry); the exact allowed paths' final
+          bytes are copied from the isolated workspace onto the target,
+          staged by their exact paths (never ``git add -A``), and
+          committed with an orchestrator-authored, deterministic message
+          — the worker itself never decides what gets committed.
+        """
+        target = Path(workspace)
         execution_id = self._id_factory()
-        request = ExecutionRequest(
-            execution_id=execution_id, task_id=task_id, worker=worker, role=QA_TESTING_ROLE,
-            workspace=workspace,
-            instructions=_build_qa_authoring_instructions(
-                objective=objective, acceptance_criteria=acceptance_criteria,
-                base_sha=base_sha, head_sha=head_sha, changed_files=changed_files,
-                existing_coverage=existing_coverage,
-            ),
-            initial_event_topic=AUTHORING_INITIAL_EVENT_TOPIC,
-            success_topics=frozenset({AUTHORING_SUCCESS_TOPIC}),
-            failure_topics=frozenset({AUTHORING_FAILURE_TOPIC}),
-            timeout_seconds=self._timeout_seconds, model=model, reasoning_effort=reasoning_effort,
-        )
-        result = await self._execution_engine.execute(request)
 
-        report: QAAuthoringReport | None = None
-        success_events = [e for e in result.events if e.topic == AUTHORING_SUCCESS_TOPIC]
-        if success_events:
-            try:
-                report = parse_qa_authoring_event(success_events[-1].payload)
-            except InvalidQAAuthoringEventError:
-                report = None
+        with IsolatedQAWorkspace(source_repository_path=target, sha=head_sha, qa_run_id=execution_id) as isolated_ws:
+            request = ExecutionRequest(
+                execution_id=execution_id, task_id=task_id, worker=worker, role=QA_TESTING_ROLE,
+                workspace=isolated_ws.path,
+                instructions=_build_qa_authoring_instructions(
+                    objective=objective, acceptance_criteria=acceptance_criteria,
+                    base_sha=base_sha, head_sha=head_sha, changed_files=changed_files,
+                    existing_coverage=existing_coverage,
+                ),
+                initial_event_topic=AUTHORING_INITIAL_EVENT_TOPIC,
+                success_topics=frozenset({AUTHORING_SUCCESS_TOPIC}),
+                failure_topics=frozenset({AUTHORING_FAILURE_TOPIC}),
+                timeout_seconds=self._timeout_seconds, model=model, reasoning_effort=reasoning_effort,
+            )
+            result = await self._execution_engine.execute(request)
 
-        unauthorized_files = verify_authoring_git_facts(cwd=workspace, base_sha=base_sha)
+            report: QAAuthoringReport | None = None
+            success_events = [e for e in result.events if e.topic == AUTHORING_SUCCESS_TOPIC]
+            if success_events:
+                try:
+                    report = parse_qa_authoring_event(success_events[-1].payload)
+                except InvalidQAAuthoringEventError:
+                    report = None
 
-        return QAAuthoringOutcome(
-            worker_id=worker.worker_id, provider=worker.provider, model=model,
-            reasoning_effort=reasoning_effort, execution_id=result.record.execution_id,
-            succeeded=bool(success_events) and report is not None and not unauthorized_files,
-            report=report, unauthorized_files=unauthorized_files,
-            git_sha_after=result.record.git_sha_after,
-        )
+            allowed, forbidden = classify_authoring_changes(cwd=isolated_ws.path, base_sha=base_sha)
+            reported_files = frozenset(
+                (report.tests_added if report is not None else ()) + (report.tests_modified if report is not None else ())
+            )
+            worker_report_mismatch = reported_files != frozenset(allowed)
+
+            common_kwargs = dict(
+                worker_id=worker.worker_id, provider=worker.provider, model=model,
+                reasoning_effort=reasoning_effort, execution_id=result.record.execution_id,
+                report=report, worker_report_mismatch=worker_report_mismatch,
+            )
+
+            if forbidden:
+                # Never a partial promotion: a single forbidden path
+                # rejects the ENTIRE change-set, including any allowed
+                # files in the same execution — the governed target is
+                # never touched, and the isolated workspace is preserved
+                # for forensics (mirrors Review's own violation handling).
+                isolated_ws.preserve()
+                return QAAuthoringOutcome(
+                    **common_kwargs, succeeded=False, unauthorized_files=forbidden,
+                    git_sha_after=None, promoted_files=(),
+                )
+
+            if not allowed:
+                # No real change at all (beyond Ralph's own runtime
+                # noise, already dropped by classify_authoring_changes) —
+                # the governed target legitimately stays at `head_sha`;
+                # never an artificial/empty commit.
+                return QAAuthoringOutcome(
+                    **common_kwargs, succeeded=bool(success_events) and report is not None,
+                    unauthorized_files=(), git_sha_after=head_sha, promoted_files=(),
+                )
+
+            # --- transactional promotion onto the governed target ---
+            target_ws = LocalGitWorkspace(target)
+            real_head = target_ws.head_sha()
+            target_status = target_ws.working_tree_status()
+            target_dirty = tuple(
+                p for p in (*target_status.tracked_dirty, *target_status.untracked) if not _is_runtime_noise(p)
+            )
+            if real_head != head_sha or target_dirty:
+                # The governed target moved (H1 -> Hx) or was already
+                # dirty while QA authoring ran in isolation — never
+                # rebase/merge/retry the promotion onto a moved target;
+                # fail closed and let existing reconciliation/governance
+                # handle the drift.
+                isolated_ws.preserve()
+                reason = (
+                    f"target advanced or was dirty before QA promotion: expected_head={head_sha!r} "
+                    f"actual_head={real_head!r} dirty={list(target_dirty)!r}"
+                )
+                return QAAuthoringOutcome(
+                    **common_kwargs, succeeded=False, unauthorized_files=(), git_sha_after=None,
+                    promoted_files=(), promotion_blocked_reason=reason,
+                )
+
+            for rel_path in allowed:
+                source_file = isolated_ws.path / rel_path
+                dest_file = target / rel_path
+                if source_file.is_file():
+                    dest_file.parent.mkdir(parents=True, exist_ok=True)
+                    dest_file.write_bytes(source_file.read_bytes())
+                elif dest_file.exists():
+                    dest_file.unlink()
+
+            promoted_sha = target_ws.stage_and_commit(
+                list(allowed), message=f"qa: promote authored test changes for {task_id}",
+            )
+            # Re-verify what was ACTUALLY committed — never assume staging
+            # exactly `allowed` produced exactly that commit.
+            actually_committed = set(target_ws.changed_files(head_sha, promoted_sha))
+            if not actually_committed <= set(allowed):
+                raise RuntimeError(
+                    "QA promotion committed unexpected path(s), never staged: "
+                    f"{sorted(actually_committed - set(allowed))!r}"
+                )
+
+            return QAAuthoringOutcome(
+                **common_kwargs, succeeded=bool(success_events) and report is not None,
+                unauthorized_files=(), git_sha_after=promoted_sha, promoted_files=allowed,
+            )

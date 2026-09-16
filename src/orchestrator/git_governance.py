@@ -301,6 +301,25 @@ class LocalGitWorkspace:
         self._require_repository()
         self._run(["checkout", "--", *paths])
 
+    def stage_and_commit(self, paths: Sequence[str], *, message: str) -> str:
+        """``git add -- <exact paths>`` then ``git commit -m <message>`` —
+        never ``git add -A``/``git add .``: only the exact, already-vetted
+        paths the caller passes are ever staged. Used for an
+        orchestrator-controlled promotion commit (e.g. QA Test Authoring's
+        allowed change-set) — the worker itself never decides what gets
+        committed or writes the commit message. Returns the new HEAD sha.
+        The caller is responsible for having already verified there is a
+        genuine, non-empty change at exactly these paths — this method
+        does not itself re-derive that (``git commit`` fails loudly with a
+        non-zero exit / ``GitCommandError`` if there is nothing to
+        commit)."""
+        if not paths:
+            raise ValueError("stage_and_commit: paths must be non-empty")
+        self._require_repository()
+        self._run(["add", "--", *paths])
+        self._run(["commit", "-m", message])
+        return self.head_sha()
+
     def is_ancestor(self, ancestor_ref: str, descendant_ref: str) -> bool:
         self._require_repository()
         result = self._run(["merge-base", "--is-ancestor", ancestor_ref, descendant_ref], check=False)
@@ -364,12 +383,16 @@ class LocalGitWorkspace:
         return tuple(line for line in result.stdout.splitlines() if line)
 
 
-class IsolatedReviewWorkspace:
-    """A disposable, DETACHED git worktree checked out at the EXACT SHA to
-    review — so a review execution's Ralph process never runs inside the
-    governed target workspace at all (added after a real external-project
-    pilot: even a governance check that catches a mutation after the fact
-    still let it briefly exist in the real, shared target workspace).
+class _IsolatedGitWorktree:
+    """Shared mechanics for a disposable, DETACHED git worktree checked
+    out at an EXACT sha — so a write-capable execution's Ralph process
+    never runs inside the governed target workspace at all (added after a
+    real external-project pilot: even a governance check that catches a
+    mutation after the fact still let it briefly exist in the real,
+    shared target workspace). ``IsolatedReviewWorkspace`` and
+    ``IsolatedQAWorkspace`` are both thin subclasses of this — same
+    mechanics, different disposable-directory label purely for a human
+    inspecting ``/tmp`` during a real run (never load-bearing).
 
     Built entirely on ``LocalGitWorkspace.worktree_add``/``worktree_remove``
     — no clone, no network, no fetch/pull/push, no checkout of any other
@@ -382,20 +405,22 @@ class IsolatedReviewWorkspace:
     ``preserve()`` was called first (a governance violation or any other
     incident should keep it around for forensics — the caller decides,
     this class never guesses). This is deliberately the *only* worktree
-    mechanism in this codebase, scoped to review isolation — the module's
-    own "no worktree manager" design note (see module docstring) still
-    holds for the single governed branch each WorkItem otherwise uses.
+    mechanism in this codebase — the module's own "no worktree manager"
+    design note (see module docstring) still holds for the single
+    governed branch each WorkItem otherwise uses.
     """
 
+    _LABEL = "isolated"
+
     def __init__(
-        self, *, source_repository_path: str | Path, sha: str, review_id: str,
+        self, *, source_repository_path: str | Path, sha: str, workspace_id: str,
         git_binary: str = DEFAULT_GIT_BINARY, parent_dir: str | Path | None = None,
     ) -> None:
-        _require_non_empty_str(sha, field_name="IsolatedReviewWorkspace.sha")
-        _require_non_empty_str(review_id, field_name="IsolatedReviewWorkspace.review_id")
+        _require_non_empty_str(sha, field_name=f"{type(self).__name__}.sha")
+        _require_non_empty_str(workspace_id, field_name=f"{type(self).__name__}.workspace_id")
         self._source = LocalGitWorkspace(source_repository_path, git_binary=git_binary)
         self._sha = sha
-        self._review_id = review_id
+        self._workspace_id = workspace_id
         self._parent_dir = Path(parent_dir) if parent_dir is not None else Path(tempfile.gettempdir())
         self._path: Path | None = None
         self._preserved = False
@@ -403,7 +428,7 @@ class IsolatedReviewWorkspace:
     @property
     def path(self) -> Path:
         if self._path is None:
-            raise RuntimeError("IsolatedReviewWorkspace: not created yet — use as a context manager")
+            raise RuntimeError(f"{type(self).__name__}: not created yet — use as a context manager")
         return self._path
 
     def preserve(self) -> None:
@@ -411,17 +436,17 @@ class IsolatedReviewWorkspace:
         governance violation or any other incident worth inspecting."""
         self._preserved = True
 
-    def __enter__(self) -> "IsolatedReviewWorkspace":
+    def __enter__(self) -> "_IsolatedGitWorktree":
         self._parent_dir.mkdir(parents=True, exist_ok=True)
-        # `review_id` alone is not safe as a bare, predictable path
+        # `workspace_id` alone is not safe as a bare, predictable path
         # component: it is only unique within one MVPManager's own
         # id_factory counter, so two unrelated runs (e.g. two offline
         # tests, or two real pipelines sharing a tmp dir) can compute the
-        # exact same "review-<id>" name. `mkdtemp` guarantees a genuinely
+        # exact same "<label>-<id>" name. `mkdtemp` guarantees a genuinely
         # unique, empty directory (`git worktree add` accepts a
-        # pre-existing empty target) while keeping `review_id` visible in
-        # the name for a human inspecting `/tmp` during a real run.
-        self._path = Path(tempfile.mkdtemp(dir=self._parent_dir, prefix=f"review-{self._review_id}-"))
+        # pre-existing empty target) while keeping `workspace_id` visible
+        # in the name for a human inspecting `/tmp` during a real run.
+        self._path = Path(tempfile.mkdtemp(dir=self._parent_dir, prefix=f"{self._LABEL}-{self._workspace_id}-"))
         self._source.worktree_add(self._path, self._sha)
         return self
 
@@ -433,6 +458,49 @@ class IsolatedReviewWorkspace:
             return
         self._source.worktree_remove(self._path)
         self._path = None
+
+
+class IsolatedReviewWorkspace(_IsolatedGitWorktree):
+    """Isolation for a Review execution — read-only by contract; any
+    change found inside is itself the violation (see
+    ``MVPManager._run_review``). ``review_id`` is kept as this class's own
+    keyword (rather than the generic ``workspace_id``) for readability at
+    every existing call site/test."""
+
+    _LABEL = "review"
+
+    def __init__(
+        self, *, source_repository_path: str | Path, sha: str, review_id: str,
+        git_binary: str = DEFAULT_GIT_BINARY, parent_dir: str | Path | None = None,
+    ) -> None:
+        super().__init__(
+            source_repository_path=source_repository_path, sha=sha, workspace_id=review_id,
+            git_binary=git_binary, parent_dir=parent_dir,
+        )
+
+
+class IsolatedQAWorkspace(_IsolatedGitWorktree):
+    """Isolation for a QA Test Authoring execution — unlike Review, this
+    phase is write-CAPABLE (it may legitimately add/modify tests), so
+    unlike Review a change found inside is not itself a violation: the
+    caller (``InternalQATestAuthor.run_authoring``) inspects the real git
+    facts here, classifies them against the existing allowed-path rule
+    (``internal_qa_engine.classify_authoring_changes``), and — only for an
+    allowed change-set — promotes it onto the governed target itself via
+    an explicit, orchestrator-controlled ``LocalGitWorkspace.stage_and_commit``
+    call; the worker's own execution here never commits anything the
+    governed target will ever see directly."""
+
+    _LABEL = "qa"
+
+    def __init__(
+        self, *, source_repository_path: str | Path, sha: str, qa_run_id: str,
+        git_binary: str = DEFAULT_GIT_BINARY, parent_dir: str | Path | None = None,
+    ) -> None:
+        super().__init__(
+            source_repository_path=source_repository_path, sha=sha, workspace_id=qa_run_id,
+            git_binary=git_binary, parent_dir=parent_dir,
+        )
 
 
 # --- policy -------------------------------------------------------------

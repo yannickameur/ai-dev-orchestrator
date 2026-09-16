@@ -21,6 +21,7 @@ import pytest
 
 from orchestrator.adaptive_execution import AdaptiveExecutionDecisionStore, AdaptiveExecutionSelector
 from orchestrator.complexity_estimation import ComplexityEstimationRequest, ExecutionRecommendation
+from orchestrator.git_governance import LocalGitWorkspace
 from orchestrator.internal_qa_engine import (
     ENGINE_ID,
     QA_TESTING_CAPABILITY,
@@ -32,6 +33,7 @@ from orchestrator.internal_qa_engine import (
     NoEvidenceAvailableError,
     UnsupportedStackError,
     changed_files_since,
+    classify_authoring_changes,
     classify_validation_status,
     parse_qa_authoring_event,
     run_qa_cycle,
@@ -1086,6 +1088,376 @@ class TestRunAuthoringEndToEnd:
         assert outcome.report is None
         assert outcome.succeeded is False
 
+
+# --- Slice 25: isolated + governed QA Test Authoring promotion -------------
+#
+# Found via a real external-project pilot (mars-rover run4): QA Test
+# Authoring is write-CAPABLE (unlike Review), but ran directly in the
+# governed target with no isolation and nothing verifying its real git
+# effect — a worker wrote a real, allowed test change, never committed
+# it, and self-reported no change at all, which a QA verdict then PASSed
+# against the stale, unrelated SHA. QA Test Authoring now always runs in
+# a disposable ``IsolatedQAWorkspace`` (analogous to Review's isolation),
+# and only an ALLOWED, real (git-fact-derived, never self-report-derived)
+# change-set is ever promoted onto the governed target, via an explicit,
+# orchestrator-controlled commit.
+
+
+class TestIsolatedQAAuthoringPromotion:
+    def _author(self, engine: RalphExecutionEngine) -> InternalQATestAuthor:
+        return InternalQATestAuthor(
+            adaptive_execution_selector=None, worker_selector=None, execution_engine=engine,
+            id_factory=_counting_id_factory("qa-exec"),
+        )
+
+    def _run(self, author: InternalQATestAuthor, repo: Path, base: str):
+        return asyncio.run(author.run_authoring(
+            worker=_qa_worker("alice"), model="m", reasoning_effort=None, task_id="wi-1", workspace=repo,
+            objective="obj", acceptance_criteria=(), base_sha=base, head_sha=base,
+            changed_files=(), existing_coverage=(),
+        ))
+
+    _NO_CHANGE_PAYLOAD = (
+        '{"tests_added": [], "tests_modified": [], "fixtures_added": [], "fixtures_modified": [], '
+        '"production_files_modified": [], "findings": [], "risks": [], "recommended_actions": []}'
+    )
+
+    # A: QA modifies only tests/ -> promoted, orchestrator commit, new governed SHA.
+    def test_allowed_test_only_change_is_promoted_to_a_new_governed_sha(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        base = _head(repo)
+
+        async def runner(args, cwd, timeout):
+            (Path(cwd) / "tests" / "test_new_regression.py").write_text("def test_new():\n    assert True\n")
+            _run_git(Path(cwd), "add", "-A")
+            _run_git(Path(cwd), "commit", "-m", "qa: add regression test")
+            payload = (
+                '{"tests_added": ["tests/test_new_regression.py"], "tests_modified": [], "fixtures_added": [], '
+                '"fixtures_modified": [], "production_files_modified": [], "findings": [], "risks": [], '
+                '"recommended_actions": []}'
+            )
+            return await _make_fake_authoring_runner(
+                events_lines=[_event_line("qa.authoring.completed", payload)]
+            )(args, cwd, timeout)
+
+        engine = RalphExecutionEngine(
+            ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW), clock=lambda: UTC_NOW,
+            subprocess_runner=runner,
+        )
+        outcome = self._run(self._author(engine), repo, base)
+
+        assert outcome.unauthorized_files == ()
+        assert outcome.promotion_blocked_reason is None
+        assert outcome.promoted_files == ("tests/test_new_regression.py",)
+        assert outcome.git_sha_after is not None and outcome.git_sha_after != base
+        assert LocalGitWorkspace(repo).head_sha() == outcome.git_sha_after
+        assert (repo / "tests" / "test_new_regression.py").read_text() == "def test_new():\n    assert True\n"
+        assert _run_git(repo, "log", "-1", "--format=%s").stdout.strip() == (
+            "qa: promote authored test changes for wi-1"
+        )
+        assert _run_git(repo, "status", "--porcelain").stdout == ""
+
+    # B: QA changes nothing -> no artificial commit.
+    def test_no_change_produces_no_commit(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        base = _head(repo)
+        engine = RalphExecutionEngine(
+            ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW), clock=lambda: UTC_NOW,
+            subprocess_runner=_make_fake_authoring_runner(
+                events_lines=[_event_line("qa.authoring.completed", self._NO_CHANGE_PAYLOAD)]
+            ),
+        )
+        outcome = self._run(self._author(engine), repo, base)
+
+        assert outcome.promoted_files == ()
+        assert outcome.git_sha_after == base
+        assert LocalGitWorkspace(repo).head_sha() == base
+
+    # C: QA modifies only src/ -> violation, no promotion, target unchanged.
+    def test_forbidden_production_only_change_blocks_with_no_promotion(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        base = _head(repo)
+
+        async def runner(args, cwd, timeout):
+            (Path(cwd) / "src" / "app.py").write_text("def add(a, b):\n    return a - b\n")
+            _run_git(Path(cwd), "commit", "-am", "sneaky prod change")
+            return await _make_fake_authoring_runner(
+                events_lines=[_event_line("qa.authoring.completed", self._NO_CHANGE_PAYLOAD)]
+            )(args, cwd, timeout)
+
+        engine = RalphExecutionEngine(
+            ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW), clock=lambda: UTC_NOW,
+            subprocess_runner=runner,
+        )
+        outcome = self._run(self._author(engine), repo, base)
+
+        assert "src/app.py" in outcome.unauthorized_files
+        assert outcome.promoted_files == ()
+        assert outcome.git_sha_after is None
+        assert LocalGitWorkspace(repo).head_sha() == base
+        assert _run_git(repo, "status", "--porcelain").stdout == ""
+
+    # D: QA modifies tests/ + src/ -> no partial promotion, target unchanged.
+    def test_mixed_allowed_and_forbidden_promotes_nothing(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        base = _head(repo)
+
+        async def runner(args, cwd, timeout):
+            (Path(cwd) / "tests" / "test_extra.py").write_text("def test_extra():\n    assert True\n")
+            (Path(cwd) / "src" / "app.py").write_text("def add(a, b):\n    return a - b\n")
+            _run_git(Path(cwd), "add", "-A")
+            _run_git(Path(cwd), "commit", "-m", "mixed change")
+            payload = (
+                '{"tests_added": ["tests/test_extra.py"], "tests_modified": [], "fixtures_added": [], '
+                '"fixtures_modified": [], "production_files_modified": [], "findings": [], "risks": [], '
+                '"recommended_actions": []}'
+            )
+            return await _make_fake_authoring_runner(
+                events_lines=[_event_line("qa.authoring.completed", payload)]
+            )(args, cwd, timeout)
+
+        engine = RalphExecutionEngine(
+            ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW), clock=lambda: UTC_NOW,
+            subprocess_runner=runner,
+        )
+        outcome = self._run(self._author(engine), repo, base)
+
+        assert "src/app.py" in outcome.unauthorized_files
+        assert outcome.promoted_files == ()
+        assert LocalGitWorkspace(repo).head_sha() == base
+        assert not (repo / "tests" / "test_extra.py").exists()
+
+    # E: worker self-report says no change, Git shows a real modified test -> Git wins, promoted.
+    def test_self_report_says_no_change_but_git_shows_a_modified_test(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        base = _head(repo)
+
+        async def runner(args, cwd, timeout):
+            (Path(cwd) / "tests" / "test_app.py").write_text(
+                "import sys\nsys.path.insert(0, 'src')\nfrom app import add\n\n"
+                "def test_add():\n    assert add(2, 3) == 5\n\n\ndef test_extra():\n    assert True\n"
+            )
+            _run_git(Path(cwd), "commit", "-am", "real change, false self-report")
+            return await _make_fake_authoring_runner(
+                events_lines=[_event_line("qa.authoring.completed", self._NO_CHANGE_PAYLOAD)]
+            )(args, cwd, timeout)
+
+        engine = RalphExecutionEngine(
+            ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW), clock=lambda: UTC_NOW,
+            subprocess_runner=runner,
+        )
+        outcome = self._run(self._author(engine), repo, base)
+
+        assert outcome.worker_report_mismatch is True
+        assert outcome.promoted_files == ("tests/test_app.py",)
+        assert outcome.git_sha_after != base
+        assert "def test_extra" in (repo / "tests" / "test_app.py").read_text()
+
+    # F: worker announces a test added, Git shows no change -> nothing invented.
+    def test_self_report_claims_a_test_added_but_git_shows_no_change(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        base = _head(repo)
+        payload = (
+            '{"tests_added": ["tests/test_phantom.py"], "tests_modified": [], "fixtures_added": [], '
+            '"fixtures_modified": [], "production_files_modified": [], "findings": [], "risks": [], '
+            '"recommended_actions": []}'
+        )
+        engine = RalphExecutionEngine(
+            ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW), clock=lambda: UTC_NOW,
+            subprocess_runner=_make_fake_authoring_runner(
+                events_lines=[_event_line("qa.authoring.completed", payload)]
+            ),
+        )
+        outcome = self._run(self._author(engine), repo, base)
+
+        assert outcome.worker_report_mismatch is True
+        assert outcome.promoted_files == ()
+        assert outcome.git_sha_after == base
+        assert not (repo / "tests" / "test_phantom.py").exists()
+
+    # G: worker commits itself inside isolation -> detected from H1, governance still promotes.
+    def test_worker_committing_itself_inside_isolation_is_still_governed(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        base = _head(repo)
+
+        async def runner(args, cwd, timeout):
+            (Path(cwd) / "tests" / "test_self_committed.py").write_text("def test_x():\n    assert True\n")
+            _run_git(Path(cwd), "add", "-A")
+            _run_git(Path(cwd), "commit", "-m", "worker's own commit, inside isolation only")
+            payload = (
+                '{"tests_added": ["tests/test_self_committed.py"], "tests_modified": [], "fixtures_added": [], '
+                '"fixtures_modified": [], "production_files_modified": [], "findings": [], "risks": [], '
+                '"recommended_actions": []}'
+            )
+            return await _make_fake_authoring_runner(
+                events_lines=[_event_line("qa.authoring.completed", payload)]
+            )(args, cwd, timeout)
+
+        engine = RalphExecutionEngine(
+            ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW), clock=lambda: UTC_NOW,
+            subprocess_runner=runner,
+        )
+        outcome = self._run(self._author(engine), repo, base)
+
+        assert outcome.promoted_files == ("tests/test_self_committed.py",)
+        assert _run_git(repo, "log", "-1", "--format=%s").stdout.strip() == (
+            "qa: promote authored test changes for wi-1"
+        )
+        assert _run_git(repo, "log", "--format=%s").stdout.count("worker's own commit") == 0
+
+    # H: untracked allowed test file -> correctly included in the changeset.
+    def test_untracked_allowed_test_file_is_included(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        base = _head(repo)
+
+        async def runner(args, cwd, timeout):
+            (Path(cwd) / "tests" / "test_untracked.py").write_text("def test_y():\n    assert True\n")
+            return await _make_fake_authoring_runner(
+                events_lines=[_event_line("qa.authoring.completed", self._NO_CHANGE_PAYLOAD)]
+            )(args, cwd, timeout)
+
+        engine = RalphExecutionEngine(
+            ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW), clock=lambda: UTC_NOW,
+            subprocess_runner=runner,
+        )
+        outcome = self._run(self._author(engine), repo, base)
+
+        assert outcome.promoted_files == ("tests/test_untracked.py",)
+        assert (repo / "tests" / "test_untracked.py").read_text() == "def test_y():\n    assert True\n"
+        assert _run_git(repo, "status", "--porcelain").stdout == ""
+
+    # I: untracked forbidden file -> reject entire changeset.
+    def test_untracked_forbidden_file_rejects_entire_changeset(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        base = _head(repo)
+
+        async def runner(args, cwd, timeout):
+            (Path(cwd) / "src" / "helper.py").write_text("x = 1\n")
+            return await _make_fake_authoring_runner(
+                events_lines=[_event_line("qa.authoring.completed", self._NO_CHANGE_PAYLOAD)]
+            )(args, cwd, timeout)
+
+        engine = RalphExecutionEngine(
+            ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW), clock=lambda: UTC_NOW,
+            subprocess_runner=runner,
+        )
+        outcome = self._run(self._author(engine), repo, base)
+
+        assert "src/helper.py" in outcome.unauthorized_files
+        assert outcome.promoted_files == ()
+        assert not (repo / "src" / "helper.py").exists()
+
+    # J: target advances H1 -> Hx during isolated QA -> promotion refused.
+    def test_target_advancing_during_isolated_qa_blocks_promotion(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        base = _head(repo)
+
+        async def runner(args, cwd, timeout):
+            (Path(cwd) / "tests" / "test_new.py").write_text("def test_new():\n    assert True\n")
+            _run_git(Path(cwd), "add", "-A")
+            _run_git(Path(cwd), "commit", "-m", "qa change")
+            # A concurrent, real commit lands on the TARGET while QA
+            # authoring is still running in isolation.
+            _run_git(repo, "commit", "--allow-empty", "-m", "concurrent unrelated commit")
+            payload = (
+                '{"tests_added": ["tests/test_new.py"], "tests_modified": [], "fixtures_added": [], '
+                '"fixtures_modified": [], "production_files_modified": [], "findings": [], "risks": [], '
+                '"recommended_actions": []}'
+            )
+            return await _make_fake_authoring_runner(
+                events_lines=[_event_line("qa.authoring.completed", payload)]
+            )(args, cwd, timeout)
+
+        engine = RalphExecutionEngine(
+            ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW), clock=lambda: UTC_NOW,
+            subprocess_runner=runner,
+        )
+        outcome = self._run(self._author(engine), repo, base)
+
+        assert outcome.promotion_blocked_reason is not None
+        assert outcome.promoted_files == ()
+        assert outcome.git_sha_after is None
+        assert not (repo / "tests" / "test_new.py").exists()
+
+    # K: target dirty before promotion -> promotion refused.
+    def test_target_dirty_before_promotion_blocks(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        base = _head(repo)
+
+        async def runner(args, cwd, timeout):
+            (Path(cwd) / "tests" / "test_new.py").write_text("def test_new():\n    assert True\n")
+            _run_git(Path(cwd), "add", "-A")
+            _run_git(Path(cwd), "commit", "-m", "qa change")
+            # The REAL target becomes dirty concurrently (never committed).
+            (repo / "README_dirty.txt").write_text("uncommitted concurrent write\n")
+            payload = (
+                '{"tests_added": ["tests/test_new.py"], "tests_modified": [], "fixtures_added": [], '
+                '"fixtures_modified": [], "production_files_modified": [], "findings": [], "risks": [], '
+                '"recommended_actions": []}'
+            )
+            return await _make_fake_authoring_runner(
+                events_lines=[_event_line("qa.authoring.completed", payload)]
+            )(args, cwd, timeout)
+
+        engine = RalphExecutionEngine(
+            ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW), clock=lambda: UTC_NOW,
+            subprocess_runner=runner,
+        )
+        outcome = self._run(self._author(engine), repo, base)
+
+        assert outcome.promotion_blocked_reason is not None
+        assert outcome.promoted_files == ()
+        assert not (repo / "tests" / "test_new.py").exists()
+        assert (repo / "README_dirty.txt").read_text() == "uncommitted concurrent write\n"
+
+    # N: runtime noise only -> no artificial functional commit.
+    def test_runtime_noise_only_produces_no_functional_commit(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        base = _head(repo)
+        engine = RalphExecutionEngine(
+            ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW), clock=lambda: UTC_NOW,
+            subprocess_runner=_make_fake_authoring_runner(
+                events_lines=[_event_line("qa.authoring.completed", self._NO_CHANGE_PAYLOAD)]
+            ),
+        )
+        outcome = self._run(self._author(engine), repo, base)
+
+        assert outcome.promoted_files == ()
+        assert outcome.git_sha_after == base
+        assert LocalGitWorkspace(repo).head_sha() == base
+
+    # O: target stays intact after a violation — the isolated QA worktree
+    # is preserved for forensics (never auto-deleted, mirroring Review's
+    # own violation handling), but the TARGET's own checkout/branch/head
+    # is completely untouched, and the target repo's real file content
+    # never reflects the rejected change.
+    def test_target_stays_intact_after_a_violation_only_isolated_worktree_preserved(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        base = _head(repo)
+
+        async def runner(args, cwd, timeout):
+            (Path(cwd) / "src" / "app.py").write_text("def add(a, b):\n    return a - b\n")
+            _run_git(Path(cwd), "commit", "-am", "forbidden change")
+            return await _make_fake_authoring_runner(
+                events_lines=[_event_line("qa.authoring.completed", self._NO_CHANGE_PAYLOAD)]
+            )(args, cwd, timeout)
+
+        engine = RalphExecutionEngine(
+            ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW), clock=lambda: UTC_NOW,
+            subprocess_runner=runner,
+        )
+        self._run(self._author(engine), repo, base)
+
+        assert LocalGitWorkspace(repo).head_sha() == base
+        assert (repo / "src" / "app.py").read_text() == "def add(a, b):\n    return a + b\n"
+        assert _run_git(repo, "status", "--porcelain").stdout == ""
+        worktrees = subprocess.run(
+            ["git", "worktree", "list"], cwd=str(repo), capture_output=True, text=True,
+        ).stdout
+        # Exactly one extra worktree: the preserved, disposable QA one —
+        # never registered as touching the target's own checked-out branch.
+        assert worktrees.count("\n") == 2
+        assert "(detached HEAD)" in worktrees
 
 
 # --- Part J: provider independence, no schema leakage -----------------------

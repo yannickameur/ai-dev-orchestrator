@@ -942,6 +942,21 @@ class MVPManager:
                 return WorkItemRunResult(
                     work_item=blocked, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
                 )
+            if outcome.promotion_blocked_reason:
+                # An allowed QA change-set existed but could not be safely
+                # promoted (the governed target advanced past `head_sha`
+                # or was already dirty while QA authoring ran in
+                # isolation) — never rebase/merge/retry; the target was
+                # never touched, so this fails closed exactly like an
+                # unauthorized-file violation, with its own distinct
+                # reason for diagnosis.
+                blocked = self._project_state_store.mark_work_item_blocked(
+                    work_item.work_item_id,
+                    reason=f"QA authoring promotion blocked: {outcome.promotion_blocked_reason}",
+                )
+                return WorkItemRunResult(
+                    work_item=blocked, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
+                )
             if outcome.git_sha_after and outcome.git_sha_after != head_sha:
                 head_sha = outcome.git_sha_after
                 if self._git_governance_service is not None:
