@@ -212,7 +212,7 @@ from typing import Callable
 from orchestrator.adaptive_execution import AdaptiveExecutionSelector
 from orchestrator.complexity_estimation import ComplexityEstimationRequest
 from orchestrator.execution_store import ExecutionStatus, ExecutionStore, UnknownExecutionError
-from orchestrator.git_governance import GitGovernanceService, GitWorkItemRecord
+from orchestrator.git_governance import GitGovernanceService, GitWorkItemRecord, IsolatedReviewWorkspace
 from orchestrator.handoff import HandoffRecord, HandoffStore
 from orchestrator.internal_qa_engine import (
     AuthoringViolationError,
@@ -1816,12 +1816,31 @@ class MVPManager:
             reviewer_profile = reviewer.profile()
             reviewer_model = reviewer_profile.model
             reviewer_reasoning_effort = reviewer_profile.reasoning_effort
+
+        # Isolation (external pilot follow-up): a review execution has the
+        # exact same real file-system access as development, with no
+        # git-fact enforcement of its own — never run it inside the
+        # governed target workspace at all. `IsolatedReviewWorkspace` is a
+        # disposable, detached `git worktree` checked out at exactly
+        # `pre_review_head` — sharing the target's object database (no
+        # clone, no network) but never its working tree. Cleaned up on
+        # every normal exit via `finally` below; preserved (never deleted)
+        # if any violation is found, for forensics.
+        isolated_review_ws: IsolatedReviewWorkspace | None = None
+        review_workspace = project.workspace
+        if self._git_governance_service is not None and pre_review_head is not None:
+            isolated_review_ws = IsolatedReviewWorkspace(
+                source_repository_path=project.workspace, sha=pre_review_head, review_id=review_id,
+            )
+            isolated_review_ws.__enter__()
+            review_workspace = isolated_review_ws.path
+
         review_request = ExecutionRequest(
             execution_id=self._id_factory(),
             task_id=work_item.work_item_id,
             worker=reviewer,
             role=REVIEWER_ROLE,
-            workspace=project.workspace,
+            workspace=review_workspace,
             instructions=_build_review_instructions(
                 work_item, quality_gate_summary=gate_summary,
                 git_sha=dev_result.record.git_sha_after, previous_findings=previous_findings,
@@ -1835,132 +1854,183 @@ class MVPManager:
         )
 
         try:
-            review_exec_result = await self._execution_engine.execute(review_request)
-        except RalphExecutionEngineError:
-            review = ReviewRecord(
-                review_id=review_id, project_id=project.project_id, mvp_id=mvp_id,
-                work_item_id=work_item.work_item_id,
-                author_execution_id=dev_result.record.execution_id,
-                author_worker_id=dev_result.record.worker_id,
-                reviewer_execution_id=review_request.execution_id,
-                reviewer_worker_id=reviewer.worker_id, reviewer_provider=reviewer.provider,
-                reviewer_model=reviewer_model,
-                started_at=started_at, finished_at=self._clock(), status=ReviewStatus.ERROR,
-                git_sha_reviewed=dev_result.record.git_sha_after,
-            )
-            self._review_store.record(review)
-            work_item = self._project_state_store.mark_work_item_blocked(
-                work_item.work_item_id, reason="review execution failed to run"
-            )
-            return review, work_item, "review execution failed — blocked pending manual intervention", True
-
-        # Invariant (external pilot finding): review must be strictly
-        # read-only, verified by real git facts — never trusted from the
-        # reviewer's own emitted verdict, exactly like development/QA-
-        # authoring are never trusted on their say-so either. Checked
-        # AFTER the execution genuinely ends (never mid-loop, never from
-        # the business event alone — a `review.approved` emitted early
-        # followed by more iterations of undefined activity must not
-        # short-circuit this), and BEFORE `_determine_review_verdict` is
-        # even consulted: a real mutation here means the emitted verdict,
-        # whatever it says, is never usable. `git_sha_reviewed` is bound
-        # to `pre_review_head` — the SHA actually in front of the
-        # reviewer before it ran — never silently reattributed to
-        # whatever the workspace looks like now.
-        if self._git_governance_service is not None and pre_review_head is not None:
-            review_violations = self._verify_workspace_matches(project.workspace, pre_review_head)
-            if review_violations:
+            try:
+                review_exec_result = await self._execution_engine.execute(review_request)
+            except RalphExecutionEngineError:
                 review = ReviewRecord(
                     review_id=review_id, project_id=project.project_id, mvp_id=mvp_id,
                     work_item_id=work_item.work_item_id,
                     author_execution_id=dev_result.record.execution_id,
                     author_worker_id=dev_result.record.worker_id,
-                    reviewer_execution_id=review_exec_result.record.execution_id,
+                    reviewer_execution_id=review_request.execution_id,
                     reviewer_worker_id=reviewer.worker_id, reviewer_provider=reviewer.provider,
                     reviewer_model=reviewer_model,
                     started_at=started_at, finished_at=self._clock(), status=ReviewStatus.ERROR,
-                    git_sha_reviewed=pre_review_head,
+                    git_sha_reviewed=dev_result.record.git_sha_after,
                 )
                 self._review_store.record(review)
                 work_item = self._project_state_store.mark_work_item_blocked(
-                    work_item.work_item_id,
-                    reason=(
-                        "review execution left non-read-only changes (governance violation): "
-                        f"{list(review_violations)!r}"
-                    ),
+                    work_item.work_item_id, reason="review execution failed to run"
                 )
+                return review, work_item, "review execution failed — blocked pending manual intervention", True
+
+            # Invariant (external pilot finding): review must be strictly
+            # read-only, verified by real git facts — never trusted from
+            # the reviewer's own emitted verdict, exactly like
+            # development/QA-authoring are never trusted on their say-so
+            # either. Checked AFTER the execution genuinely ends (never
+            # mid-loop, never from the business event alone — a
+            # `review.approved` emitted early followed by more iterations
+            # of undefined activity must not short-circuit this), and
+            # BEFORE `_determine_review_verdict` is even consulted: a real
+            # mutation here means the emitted verdict, whatever it says,
+            # is never usable. `git_sha_reviewed` is bound to
+            # `pre_review_head` — the SHA actually in front of the
+            # reviewer before it ran — never silently reattributed to
+            # whatever the workspace looks like now.
+            #
+            # Checked in the ISOLATED workspace first (where the review
+            # actually ran) — a violation there means the reviewer wrote
+            # real, non-noise changes to its own disposable checkout, even
+            # though the governed target was never at risk. The governed
+            # TARGET is then re-verified unconditionally too (whether or
+            # not the isolated check found anything): isolation is a
+            # mechanism, not an assumption — if it ever failed and the
+            # target itself was mutated, that is a distinct, more severe
+            # finding (an isolation-mechanism defect, not a reviewer
+            # behavior problem) and is reported as such.
+            if self._git_governance_service is not None and pre_review_head is not None:
+                review_violations = self._verify_workspace_matches(review_workspace, pre_review_head)
+                target_contamination = self._verify_workspace_matches(project.workspace, pre_review_head)
+
+                if target_contamination:
+                    if isolated_review_ws is not None:
+                        isolated_review_ws.preserve()
+                    review = ReviewRecord(
+                        review_id=review_id, project_id=project.project_id, mvp_id=mvp_id,
+                        work_item_id=work_item.work_item_id,
+                        author_execution_id=dev_result.record.execution_id,
+                        author_worker_id=dev_result.record.worker_id,
+                        reviewer_execution_id=review_exec_result.record.execution_id,
+                        reviewer_worker_id=reviewer.worker_id, reviewer_provider=reviewer.provider,
+                        reviewer_model=reviewer_model,
+                        started_at=started_at, finished_at=self._clock(), status=ReviewStatus.ERROR,
+                        git_sha_reviewed=pre_review_head,
+                    )
+                    self._review_store.record(review)
+                    work_item = self._project_state_store.mark_work_item_blocked(
+                        work_item.work_item_id,
+                        reason=(
+                            "CRITICAL: review isolation failed — the governed target workspace "
+                            f"was itself mutated during an isolated review execution: "
+                            f"{list(target_contamination)!r}"
+                        ),
+                    )
+                    return (
+                        review, work_item,
+                        "review isolation failure — blocked, escalate immediately",
+                        True,
+                    )
+
+                if review_violations:
+                    if isolated_review_ws is not None:
+                        isolated_review_ws.preserve()
+                    review = ReviewRecord(
+                        review_id=review_id, project_id=project.project_id, mvp_id=mvp_id,
+                        work_item_id=work_item.work_item_id,
+                        author_execution_id=dev_result.record.execution_id,
+                        author_worker_id=dev_result.record.worker_id,
+                        reviewer_execution_id=review_exec_result.record.execution_id,
+                        reviewer_worker_id=reviewer.worker_id, reviewer_provider=reviewer.provider,
+                        reviewer_model=reviewer_model,
+                        started_at=started_at, finished_at=self._clock(), status=ReviewStatus.ERROR,
+                        git_sha_reviewed=pre_review_head,
+                    )
+                    self._review_store.record(review)
+                    work_item = self._project_state_store.mark_work_item_blocked(
+                        work_item.work_item_id,
+                        reason=(
+                            "review execution left non-read-only changes in its isolated "
+                            f"workspace (governance violation): {list(review_violations)!r}"
+                        ),
+                    )
+                    return (
+                        review, work_item,
+                        "review produced a workspace integrity violation — blocked pending manual intervention",
+                        True,
+                    )
+
+            status, findings = self._determine_review_verdict(review_exec_result)
+
+            review = ReviewRecord(
+                review_id=review_id, project_id=project.project_id, mvp_id=mvp_id,
+                work_item_id=work_item.work_item_id,
+                author_execution_id=dev_result.record.execution_id,
+                author_worker_id=dev_result.record.worker_id,
+                reviewer_execution_id=review_exec_result.record.execution_id,
+                reviewer_worker_id=reviewer.worker_id, reviewer_provider=reviewer.provider,
+                reviewer_model=reviewer_model,
+                started_at=started_at, finished_at=self._clock(), status=status, findings=findings,
+                git_sha_reviewed=dev_result.record.git_sha_after,
+            )
+            self._review_store.record(review)
+
+            if status is ReviewStatus.APPROVED:
+                if self._qa_enabled:
+                    effective_base_sha = (
+                        base_sha or getattr(dev_result.record, "git_sha_before", None)
+                        or dev_result.record.git_sha_after
+                    )
+                    work_item, qa_next_action, qa_passed = await self._run_final_qa_verification(
+                        project=project, mvp_id=mvp_id, work_item=work_item,
+                        base_sha=effective_base_sha, head_sha=dev_result.record.git_sha_after,
+                    )
+                    if not qa_passed:
+                        return review, work_item, qa_next_action, False
+                work_item = self._project_state_store.mark_work_item_completed(work_item.work_item_id)
+                self._maybe_finalize_git(
+                    project=project, work_item=work_item, gate_result=gate_result, review_result=review,
+                    qa_passed=True if self._qa_enabled else None, qa_git_sha=dev_result.record.git_sha_after,
+                )
+                return review, work_item, "review approved — proceed to the next eligible WorkItem", True
+
+            if status is ReviewStatus.INTERRUPTED and self._recovery_coordinator is not None:
+                # Never treated as a rejection (would wrongly consume a
+                # bounded rework cycle for an attempt that never reached a
+                # verdict) and never left dangling in REVIEWING —
+                # RECOVERY_REQUIRED, to be resumed with a brand-new review
+                # execution, never this one.
+                self._recovery_coordinator.ensure_recovery_handoff(
+                    project_id=project.project_id, mvp_id=mvp_id, work_item=work_item,
+                    execution=review_exec_result.record,
+                )
+                work_item = self._project_state_store.mark_work_item_recovery_required(work_item.work_item_id)
                 return (
                     review, work_item,
-                    "review produced a workspace integrity violation — blocked pending manual intervention",
+                    "review execution interrupted — recovery required, will resume with a new review",
                     True,
                 )
 
-        status, findings = self._determine_review_verdict(review_exec_result)
-
-        review = ReviewRecord(
-            review_id=review_id, project_id=project.project_id, mvp_id=mvp_id,
-            work_item_id=work_item.work_item_id,
-            author_execution_id=dev_result.record.execution_id,
-            author_worker_id=dev_result.record.worker_id,
-            reviewer_execution_id=review_exec_result.record.execution_id,
-            reviewer_worker_id=reviewer.worker_id, reviewer_provider=reviewer.provider,
-            reviewer_model=reviewer_model,
-            started_at=started_at, finished_at=self._clock(), status=status, findings=findings,
-            git_sha_reviewed=dev_result.record.git_sha_after,
-        )
-        self._review_store.record(review)
-
-        if status is ReviewStatus.APPROVED:
-            if self._qa_enabled:
-                effective_base_sha = (
-                    base_sha or getattr(dev_result.record, "git_sha_before", None)
-                    or dev_result.record.git_sha_after
+            # REJECTED / ERROR / INTERRUPTED-without-recovery-configured:
+            # never COMPLETED. Bounded rework (pre-Slice-11b behavior,
+            # preserved exactly when execution-level recovery is not
+            # configured).
+            cycles_used = self._review_store.count_for_work_item(work_item.work_item_id)
+            if cycles_used >= self._review_policy.max_review_cycles:
+                work_item = self._project_state_store.mark_work_item_blocked(
+                    work_item.work_item_id,
+                    reason=(
+                        f"max_review_cycles ({self._review_policy.max_review_cycles}) "
+                        "reached without approval"
+                    ),
                 )
-                work_item, qa_next_action, qa_passed = await self._run_final_qa_verification(
-                    project=project, mvp_id=mvp_id, work_item=work_item,
-                    base_sha=effective_base_sha, head_sha=dev_result.record.git_sha_after,
-                )
-                if not qa_passed:
-                    return review, work_item, qa_next_action, False
-            work_item = self._project_state_store.mark_work_item_completed(work_item.work_item_id)
-            self._maybe_finalize_git(
-                project=project, work_item=work_item, gate_result=gate_result, review_result=review,
-                qa_passed=True if self._qa_enabled else None, qa_git_sha=dev_result.record.git_sha_after,
-            )
-            return review, work_item, "review approved — proceed to the next eligible WorkItem", True
+                return review, work_item, "max review cycles reached — blocked pending manual intervention", True
 
-        if status is ReviewStatus.INTERRUPTED and self._recovery_coordinator is not None:
-            # Never treated as a rejection (would wrongly consume a bounded
-            # rework cycle for an attempt that never reached a verdict) and
-            # never left dangling in REVIEWING — RECOVERY_REQUIRED, to be
-            # resumed with a brand-new review execution, never this one.
-            self._recovery_coordinator.ensure_recovery_handoff(
-                project_id=project.project_id, mvp_id=mvp_id, work_item=work_item,
-                execution=review_exec_result.record,
-            )
-            work_item = self._project_state_store.mark_work_item_recovery_required(work_item.work_item_id)
-            return (
-                review, work_item,
-                "review execution interrupted — recovery required, will resume with a new review",
-                True,
-            )
-
-        # REJECTED / ERROR / INTERRUPTED-without-recovery-configured: never
-        # COMPLETED. Bounded rework (pre-Slice-11b behavior, preserved
-        # exactly when execution-level recovery is not configured).
-        cycles_used = self._review_store.count_for_work_item(work_item.work_item_id)
-        if cycles_used >= self._review_policy.max_review_cycles:
-            work_item = self._project_state_store.mark_work_item_blocked(
-                work_item.work_item_id,
-                reason=(
-                    f"max_review_cycles ({self._review_policy.max_review_cycles}) "
-                    "reached without approval"
-                ),
-            )
-            return review, work_item, "max review cycles reached — blocked pending manual intervention", True
-
-        work_item = self._project_state_store.mark_work_item_needs_rework(work_item.work_item_id)
-        return review, work_item, "review rejected — rework needed, see findings", True
+            work_item = self._project_state_store.mark_work_item_needs_rework(work_item.work_item_id)
+            return review, work_item, "review rejected — rework needed, see findings", True
+        finally:
+            if isolated_review_ws is not None:
+                isolated_review_ws.cleanup()  # no-op if preserve() was called above
 
     def _determine_review_verdict(
         self, review_exec_result: ExecutionResult

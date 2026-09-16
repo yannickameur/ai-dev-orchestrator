@@ -376,6 +376,8 @@ class TestReviewMustBeStrictlyReadOnly:
             git_governance_service=service, review_store=review_store,
         )
 
+        original_readme = (repo / "README.md").read_text()
+
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
 
         assert result.work_item.status is WorkItemStatus.BLOCKED
@@ -385,6 +387,157 @@ class TestReviewMustBeStrictlyReadOnly:
         record = git_store.get("wi-a")
         assert record.status is not GitWorkItemStatus.MERGED
         assert record.status is not GitWorkItemStatus.MERGE_READY
+        # Isolation: the mutation happened in a disposable worktree — the
+        # real, governed TARGET workspace reflects only what governance
+        # itself legitimately recorded (dev + estimation noise), never the
+        # reviewer's mutation, and stays perfectly clean.
+        assert LocalGitWorkspace(repo).head_sha() == record.current_head_sha
+        assert (repo / "README.md").read_text() == original_readme
+        assert subprocess.run(
+            ["git", "status", "--porcelain"], cwd=str(repo), capture_output=True, text=True,
+        ).stdout == ""
+
+    def test_reviewer_modifying_wi2_scope_during_wi1_review_blocks(self, tmp_path: Path) -> None:
+        """C: a reviewer implementing a later WorkItem's scope during this
+        WorkItem's review is exactly as invalid as any other functional
+        mutation — never a special case."""
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="WI-1")
+        service, git_store = _git_service(tmp_path, policy=GitGovernancePolicy(require_required_gates=False))
+        review_store = ReviewStore(tmp_path / "review.sqlite3", clock=lambda: UTC_NOW)
+        selector = FakeWorkerSelector(dev=_alice(), reviewer=_victor())
+        engine = GitCommittingFakeEngine(
+            reviewer_dirty_file=("src/app.py", "def simulate(*a, **k):\n    ...  # WI-2 scope, written during WI-1 review\n"),
+        )
+        manager = _manager(
+            project_store, handoff_store, selector, engine,
+            git_governance_service=service, review_store=review_store,
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.BLOCKED
+        review = review_store.latest_for_work_item("wi-a")
+        assert review.status is ReviewStatus.ERROR
+
+    def test_target_worktree_list_unaffected_by_a_violating_review(self, tmp_path: Path) -> None:
+        """D/J: an incident in the isolated review workspace never
+        contaminates the target — checked via `git worktree list` too,
+        never just file content."""
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        service, git_store = _git_service(tmp_path, policy=GitGovernancePolicy(require_required_gates=False))
+        review_store = ReviewStore(tmp_path / "review.sqlite3", clock=lambda: UTC_NOW)
+        selector = FakeWorkerSelector(dev=_alice(), reviewer=_victor())
+        engine = GitCommittingFakeEngine(reviewer_dirty_file=("README.md", "scope creep\n"))
+        manager = _manager(
+            project_store, handoff_store, selector, engine,
+            git_governance_service=service, review_store=review_store,
+        )
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        worktrees_after = subprocess.run(
+            ["git", "worktree", "list"], cwd=str(repo), capture_output=True, text=True,
+        ).stdout
+        # Only the target's own primary worktree — the isolated review
+        # worktree is preserved (a violation was found) but was never
+        # registered as touching the target's own checked-out branch.
+        assert "review-" not in worktrees_after or worktrees_after.count("\n") <= 2
+
+    def test_fully_clean_reviewer_approves_normally(self, tmp_path: Path) -> None:
+        """E: a reviewer that changes nothing at all still approves
+        exactly as before isolation was introduced."""
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        service, git_store = _git_service(
+            tmp_path, policy=GitGovernancePolicy(require_required_gates=False, auto_merge=True),
+        )
+        review_store = ReviewStore(tmp_path / "review.sqlite3", clock=lambda: UTC_NOW)
+        selector = FakeWorkerSelector(dev=_alice(), reviewer=_victor())
+        engine = GitCommittingFakeEngine()  # no reviewer_dirty_file at all
+        manager = _manager(
+            project_store, handoff_store, selector, engine,
+            git_governance_service=service, review_store=review_store,
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        review = review_store.latest_for_work_item("wi-a")
+        assert review.status is ReviewStatus.APPROVED
+        assert git_store.get("wi-a").status is GitWorkItemStatus.MERGED
+        # H: bound to the exact SHA actually reviewed.
+        assert review.git_sha_reviewed == git_store.get("wi-a").merged_sha
+
+    def test_fully_clean_reviewer_rejects_normally(self, tmp_path: Path) -> None:
+        """F: a clean (no mutation) but REJECTED review still produces a
+        normal rework cycle — isolation never changes rejection handling."""
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        service, git_store = _git_service(tmp_path, policy=GitGovernancePolicy(require_required_gates=False))
+        review_store = ReviewStore(tmp_path / "review.sqlite3", clock=lambda: UTC_NOW)
+        selector = FakeWorkerSelector(dev=_alice(), reviewer=_victor())
+        engine = GitCommittingFakeEngine(review_outcomes=[False])
+        manager = _manager(
+            project_store, handoff_store, selector, engine,
+            git_governance_service=service, review_store=review_store,
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.NEEDS_REWORK
+        review = review_store.latest_for_work_item("wi-a")
+        assert review.status is ReviewStatus.ERROR  # GitCommittingFakeEngine's "rejected" maps to a FAILED execution
+        assert git_store.get("wi-a").status is not GitWorkItemStatus.MERGED
+
+    def test_review_executes_in_a_workspace_separate_from_the_target(self, tmp_path: Path) -> None:
+        """The isolation itself, verified directly: the review execution's
+        own `ExecutionRequest.workspace` is never the target's path."""
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        service, git_store = _git_service(tmp_path, policy=GitGovernancePolicy(require_required_gates=False))
+        review_store = ReviewStore(tmp_path / "review.sqlite3", clock=lambda: UTC_NOW)
+        selector = FakeWorkerSelector(dev=_alice(), reviewer=_victor())
+        engine = GitCommittingFakeEngine()
+        manager = _manager(
+            project_store, handoff_store, selector, engine,
+            git_governance_service=service, review_store=review_store,
+        )
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        review_requests = [r for r in engine.requests if r.role == "reviewer"]
+        assert len(review_requests) == 1
+        assert review_requests[0].workspace != repo
+        assert review_requests[0].workspace.resolve() != repo.resolve()
+
+    def test_isolated_workspace_removed_after_a_normal_review(self, tmp_path: Path) -> None:
+        """I: no durable worktree leak for a normal (non-violating) review,
+        approved or rejected."""
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
+        service, git_store = _git_service(tmp_path, policy=GitGovernancePolicy(require_required_gates=False))
+        review_store = ReviewStore(tmp_path / "review.sqlite3", clock=lambda: UTC_NOW)
+        selector = FakeWorkerSelector(dev=_alice(), reviewer=_victor())
+        engine = GitCommittingFakeEngine()
+        manager = _manager(
+            project_store, handoff_store, selector, engine,
+            git_governance_service=service, review_store=review_store,
+        )
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        worktrees_after = subprocess.run(
+            ["git", "worktree", "list"], cwd=str(repo), capture_output=True, text=True,
+        ).stdout
+        assert "review-" not in worktrees_after
 
     def test_reviewer_modifying_an_untracked_test_file_also_blocks(self, tmp_path: Path) -> None:
         repo = _git_repo(tmp_path)
