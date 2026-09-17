@@ -98,7 +98,7 @@ Project (workspace, roadmap, MVP courant)
   ↓
 MVPManager (WorkItems, dépendances, handoff durable, LEAN_FEATURE_FLOW)
   ↓
-WorkerSelector (capability > governance > quota > cost)
+WorkerSelector (capability > governance > provider availability > priority)
   ↓
 RalphExecutionEngine (execution, hats, TDD, review Ralph)
   ↓

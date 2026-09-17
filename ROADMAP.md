@@ -99,7 +99,7 @@ pas confondre avec le cycle MVP/release long terme ci-dessus :
 ```
 ROADMAP / WorkItem
       ↓
-WorkerSelector (capability > gouvernance > quota > priorité)
+WorkerSelector (capability > gouvernance > disponibilité provider > priorité)
       ↓
 DEV A
       ↓
@@ -213,7 +213,9 @@ celle d'un autre :
   workers/workflows. Jamais réimplémenté, jamais doublé par un second
   scheduler.
 - **`WorkerSelector`** (Slice 4) = choix du worker (capability >
-  gouvernance > quota > coût). Jamais dupliqué ailleurs.
+  gouvernance > disponibilité provider > priorité). Jamais dupliqué
+  ailleurs ; `cost_rank` n'intervient jamais ici — il appartient à la
+  sélection de l'`ExecutionProfile` dans `orchestrator.adaptive_execution`.
 - **`QuotaManager`** (Slice 3) = disponibilité provider (cache/fraîcheur
   au-dessus des `ProviderAdapter`). Jamais interrogé directement par une
   couche d'orchestration haut niveau — toujours via `WorkerSelector`.
@@ -2045,16 +2047,30 @@ Livrables (esquisse, à détailler en phase 1 via un ADR dédié) :
 
 Prérequis : Phase 1 terminée et validée.
 
-### Phase 3 — Séparation Developer / Reviewer
+### Phase 3 — Séparation Developer / Reviewer — **HISTORICAL / SUPERSEDED**
 
 > Recoupée par **Slice 9** (« Independent author/reviewer orchestration »)
-> dans le découpage incrémental sous Phase 1 — le contenu ci-dessous reste
-> le détail de référence, notamment pour les rôles spécialisés futurs.
+> pour l'indépendance author/reviewer, puis par la décision produit
+> `LEAN_FEATURE_FLOW` (2026-09-17) pour le comportement courant — le
+> contenu ci-dessous reste le détail de référence pour les rôles
+> spécialisés futurs, mais n'est plus l'architecture de gouvernance en
+> vigueur.
+>
+> This section records the historical design intent. The current
+> governance invariant is `worker_id` independence
+> (`WorkerSelectionPolicy.require_distinct_worker_for_review=True`).
+> Provider diversity is preferred but not required
+> (`prefer_distinct_provider_for_review=True`,
+> `require_distinct_provider_for_review=False`). Model diversity is not a
+> governance invariant. See `ROADMAP.md`, « Chemin nominal actuel », for
+> the current, authoritative rule.
 
-Objectif : imposer qu'un agent ne valide jamais son propre code, et permettre
-`Developer.model != Reviewer.model` (puis `!= Reviewer.provider`).
+Objectif historique (au moment de cette Phase) : imposer qu'un agent ne
+valide jamais son propre code, et permettre `Developer.model !=
+Reviewer.model` (puis `!= Reviewer.provider`) — intention de conception
+d'alors, non l'invariant actuel.
 
-Livrables :
+Livrables (historique) :
 - Règle de routage dans `WorkerSelector` : exclure du rôle Reviewer tout worker
   dont le `model` (puis `provider`) apparaît déjà dans une `Execution` avec
   le rôle Developer sur la même tâche — entièrement dérivé des champs
