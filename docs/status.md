@@ -1,27 +1,34 @@
 # Status
 
-Dernière mise à jour : Worker pool fallback + alignement documentaire (2026-09-17).
+Dernière mise à jour : Clôture MVP 0.1 / Phase 1 (2026-09-17).
 
 ## État actuel (résumé factuel)
 
+- **MVP 0.1** : `DONE` (2026-09-17). Contrat d'acceptation :
+  `MVP_SPEC.yaml` v3 (16 AC, réaligné sur le produit réel ; v2 original
+  intégralement récupérable via `git log -p -- MVP_SPEC.yaml`).
+- **Phase 1** : `DONE`.
 - **Workflow** : `LEAN_FEATURE_FLOW` = `DEFAULT`.
 - **Nominal AI executions** : 2 (DEV A, DEV B corrective review).
 - **QA** : déterministe / non-LLM (`QAPhase.FINAL_VERIFICATION`, aucun
   `WorkerSelector`, aucun agent IA) ; jusqu'à 3 tentatives QA au total,
   puis `HUMAN_REVIEW_REQUIRED`.
-- **Worker pool** (`config/workers.yaml`) : `alice`/`bob` = anthropic,
-  `victor`/`oscar` = openai — 2 workers indépendants par provider.
+- **Worker pool** (`config/workers.yaml`) : 4 workers, 2 par provider —
+  `alice`/`bob` = anthropic, `victor`/`oscar` = openai.
 - **GOVERNED_FULL** : `DEPRECATED` / `REMOVAL_CANDIDATE` (reste
   sélectionnable explicitement, tests verts, non enrichi).
+- **Slice 24** : `ACCEPTANCE_DONE` (2026-09-16) — voir détail ci-dessous.
+- **Tests offline** : 1158 PASS.
 - **Mars Rover (pilote externe)** : en pause, aucun pilote actif.
 - **Slice active** : aucune.
-- **Next** : revue produit/roadmap avec l'utilisateur.
+- **Next** : POST-MVP 0.1 EXPERIMENT / DISCOVERY (proposé, non démarré) —
+  voir `ROADMAP.md`, « Next ».
 
 Le détail daté ci-dessous fait foi pour l'historique ; ce résumé reflète
 l'état courant.
 
-- **Slice 24 — QA/Rework/Review/Merge Integration : CODE_DONE,
-  ACCEPTANCE_PENDING_PROVIDER.** QA devient une capacité opt-in de plus
+- **Slice 24 — QA/Rework/Review/Merge Integration : DONE,
+  `ACCEPTANCE_DONE` (2026-09-16).** QA devient une capacité opt-in de plus
   de `MVPManager` (`qa_engine`/`qa_policy`/`qa_run_store`/
   `qa_protected_paths`), utilisée exclusivement via le `Protocol`
   `QAEngine` — aucun `isinstance`/import de `InternalQAEngine` dans
@@ -46,24 +53,26 @@ l'état courant.
   `InternalQATestAuthor.run_authoring`'s `base_sha` doit être le head
   juste avant la QA (post-dev), jamais le `base_sha` global du WorkItem.
   1089 tests offline PASS (1074 + 15, `tests/test_mvp_manager_qa_integration.py`).
-  **Self-dogfood : `CODE_DONE` mais non `ACCEPTANCE_DONE`** — probe quota
-  réel (lecture seule, 2026-09-15) : anthropic disponible, openai
-  toujours en quota épuisé ; avec un seul provider réel, l'exclusion
-  auteur≠QA ne peut être satisfaite → `BLOCKED_BY_PROVIDER` déterministe
-  (déjà prouvé offline, aucune session réelle supplémentaire dépensée
-  pour reconfirmer un résultat déjà certain). Voir `docs/QA_GOVERNANCE.md`
-  § « Slice 24 » pour le détail et la justification complète.
-  **Note (2026-09-17)** : le pool de workers a depuis été étendu à 2
-  workers par provider (`bob`/anthropic, `oscar`/openai — voir la
-  décision « Worker pool fallback » plus bas), ce qui lève
-  structurellement la cause de ce `BLOCKED_BY_PROVIDER` (un second worker
-  `qa_testing` du même provider que le développeur redevient éligible
-  même si l'autre provider est en quota). Non re-testé en acceptance
-  réelle cette session (aucun smoke provider réel lancé, périmètre
-  volontairement limité à la config/aux tests offline) — `CODE_DONE`
-  reste correct, l'étiquette `ACCEPTANCE_PENDING_PROVIDER` décrit l'état
-  du 2026-09-15 et n'est plus nécessairement bloquante aujourd'hui, sans
-  qu'une ré-acceptance réelle l'ait confirmé.
+  **Self-dogfood : `ACCEPTANCE_DONE` (2026-09-16)** —
+  `scripts/self_dogfood_full_pipeline_real.py` a fait passer un WorkItem
+  gouverné, sur une copie jetable du dépôt, avec les deux providers réels
+  (Claude + Codex) : Development → QA Test Authoring → Quality Gate →
+  Review indépendante (APPROVED) → QA Final Verification (PASS) →
+  éligibilité au merge → **merge réel** (`git merge --ff-only`), plus le
+  contrôle négatif obligatoire. Preuve versionnée :
+  `docs/reports/self-dogfood-full-pipeline-2026-09-15.html` (commit
+  `c292215`, "Stabilize full QA pipeline acceptance"). Voir
+  `docs/QA_GOVERNANCE.md` § « Slice 24 » pour le détail et la
+  justification complète.
+  **Historique (superseded) :** une tentative antérieure (probe quota lu
+  seul, 2026-09-15, un seul provider alors disponible — openai en quota
+  épuisé) avait échoué en `BLOCKED_BY_PROVIDER` déterministe, faute d'un
+  second worker `qa_testing` distinct de l'auteur. Cet état a été
+  superseded par le succès du 2026-09-16 ci-dessus, lui-même obtenu avant
+  même l'extension du pool à 4 workers (2026-09-17) — le pool étendu
+  rendrait aujourd'hui ce scénario robuste même à un seul provider
+  disponible, mais ce n'était déjà plus le blocage constaté au moment du
+  succès réel.
 - **Slice 23 — QA Engine MVP : DONE (Python/pytest uniquement).** Nouveau
   `src/orchestrator/internal_qa_engine.py` — `InternalQAEngine` (implémente
   le `QAEngine` Slice 22), `InternalQAPlan`, `InternalQATestAuthor`,
@@ -289,8 +298,13 @@ l'état courant.
   sélectionnable explicitement, sa suite de tests reste verte.** Détail
   complet, motivation KISS/YAGNI, et primitives réutilisées : voir
   `ROADMAP.md`. 1154 tests offline PASS (1144 avant + 10 nouveaux dans
-  `tests/test_mvp_manager_lean_feature_flow.py`). Acceptance réelle :
-  `docs/reports/mars-rover-lean-feature-flow-2026-09-16.html`.
+  `tests/test_mvp_manager_lean_feature_flow.py`). **Acceptance réelle
+  externe : non versionnée** — le rapport
+  `docs/reports/mars-rover-lean-feature-flow-2026-09-16.html` cité ici
+  n'existe pas dans le dépôt (confirmé par l'audit de clôture MVP 0.1,
+  2026-09-17 ; `git log --all` sur ce chemin est vide). `LEAN_FEATURE_FLOW`
+  est validé offline par sa suite d'intégration dédiée ; une acceptance
+  externe fraîche reste à réaliser (voir « Next » ci-dessous).
 - **Décision produit (2026-09-17) — Worker pool fallback : config
   uniquement, `provider`/`backend` restent sur `Worker` (pas de refactor
   `ExecutionProfile`, YAGNI confirmé).** Revue d'architecture
@@ -323,18 +337,35 @@ l'état courant.
   pause par décision utilisateur ce même jour — dépôt pilote intact comme
   preuve/audit, aucun nouveau run, aucun smoke réel, aucune consommation
   de quota provider réel cette session.
-- **Next : nouvelle revue produit/roadmap avec l'utilisateur avant toute
-  nouvelle capacité.** Le pool worker/provider fallback est fermé et
-  prouvé offline ; `LEAN_FEATURE_FLOW` reste `DEFAULT` et stabilisé.
-  Aucune nouvelle Slice active. Reste à décider avec l'utilisateur :
-  relancer (ou non) un pilote externe pour valider le pool à 4 workers en
-  conditions réelles, et si la CLI/productisation devient pertinente —
-  ni l'un ni l'autre ne démarre sans validation explicite. Toutes les
-  Slices 21-24 du cycle QA restent `CODE_DONE` — point de contrôle prévu
-  par le projet avant toute nouvelle Slice. Cette session ne décide pas
-  seule si un POC QA externe ou la Slice 25 (conditionnelle) sont
-  réellement utiles. OmniRoute reste une qualification future
-  optionnelle, hors roadmap principale (voir
+- **Décision produit (2026-09-17) — Clôture MVP 0.1 / Phase 1.** Revue de
+  clôture factuelle : matrice de preuves AC-par-AC de `MVP_SPEC.yaml` v2
+  contre le code/tests/Git réels, zéro nouveau code/test/config. Verdict :
+  aucun gap de comportement produit ne bloque le MVP 0.1 — seul le
+  contrat (v2, jamais modifié depuis sa création le 2026-09-12) était
+  stale. `MVP_SPEC.yaml` v3 : CLI/Ollama de-scopés en options futures,
+  `ModelRouter` → `WorkerSelector`, reset de quota simulé → re-probe réel,
+  Workspace 100% abstrait → gouvernance Git centralisée avec une exception
+  de lecture (`git rev-parse HEAD`) assumée et documentée ; 2 critères
+  ajoutés (AC-15 indépendance auteur/second développeur, AC-16
+  `LEAN_FEATURE_FLOW`). Texte v2 original entièrement préservé par Git
+  (`git log -p -- MVP_SPEC.yaml`), chaque critère modifié porte un
+  `historical_note`. Statut Slice 24 réconcilié (voir ci-dessus). Citation
+  d'un rapport d'acceptance Lean inexistant retirée (voir ci-dessus).
+  `MVP 0.1` = `DONE`, `Phase 1` = `DONE`. 1158 tests offline PASS,
+  inchangés.
+- **Next : POST-MVP 0.1 EXPERIMENT / DISCOVERY.** Pas encore un MVP 0.2 —
+  décision à prendre avec l'utilisateur. Axes convenus, **proposés, non
+  démarrés** : (1) pilote Lean frais sur un kata plus simple (Roman
+  Numerals, prochain petit pilote envisagé) ; (2) étude de faisabilité
+  Mistral/Vibe ; (3) étude build-vs-reuse Mammouth AI ; (4) étude de
+  l'écosystème des workers/providers gratuits/coût marginal nul ;
+  (5) échelle de difficulté progressive des projets de validation. Non
+  ordonnés au-delà du point (1). CLI/productisation reste une option
+  future, non requise pour démarrer ces axes. Toutes les Slices 21-24 du
+  cycle QA sont maintenant `DONE` (Slice 24 : `ACCEPTANCE_DONE`) — cette
+  session ne décide pas seule si un POC QA externe ou la Slice 25
+  (conditionnelle) sont réellement utiles. OmniRoute reste une
+  qualification future optionnelle, hors roadmap principale (voir
   `docs/OMNIROUTE_ARBITRATION.md`).
 
 Détail complet des slices, de la vision cible et du découpage incrémental :

@@ -17,11 +17,11 @@ Voir [`docs/status.md`](docs/status.md) pour l'état factuel courant (dernière
 décision produit, prochaine étape) et [ROADMAP.md](ROADMAP.md) pour le détail
 complet (phases, slices terminées, vision cible, découpage incrémental).
 
-Phase 0/0.5 terminées ; Phase 1 (MVP 0.1 : gouvernance + sélection + Ralph
-integration) très avancée — gouvernance Git/PR/merge, QA gouvernée, et le
-workflow par défaut ci-dessous sont tous implémentés et testés (voir
-`docs/status.md` pour le détail exact, section par section, plutôt qu'un
-résumé qui se périmerait vite ici).
+Phase 0/0.5/1 terminées — **MVP 0.1 : `DONE`** (clôturé 2026-09-17,
+contrat d'acceptation dans `MVP_SPEC.yaml` v3). Gouvernance Git/PR/merge,
+QA gouvernée, et le workflow par défaut ci-dessous sont implémentés et
+testés (voir `docs/status.md` pour le détail exact, section par section,
+plutôt qu'un résumé qui se périmerait vite ici).
 
 ### Workflow par défaut : `LEAN_FEATURE_FLOW`
 

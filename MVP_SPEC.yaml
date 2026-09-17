@@ -1,219 +1,493 @@
 # Spécification du MVP 0.1 — AI Dev Orchestrator
 #
-# Ce fichier est la source de vérité pour savoir si le MVP 0.1 est "fini".
-# Chaque critère d'acceptation doit être vérifiable mécaniquement (test,
-# commande, sortie de commande) — pas seulement "ça semble marcher".
+# v3 (2026-09-17) — CLOSURE ALIGNMENT.
 #
-# v2 : révisé après revue indépendante de l'architecture (voir ROADMAP.md,
-# principes directeurs 7 et 8, et section "Modèle conceptuel").
+# Ce fichier reste la source de vérité du CONTRAT D'ACCEPTATION du MVP 0.1.
+# Son contenu v2 (2026-09-12, commit c9a7b49, jamais modifié depuis)
+# décrivait un produit hypothétique — CLI `orchestrator`, `ModelRouter`,
+# adaptateur Ollama obligatoire, machine à états de quota locale, moteur
+# strictement zéro-Git — qui n'est plus celui réellement construit. Le
+# texte v2 intégral reste entièrement récupérable via
+# `git log -p -- MVP_SPEC.yaml` : IL N'EST PAS RÉÉCRIT NI EFFACÉ, seul
+# l'historique Git en fait foi comme archive du contrat initial.
+#
+# Chaque critère devenu obsolète a été réécrit ci-dessous pour représenter
+# le comportement réellement accepté, avec un champ `historical_note`
+# indiquant explicitement ce qu'il remplace — jamais une suppression
+# silencieuse. Aucune garantie utile déjà construite n'a été affaiblie :
+# voir provenance.closure_reason et docs/status.md pour la revue complète
+# qui a produit cette version.
+
+version: 3
+
+provenance:
+  previous_version: 2
+  previous_version_note: >
+    v2 était le contrat initial du MVP 0.1 ("Boucle cœur locale,
+    mono-projet, sans GitHub"), jamais modifié depuis sa création
+    (2026-09-12) jusqu'à cette clôture (2026-09-17), malgré une évolution
+    architecturale majeure du produit sur la même période. Son texte
+    original reste consultable via `git log -p -- MVP_SPEC.yaml`.
+  closure_decision_date: "2026-09-17"
+  closure_reason: >
+    Une revue de clôture factuelle (2026-09-17) a construit une matrice
+    de preuves AC-par-AC contre le code/tests/Git réels et conclu
+    qu'aucun gap de comportement produit ne bloque le MVP 0.1 : seul ce
+    contrat était devenu stale. L'architecture réellement livrée
+    (WorkerSelector, ExecutionProfile, QuotaManager, GitGovernanceService,
+    QA governance, LEAN_FEATURE_FLOW, worker pool fallback) dépasse
+    largement le contrat v2 initial sur la gouvernance, mais diverge de sa
+    lettre sur plusieurs points explicitement de-scopés ou remplacés
+    ci-dessous. Voir ROADMAP.md, "Décision produit (2026-09-17) — Clôture
+    MVP 0.1 / Phase 1", pour le détail complet de la revue.
+  scope_changes:
+    - "CLI/productisation : de-scopée du MVP 0.1, devient une option future (voir non_goals)."
+    - "Ollama/providers locaux : de-scopés du MVP 0.1, deviennent une option future (Worker Ecosystem Study)."
+    - "ModelRouter : superseded par WorkerSelector (capability > governance > provider availability > priority)."
+    - "Machine à états de quota locale (reset simulé) : superseded par re-probe réel du provider après échéance."
+    - "Workspace 100% abstrait/zéro appel Git direct : assoupli — un seul appel `git rev-parse HEAD` en lecture seule est accepté dans RalphExecutionEngine pour capturer un fait d'audit SHA ; toute décision de branche/merge/tag reste exclusivement dans GitGovernanceService."
+    - "Séparation Developer/Reviewer : n'est plus un non_goal Phase 3 — construite dès Phase 1 (Slice 9), puis étendue (worker_id independence REQUIRED, provider diversity PREFERRED, model diversity non-invariant)."
+    - "LEAN_FEATURE_FLOW ajouté comme workflow DEFAULT (2 exécutions LLM nominales, QA déterministe/non-LLM) — non prévu par le contrat v2, qui ne connaissait pas encore la notion de QA."
 
 mvp:
   id: mvp-0.1
-  name: "Boucle cœur locale, mono-projet, sans GitHub"
-  status: not_started
+  name: "Boucle cœur locale, mono-projet, sans GitHub distant"
+  status: done
+  status_note: >
+    Clôturé le 2026-09-17 sur la base de la revue de clôture factuelle
+    (matrice de preuves complète : code + tests + preuves réelles
+    versionnées, voir ROADMAP.md). Aucune Execution/Session Claude ou
+    Codex supplémentaire n'a été consommée pour produire cette clôture ;
+    elle s'appuie exclusivement sur des preuves déjà existantes dans le
+    dépôt (1158 tests offline PASS + artefacts d'acceptance réels déjà
+    committés pour les capacités centrales).
   goal: >
     Fournir une boucle Task -> Worker -> Exécution -> Résultat fonctionnelle
-    de bout en bout, en local, sur un seul projet, avec un routage de worker
-    qui priorise la capacité requise et le rôle avant le coût, un suivi de
-    quota extensible à plusieurs fenêtres, une identité d'exécution complète,
-    une abstraction Git découplée du moteur, et une détection explicite des
-    interruptions qui interdit tout retry aveugle.
+    de bout en bout, en local, sur un seul projet, avec une sélection de
+    worker qui priorise la capacité requise et la gouvernance avant la
+    priorité/le coût, un suivi de quota réel par provider, une identité
+    d'exécution complète, une gouvernance Git centralisée découplée des
+    workers, et une détection explicite des interruptions qui interdit
+    tout retry aveugle. Le contrat v3 reconnaît en plus, comme faisant
+    partie du MVP 0.1 réellement livré : l'indépendance auteur/second
+    développeur (worker_id), et le workflow nominal `LEAN_FEATURE_FLOW`
+    (DEV A -> DEV B correctif -> QA déterministe -> merge -> tag).
 
   non_goals:
-    - Intégration GitHub (branches distantes, Pull Requests, CI) — seule
-      l'abstraction Workspace doit déjà permettre de l'ajouter sans réécrire
-      le moteur
-    - Séparation stricte Developer/Reviewer (prévue en phase 3) — mais les
-      champs d'identité d'Execution nécessaires doivent déjà exister
+    - Intégration GitHub distante (branches distantes, Pull Requests, CI)
+      — la gouvernance Git locale (branche/SHA/merge/tag) est construite ;
+      seule l'intégration réseau GitHub reste hors MVP 0.1
+    - >-
+      Séparation stricte Developer/Reviewer : RETIRÉ de ce non_goal
+      (v2 le prévoyait pour une Phase 3 hypothétique) — construite dès
+      Phase 1 (Slice 9) et étendue (voir AC-15). Conservé ici uniquement
+      pour traçabilité de la divergence avec le contrat v2 original.
     - Réconciliation automatique complexe après interruption — une
-      réconciliation manuelle/explicite suffit pour ce MVP, à condition que
-      rien n'empêche de l'automatiser plus tard
-    - Usage réel de plusieurs fenêtres de quota simultanées — le schéma doit
-      le permettre, le comportement du MVP peut se limiter à une fenêtre par
-      worker
+      réconciliation explicite (nouvelle sélection de worker, jamais un
+      replay aveugle) suffit pour ce MVP ; rien n'empêche de l'automatiser
+      davantage plus tard
+    - Usage de plusieurs fenêtres de quota comme critère de décision
+      combiné — le schéma les observe et les diagnostique (multi-fenêtres
+      réel, validé), mais la décision de disponibilité reste un booléen
+      par provider (`ProviderAvailability.available`), jamais une
+      combinaison de fenêtres
     - Orchestration parallèle ou multi-projets
     - Interface utilisateur graphique
+    - CLI / productisation — voir AC-1 (de-scopée du MVP 0.1, option future)
+    - Ollama / providers locaux obligatoires — voir AC-2/AC-8 (de-scopés du MVP 0.1, option future)
     - "Dépendances lourdes : LangGraph, LiteLLM, OpenHands, Temporal, PR-Agent"
 
   acceptance_criteria:
     - id: AC-1
-      title: Installation et CLI exécutable
+      title: Installation et utilisation programmatique (sans CLI)
       description: >
-        Le paquet s'installe en environnement virtuel et expose une CLI.
+        Le paquet s'installe en environnement virtuel et son API Python
+        est directement utilisable pour orchestrer un MVP/WorkItem. Aucune
+        CLI n'est requise pour le MVP 0.1.
       measurable_check: >
-        `pip install -e .` termine avec un exit code 0, puis
-        `python -m orchestrator --help` retourne un exit code 0 et liste au
-        moins les commandes `mvp` et `task`.
+        `pip install -e .` (ou `.[dev]`) termine avec un exit code 0 ;
+        `import orchestrator` et les imports de ses sous-modules
+        (`orchestrator.mvp_manager`, `orchestrator.worker_selector`, ...)
+        réussissent — prouvé en continu par la suite `pytest` elle-même
+        (1158 tests, tous important le paquet réel).
+      historical_note: >
+        v2 exigeait `python -m orchestrator --help` et une CLI listant des
+        commandes `mvp`/`task`. Aucune CLI n'existe (`__main__.py`/
+        `cli.py`/`console_scripts` absents). De-scopée du MVP 0.1 par
+        décision produit (2026-09-17) : la CLI/productisation devient une
+        option future, non requise pour la clôture. Texte v2 original :
+        `git log -p -- MVP_SPEC.yaml`.
 
     - id: AC-2
       title: Registre des workers chargé depuis YAML, avec capacités
       description: >
         Le registre des workers est entièrement déclaratif ; chaque worker
-        déclare à la fois ses rôles et les capacités de tâches qu'il sait
-        traiter, aucun worker n'est codé en dur dans le code Python.
+        déclare son provider, son backend, ses capacités et un ou
+        plusieurs profils d'exécution. Aucun worker n'est codé en dur dans
+        le code Python. Aucun provider local spécifique (Ollama ou autre)
+        n'est requis : le nombre et la nature des providers configurés
+        sont libres tant que le schéma déclaratif le permet.
       measurable_check: >
-        Un test unitaire charge `config/workers.yaml` contenant au moins 3
-        entrées (claude_code, codex_cli, ollama_qwen) et vérifie que
-        `WorkerRegistry.load(...)` retourne 3 objets `Worker` avec les
-        champs `name`, `adapter`, `model`, `provider`, `roles`,
-        `capabilities`, `priority_tier`, `cost_tier` correctement renseignés.
+        `WorkerRegistry.load("config/workers.yaml")` charge réellement le
+        fichier du dépôt et retourne des objets `Worker` avec les champs
+        `worker_id`, `provider`, `backend`, `capabilities`, `priority`,
+        `enabled`, et un ou plusieurs `ExecutionProfile`
+        (`model`/`reasoning_effort`/`quality_tier`/`cost_rank`). Le fichier
+        shippé déclare aujourd'hui 4 workers sur 2 providers (anthropic:
+        alice/bob, openai: victor/oscar) — voir
+        `tests/test_worker_registry.py::TestShippedExampleConfig` et
+        `::test_config_workers_yaml_worker_pool_is_at_least_two_per_provider`.
+      historical_note: >
+        v2 exigeait exactement 3 entrées nommées (claude_code, codex_cli,
+        ollama_qwen) avec des champs `name`/`adapter`/`roles`/
+        `priority_tier`/`cost_tier`. Le schéma/les noms de champs ont
+        changé (Slice 15) et Ollama n'a jamais été construit — de-scopé du
+        MVP 0.1 par décision produit (2026-09-17), option future (Worker
+        Ecosystem Study). Texte v2 original : `git log -p -- MVP_SPEC.yaml`.
 
     - id: AC-3
       title: Modèle de données MVP persistant
       description: >
-        Un MVP créé via la CLI est retrouvable après redémarrage du process.
+        Un MVP créé via l'API d'orchestration est retrouvable après
+        redémarrage du process, depuis SQLite, sans cache mémoire.
       measurable_check: >
-        `orchestrator mvp create --name "X" --criteria "Y"` puis, dans un
-        nouveau process, `orchestrator mvp show <id>` retourne les mêmes
-        `name` et `criteria`, lus depuis SQLite (pas de cache mémoire).
+        `ProjectStateStore.create_mvp(...)` puis, avec une nouvelle
+        instance de `ProjectStateStore` sur le même fichier SQLite,
+        `get_mvp(mvp_id)` retourne les mêmes champs — voir
+        `tests/test_project_state.py`.
+      historical_note: >
+        v2 exigeait ce comportement via une CLI (`orchestrator mvp
+        create`/`show`). Le comportement de persistance réelle est
+        inchangé et prouvé ; seule la surface CLI est de-scopée (voir
+        AC-1). Texte v2 original : `git log -p -- MVP_SPEC.yaml`.
 
     - id: AC-4
-      title: Modèle de données Task persistant, avec exigences de routage
+      title: Modèle de données WorkItem persistant, avec exigences de routage
       description: >
-        Une tâche créée sous un MVP est listée avec le statut `PENDING` et
-        porte les informations nécessaires au routage (rôle requis,
-        capacités requises).
+        Un WorkItem créé sous un MVP porte les informations nécessaires à
+        la sélection de worker (capacités requises) et un statut de cycle
+        de vie explicite.
       measurable_check: >
-        `orchestrator task create --mvp <id> --title "T" --role developer
-        --capability <cap>` puis `orchestrator task list --mvp <id>` affiche
-        la tâche avec `status=PENDING`, `required_role=developer`, et la
-        capacité demandée dans `required_capabilities`.
+        `ProjectStateStore.create_work_item(...)` persiste un `WorkItem`
+        avec `required_capabilities` et un `status` (`PLANNED`/`READY`/
+        `RUNNING`/`REVIEWING`/`NEEDS_REWORK`/`WAITING`/
+        `RECOVERY_REQUIRED`/`COMPLETED`/`FAILED`/`BLOCKED`) — voir
+        `tests/test_project_state.py`.
+      historical_note: >
+        v2 décrivait un statut initial `PENDING` et un `required_role`
+        distinct, exposés via CLI. Le modèle réel utilise `PLANNED`/
+        `READY` et modélise le rôle comme une capability parmi d'autres
+        (jamais un champ séparé) ; comportement équivalent, nommage
+        différent, pas de CLI (voir AC-1). Texte v2 original :
+        `git log -p -- MVP_SPEC.yaml`.
 
     - id: AC-5
       title: QuotaManager — schéma multi-fenêtres
       description: >
-        Le quota d'un worker est modélisé comme une ou plusieurs fenêtres
-        (`quota_windows`), jamais comme un état unique attaché au worker.
+        L'état de quota d'un provider est modélisé comme une ou plusieurs
+        fenêtres observées (`quota_windows`), jamais comme un état unique.
       measurable_check: >
-        Un test unitaire insère, pour un même `worker_id`, deux lignes
-        `quota_windows` avec des `window_type` différents (ex. `daily` et
-        `concurrent`), chacune avec ses propres `remaining`/`reset_at`/
-        `observed_at`/`source`, et vérifie que les deux sont lues
-        indépendamment sans collision ni écrasement.
+        `ProviderState.quota_windows: tuple[QuotaWindow, ...]` supporte
+        plusieurs `window_type` simultanés pour un même provider, chacun
+        avec son propre `utilization`/`reset_at`/`observed_at`/`source` —
+        voir `tests/test_quota_manager.py` et `tests/providers/*`. Preuve
+        réelle : multi-fenêtres validées en conditions réelles (5h+7j pour
+        Claude et pour Codex) — `docs/SPIKE_RALPH.md`.
+      historical_note: >
+        v2 parlait de fenêtres "par worker" ; le modèle réel les porte par
+        provider (un worker hérite du quota de son provider). Différence
+        de modélisation mineure, intention conservée. Texte v2 original :
+        `git log -p -- MVP_SPEC.yaml`.
 
     - id: AC-6
-      title: QuotaManager — états par fenêtre et transition après reset
+      title: Disponibilité provider — re-probe réel, jamais un reset simulé
       description: >
-        Chaque fenêtre de quota expose un état dérivé parmi `AVAILABLE`,
-        `EXHAUSTED`, `WAITING_RESET`, `ERROR`, et repasse automatiquement à
-        `AVAILABLE` une fois son `reset_at` dépassé.
+        Après une échéance de quota (`reset_at` connu), la disponibilité
+        d'un provider ne redevient vraie qu'après un nouveau probe réel de
+        ce provider — jamais par un calcul local supposant le reset
+        atteint.
       measurable_check: >
-        Test unitaire avec horloge simulée : une fenêtre est mise en
-        `WAITING_RESET` avec `reset_at = now + 1s` ; après avance de
-        l'horloge de 2s et appel de `QuotaManager.refresh()`, l'état de
-        cette fenêtre devient `AVAILABLE` sans affecter les autres fenêtres
-        du même worker.
+        `QuotaManager.get()` ne sert un état caché que si frais
+        (`QuotaPolicy.state_ttl`) ; sinon il appelle
+        `ProviderAdapter.probe()` réellement et ne retombe jamais sur un
+        état périmé même `AVAILABLE` — `get()`/`refresh()` lèvent
+        `ProviderProbeError` plutôt que de mentir en cas d'échec de probe.
+        La reprise d'un `WaitRecord` (`eligible_at` = premier `reset_at`
+        connu) déclenche une nouvelle sélection réelle, jamais une reprise
+        automatique sans nouveau probe — voir `tests/test_quota_manager.py`,
+        `tests/test_wait.py`.
+      historical_note: >
+        v2 décrivait une machine à états locale par fenêtre
+        (`AVAILABLE`/`EXHAUSTED`/`WAITING_RESET`/`ERROR`) transitionnant
+        automatiquement au dépassement de `reset_at` via horloge simulée.
+        Ce mécanisme n'a jamais été construit : le design réel (Slice 3)
+        fait délibérément confiance exclusivement au probe réel du
+        provider, jamais à un calcul local du reset — jugé plus honnête
+        (évite toute dérive entre l'état supposé et l'état réel). Accepté
+        comme comportement MVP 0.1 par décision produit (2026-09-17).
+        Texte v2 original : `git log -p -- MVP_SPEC.yaml`.
 
     - id: AC-7
-      title: ModelRouter — ordre capacité > rôle > disponibilité > coût
+      title: WorkerSelector — ordre capability > governance > provider availability > priority
       description: >
-        Le routeur sélectionne d'abord sur la capacité requise par la tâche,
-        puis sur le rôle, puis sur la disponibilité/quota, et n'utilise la
-        classe de coût que pour départager des candidats déjà éligibles.
+        Le sélecteur de worker choisit d'abord sur la capacité requise,
+        puis sur la gouvernance (exclusions, indépendance auteur/reviewer),
+        puis sur la disponibilité provider (quota), et départage enfin par
+        priorité configurée. Le choix économique (`cost_rank`) n'intervient
+        jamais dans `WorkerSelector` — il appartient exclusivement à la
+        résolution d'`ExecutionProfile` dans `orchestrator.adaptive_execution`.
       measurable_check: >
-        Test unitaire avec 3 workers : (a) un worker local/gratuit,
-        `AVAILABLE`, qui ne déclare PAS la capacité requise par la tâche ;
-        (b) un worker en abonnement, `AVAILABLE`, qui déclare la capacité et
-        le rôle requis ; (c) un worker payant, `AVAILABLE`, qui déclare
-        aussi la capacité et le rôle. Le routeur doit choisir (b), jamais
-        (a) malgré son coût nul, car (a) ne satisfait pas la capacité
-        requise. Un second cas vérifie qu'entre (b) et (c) tous deux
-        éligibles, le routeur choisit (b) par priorité de coût.
+        `WorkerSelector.select(...)` filtre par `required_capabilities`
+        (sous-ensemble de `Worker.capabilities`), puis gouvernance
+        (`excluded_worker_ids`, auteur exclu), puis disponibilité via
+        `QuotaManager`, puis départage par `priority` (ordre décroissant,
+        puis `worker_id` lexical) — voir `tests/test_worker_selector.py`
+        (`TestBasicSelection`, `TestPriorityAndTieBreak`). `cost_rank`
+        n'apparaît que dans `ExecutionProfile`/`adaptive_execution.py`,
+        jamais dans `worker_selector.py` (vérifiable par grep).
+      historical_note: >
+        v2 exigeait un `ModelRouter` avec ordre capacité > rôle >
+        disponibilité > coût, coût inclus dans le sélecteur de worker
+        lui-même. `ModelRouter` n'a jamais existé ; superseded par
+        `WorkerSelector` (Slice 4, étendu Slice 15/17) avec un ordre et une
+        séparation des responsabilités différents, actés par décision
+        produit (2026-09-17). Texte v2 original :
+        `git log -p -- MVP_SPEC.yaml`.
 
     - id: AC-8
-      title: Interface adaptateur commune et identité d'exécution complète
+      title: Interface adaptateur commune et identité d'exécution
       description: >
-        Les 3 adaptateurs (Claude Code, Codex CLI, Ollama/Qwen) exposent la
-        même interface `run(prompt) -> ExecutionResult`, et `ExecutionResult`
-        porte tous les champs d'identité requis.
+        Les adaptateurs provider réellement intégrés (Claude Code, Codex)
+        exposent la même interface (`probe()` pour l'état, exécution via
+        `RalphExecutionEngine`), et chaque exécution porte une identité
+        complète. Un adaptateur local (Ollama ou autre) n'est pas requis
+        pour ce MVP.
       measurable_check: >
-        Un test par adaptateur, exécuté contre un script exécutable factice
-        (stub) simulant le binaire réel, vérifie que `ExecutionResult`
-        contient `task_id`, `worker_id`, `provider`, `model`, `role`,
-        `started_at`, `finished_at`, `status`, `exit_code`, `stdout`,
-        `stderr`, `duration_ms`, avec `session_id`,
-        `git_sha_before`/`git_sha_after` présents mais nullables quand
-        l'information n'est pas disponible dans le contexte du test.
+        `ClaudeCodeAdapter`/`CodexAdapter` implémentent tous deux
+        `ProviderAdapter.probe() -> ProviderState` — voir
+        `tests/providers/test_claude_code_adapter.py`,
+        `tests/providers/test_codex_adapter.py`. `ExecutionRecord` porte
+        `execution_id`, `task_id`, `worker_id`, `provider`, `backend`,
+        `model`, `role`, `started_at`, `status`, `reasoning_effort`,
+        `finished_at`, `exit_code`, `provider_session_id`,
+        `git_sha_before`, `git_sha_after` (nullables quand non
+        disponibles) — voir `src/orchestrator/execution_store.py` et
+        `tests/test_execution_store.py`. `stdout`/`stderr`/`exit_code`
+        transitoires sont portés séparément par `ExecutionResult`
+        (`ralph_execution_engine.py`), jamais persistés dans
+        `ExecutionRecord`.
+      historical_note: >
+        v2 exigeait 3 adaptateurs incluant Ollama/Qwen et des champs
+        exacts (`session_id`, `duration_ms`) sur un unique
+        `ExecutionResult`. Ollama de-scopé (voir AC-2) ; les champs réels
+        diffèrent légèrement (`provider_session_id` au lieu de
+        `session_id`, pas de `duration_ms` stocké — dérivable de
+        `started_at`/`finished_at`) — intention conservée. Texte v2
+        original : `git log -p -- MVP_SPEC.yaml`.
 
     - id: AC-9
-      title: Exécution de tâche bout en bout avec statut RUNNING intermédiaire
+      title: Exécution de WorkItem bout en bout avec statut RUNNING intermédiaire
       description: >
-        Lancer une tâche crée une `Execution` en `RUNNING` avant de lancer le
-        worker, exécute réellement un worker (via subprocess), enregistre le
-        résultat, et met à jour le statut de la tâche.
+        Lancer un WorkItem crée une `Execution` en `RUNNING` avant de
+        lancer le worker, exécute réellement un worker (via subprocess
+        Ralph), enregistre le résultat, et met à jour le statut du
+        WorkItem.
       measurable_check: >
-        `orchestrator task run <task_id>` avec un adaptateur stub configuré
-        renvoyant exit_code 0 : la table `executions` contient une ligne
-        liée à `task_id`, passée par `RUNNING` puis `DONE`, et
-        `orchestrator task list` montre `status=DONE`. Avec un stub renvoyant
-        exit_code != 0, l'exécution finit `FAILED` et la tâche `FAILED`.
+        `MVPManager.run_next_work_item(...)` (API Python, sans CLI) fait
+        passer l'`Execution` par `RUNNING` puis `SUCCEEDED`/`FAILED`, et le
+        `WorkItem` correspondant par `RUNNING` puis `COMPLETED`/`FAILED`/
+        `NEEDS_REWORK`/`WAITING`/`BLOCKED` selon l'issue — voir
+        `tests/test_ralph_execution_engine.py`,
+        `tests/test_mvp_manager*.py`. Preuve réelle : smoke Claude Haiku
+        réel (Slice 6, documenté ROADMAP.md).
+      historical_note: >
+        v2 exposait ce comportement via `orchestrator task run <task_id>`.
+        Comportement réel inchangé et prouvé, uniquement l'exposition CLI
+        de-scopée (voir AC-1). Texte v2 original :
+        `git log -p -- MVP_SPEC.yaml`.
 
     - id: AC-10
-      title: Détection des exécutions interrompues au démarrage
+      title: Détection des exécutions interrompues au démarrage d'une passe d'orchestration
       description: >
-        Au démarrage, le moteur détecte les `Execution` restées `RUNNING`
-        (process précédent tué) et les marque `INTERRUPTED`, en faisant
-        passer la `Task` associée en `RECOVERY_REQUIRED`.
+        Au début de chaque passe d'orchestration, le moteur détecte les
+        `Execution` restées `RUNNING` sans que le process propriétaire
+        n'ait survécu, et fait passer le `WorkItem` associé en
+        `RECOVERY_REQUIRED` — sans relancer aucun worker automatiquement.
       measurable_check: >
-        Test d'intégration : insérer directement en base une `Execution`
-        `RUNNING` rattachée à une `Task` `IN_PROGRESS` (simulant un kill -9
-        précédent), démarrer le moteur/CLI dans un nouveau process, puis
-        vérifier via `orchestrator task list` que l'exécution est
-        `INTERRUPTED` et la tâche `RECOVERY_REQUIRED` — sans qu'aucun worker
-        n'ait été relancé automatiquement.
+        `RecoveryCoordinator.reconcile_work_item`/`reconcile_mvp` détecte
+        une `Execution` `RUNNING` orpheline, la marque
+        `ExecutionStatus.RECOVERY_REQUIRED`, et fait passer le `WorkItem`
+        en `WorkItemStatus.RECOVERY_REQUIRED` — voir
+        `tests/test_recovery.py` (16 tests). `ExecutionStatus.INTERRUPTED`
+        existe distinctement pour un timeout détecté par
+        `RalphExecutionEngine` lui-même dans le même process.
+      historical_note: >
+        v2 exigeait ce comportement "au démarrage" via un nouveau process
+        CLI. Le mécanisme réel s'exécute au début de chaque passe
+        d'orchestration (`run_next_work_item`), pas spécifiquement au
+        démarrage d'un process CLI (absent, voir AC-1) — intention
+        conservée. Texte v2 original : `git log -p -- MVP_SPEC.yaml`.
 
     - id: AC-11
       title: Interdiction de retry aveugle et réconciliation explicite
       description: >
-        Une tâche `RECOVERY_REQUIRED` refuse un `run` direct ; une action de
-        réconciliation explicite est nécessaire pour la faire repasser dans
-        un état exécutable.
+        Un WorkItem `RECOVERY_REQUIRED` n'est jamais relancé
+        automatiquement ; une reprise passe toujours par une nouvelle
+        sélection de worker explicite, jamais par un replay de
+        l'exécution interrompue.
       measurable_check: >
-        Sur une tâche en `RECOVERY_REQUIRED` : `orchestrator task run
-        <task_id>` échoue avec un exit code non nul et un message explicite,
-        sans créer de nouvelle `Execution`. `orchestrator task reconcile
-        <task_id> --retry` (ou équivalent) fait repasser la tâche en
-        `PENDING`, après quoi `task run` fonctionne normalement.
+        `RecoveryCoordinator` ne remet jamais une `Execution`
+        `RECOVERY_REQUIRED`/`INTERRUPTED` vers `RUNNING`, et ne la
+        relance jamais ; son seul effet est de rendre le `WorkItem`
+        de nouveau orchestrable (`RECOVERY_REQUIRED`), à charge du
+        prochain `run_next_work_item` de sélectionner un worker frais
+        (possiblement différent) — voir `tests/test_recovery.py`,
+        `tests/test_mvp_manager*.py`.
+      historical_note: >
+        v2 exposait ce contrat via `orchestrator task run` (refus explicite)
+        et `orchestrator task reconcile --retry`. Comportement réel
+        inchangé et prouvé ; uniquement l'exposition CLI de-scopée (voir
+        AC-1). Texte v2 original : `git log -p -- MVP_SPEC.yaml`.
 
     - id: AC-12
-      title: Moteur découplé de Git via une abstraction Workspace
+      title: Gouvernance Git centralisée, avec exception de lecture minimale assumée
       description: >
-        Le moteur pilote un dépôt de code uniquement via une interface
-        Workspace abstraite, jamais via des appels Git directs.
+        Les décisions de branche/merge/tag d'un WorkItem appartiennent
+        exclusivement à `GitGovernanceService`/`LocalGitWorkspace` —
+        jamais à `RalphExecutionEngine` ni aux workers. Exception assumée
+        et documentée : `RalphExecutionEngine` peut effectuer une lecture
+        Git minimale et strictement en lecture seule
+        (`git rev-parse HEAD`) pour capturer un fait d'audit SHA
+        (`git_sha_before`/`git_sha_after`) — jamais une opération
+        d'écriture, jamais un choix de stratégie Git.
       measurable_check: >
-        Un test d'exécution de tâche est lancé deux fois avec la même
-        logique de moteur : une fois avec l'implémentation
-        `LocalGitWorkspace`, une fois avec un faux Workspace de test
-        (in-memory, sans aucun appel `git`). Les deux passent sans
-        modification du code du moteur, prouvant l'absence de dépendance
-        directe à Git.
+        Aucun appel `git` autre que `git rev-parse HEAD` n'existe dans
+        `src/orchestrator/ralph_execution_engine.py` (vérifiable par
+        grep) ; toute décision de branche/merge/tag passe exclusivement
+        par `src/orchestrator/git_governance.py`
+        (`GitGovernanceService.prepare_work_item`/`capture_head`/
+        `compute_merge_eligibility`/`merge`/`create_tag`) — voir
+        `tests/test_git_governance.py`, `docs/GIT_GOVERNANCE.md`.
+      historical_note: >
+        v2 exigeait une abstraction `Workspace` 100% interchangeable
+        (testée avec un double factice in-memory, zéro appel Git dans le
+        moteur). Cette pureté d'abstraction n'a pas été construite ; le
+        design réel (Slice 20) centralise la gouvernance Git dans une
+        couche séparée et documentée, avec une seule exception de lecture
+        assumée dans le moteur d'exécution. Assoupli et accepté comme
+        comportement MVP 0.1 par décision produit (2026-09-17). Texte v2
+        original : `git log -p -- MVP_SPEC.yaml`.
 
     - id: AC-13
-      title: Workspace Git local par tâche
+      title: Branche Git locale déterministe par WorkItem
       description: >
-        L'implémentation `LocalGitWorkspace` crée/bascule une branche locale
-        par tâche, sans opération réseau (pas de push, pas de GitHub).
+        Une branche locale déterministe et stable est créée/utilisée par
+        WorkItem, sans opération réseau (pas de push, pas de GitHub
+        distant).
       measurable_check: >
-        Test contre un dépôt Git temporaire : après
-        `orchestrator task run <task_id>`, une branche nommée
-        `task/<task_id>-<slug>` existe dans le dépôt cible et est la branche
-        courante au moment de l'exécution ; `git_sha_before` et
-        `git_sha_after` sont renseignés sur l'`Execution` correspondante.
+        `GitGovernanceService.prepare_work_item(...)` crée/réutilise une
+        branche `work/<work-item-id>`, déterministe et stable après
+        redémarrage ; `base_sha`/`git_sha_after` sont capturés sur le
+        `GitWorkItemRecord` correspondant — voir
+        `tests/test_git_governance.py`. Smoke local réel PASS (Slice 20,
+        documenté ROADMAP.md). Aucun push distant n'est jamais exécuté.
+      historical_note: >
+        v2 attendait le format de branche `task/<task_id>-<slug>`. Le
+        format réel est `work/<work-item-id>` (Slice 20) — équivalent
+        fonctionnel, nommage différent. Texte v2 original :
+        `git log -p -- MVP_SPEC.yaml`.
 
     - id: AC-14
-      title: Suite de tests verte
+      title: Suite de tests offline verte
       description: >
-        L'ensemble du MVP 0.1 est couvert par des tests automatisés.
+        L'ensemble du MVP 0.1 est couvert par des tests automatisés,
+        entièrement offline (aucun appel réseau/provider réel).
       measurable_check: >
-        `pytest` depuis la racine du dépôt se termine avec exit code 0,
-        0 échec, et couvre au minimum : modèles de données (y compris les
-        états `RECOVERY_REQUIRED`/`INTERRUPTED`), WorkerRegistry, ModelRouter
-        (ordre capacité/rôle/disponibilité/coût), QuotaManager (schéma
-        multi-fenêtres), au moins un adaptateur, la détection de reprise
-        après interruption, l'abstraction Workspace et son implémentation
-        Git locale.
+        `.venv/bin/python -m pytest` depuis la racine du dépôt se termine
+        avec exit code 0, 0 échec, et couvre au minimum : modèles de
+        données (y compris `RECOVERY_REQUIRED`/`INTERRUPTED`/`WAITING`),
+        `WorkerRegistry`, `WorkerSelector` (ordre capability/governance/
+        provider availability/priority), `QuotaManager` (schéma
+        multi-fenêtres, re-probe réel), au moins un adaptateur provider
+        réel, la détection de reprise après interruption, et
+        `GitGovernanceService`/`LocalGitWorkspace`. 1158 tests offline
+        PASS au 2026-09-17 (voir docs/status.md).
+      historical_note: >
+        v2 mentionnait `ModelRouter` dans la liste de couverture attendue
+        — remplacé par `WorkerSelector` (voir AC-7). Reste du contrat
+        inchangé. Texte v2 original : `git log -p -- MVP_SPEC.yaml`.
+
+    - id: AC-15
+      title: Indépendance auteur / second développeur (worker_id)
+      description: >
+        Un worker ne révise ou ne corrige jamais son propre travail :
+        `DEV_B.worker_id != DEV_A.worker_id` est une exigence absolue,
+        non désactivable. Un provider distinct entre DEV A et DEV B est
+        préféré mais jamais requis par défaut. Un modèle distinct n'est
+        pas un invariant de gouvernance.
+      measurable_check: >
+        `WorkerSelectionPolicy.require_distinct_worker_for_review` est
+        épinglé à `True` (lève une erreur si on tente de le désactiver) ;
+        `prefer_distinct_provider_for_review=True`,
+        `require_distinct_provider_for_review=False` par défaut — un
+        repli sur un second worker du même provider reste toujours
+        valide plutôt que de bloquer. Aucun champ `model` n'intervient
+        dans cette policy. Voir
+        `tests/test_worker_selector.py::TestAuthorReviewerIndependence`.
+        Le pool shippé (`config/workers.yaml`) déclare au moins 2 workers
+        indépendants par provider participant (anthropic: alice/bob,
+        openai: victor/oscar) pour que ce repli soit toujours possible —
+        voir `tests/test_mvp_manager_lean_feature_flow.py::TestLeanWorkerPoolSameProviderFallback`.
+      historical_note: >
+        Absent de v2, qui plaçait explicitement cette séparation en
+        "non_goal" pour une Phase 3 hypothétique (voir provenance et
+        non_goals ci-dessus). Construite dès Phase 1 (Slice 9), puis
+        étendue (Slice 4/15/17, décision produit worker pool 2026-09-17).
+        Actée comme critère du MVP 0.1 par décision produit (2026-09-17).
+
+    - id: AC-16
+      title: Workflow nominal LEAN_FEATURE_FLOW (DEFAULT)
+      description: >
+        Le workflow par défaut d'un WorkItem est DEV A -> DEV B correctif
+        (second développeur indépendant, write-capable, pas en lecture
+        seule) -> une phase QA unique, déterministe et non-LLM -> merge
+        gouverné -> tag Git -> DONE. Exactement 2 exécutions LLM sur le
+        chemin nominal (DEV A, DEV B) ; la QA ne consomme et ne sélectionne
+        aucun worker IA. En cas de QA FAIL, jusqu'à 3 tentatives QA au
+        total (dont des cycles `DEV FIX -> QA`) ; le 3ème échec passe le
+        WorkItem en `BLOCKED` avec un motif `HUMAN_REVIEW_REQUIRED`
+        explicite, sans bloquer les autres WorkItems indépendants.
+      measurable_check: >
+        `MVPManager` par défaut (`workflow_mode` non spécifié) exécute
+        `WorkflowMode.LEAN_FEATURE_FLOW` — voir
+        `tests/test_mvp_manager_lean_feature_flow.py::TestLeanNominalFlow`
+        (chemin nominal DEV A -> DEV B -> QA -> merge -> tag),
+        `TestLeanQAFailBoundedRetry` (3 tentatives QA bornées +
+        `HUMAN_REVIEW_REQUIRED`, progression des WorkItems indépendants),
+        `TestLeanDevBQuotaWait`/`TestLeanWorkerPoolSameProviderFallback`
+        (repli/attente conformes à l'invariant de continuité). La QA
+        (`QAPhase.FINAL_VERIFICATION`) n'invoque jamais
+        `WorkerSelector.select()` (vérifiable par lecture de
+        `mvp_manager.py::_run_qa_cycle`). `WorkflowMode.GOVERNED_FULL`
+        reste disponible explicitement (`DEPRECATED`/`REMOVAL_CANDIDATE`),
+        non requis par ce MVP.
+      historical_note: >
+        Absent de v2, qui ne connaissait pas encore la notion de QA
+        gouvernée. Construit en Slices 21-24 (`GOVERNED_FULL`) puis
+        simplifié en `LEAN_FEATURE_FLOW` (décision produit 2026-09-16),
+        acté comme critère du MVP 0.1 par décision produit (2026-09-17).
+        Validation offline complète (suite dédiée ci-dessus) ; une
+        acceptance externe réelle fraîche (kata Roman Numerals) reste à
+        réaliser dans un futur pilote, hors scope de cette clôture — voir
+        ROADMAP.md, "Next".
 
   definition_of_done: >
-    Le MVP 0.1 est considéré terminé quand les 14 critères d'acceptation
-    ci-dessus sont vérifiés mécaniquement (tests automatisés passants), et
-    que `ROADMAP.md` a été mis à jour pour refléter le passage à la Phase 2.
+    Le MVP 0.1 est considéré terminé (statut `done`, ci-dessus) quand les
+    16 critères d'acceptation de ce fichier v3 sont vérifiés
+    mécaniquement (tests automatisés passants — 1158 tests offline PASS
+    au 2026-09-17) et que `ROADMAP.md` reflète la clôture de Phase 1.
+    Cette condition est remplie à la date `closure_decision_date`
+    ci-dessus. Les seuls écarts restants par rapport au texte v2 original
+    sont des de-scopes/remplacements explicites et tracés (voir
+    `historical_note` par critère et `provenance.scope_changes`), jamais
+    un gap de comportement non couvert.
