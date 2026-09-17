@@ -81,6 +81,18 @@ Ce cycle est la cible produit. Il ne décrit pas l'état actuel du code : voir
 « État actuel » plus bas pour ce qui est réellement construit, et le
 « Découpage incrémental » (sous Phase 1) pour l'ordre de construction retenu.
 
+**Statut : OPTIONAL, jamais auto-déclenché (2026-09-17).** Les briques de
+ce cycle long terme (`PlanningCoordinator`, `ApprovalCoordinator`,
+`ReleaseManager`) sont construites et testées, mais `MVPManager` ne les
+référence nulle part dans son constructeur ni dans `run_next_work_item` —
+rien ne les enchaîne automatiquement après la complétion d'un WorkItem ou
+d'un MVP, `LEAN_FEATURE_FLOW` en particulier n'en déclenche aucune. Ce sont
+des capacités disponibles, à invoquer explicitement par un appelant, pas
+un pipeline par défaut. Elles restent `OPTIONAL` — ni dépréciées, ni
+supprimées — pour un usage futur (release/synthèse multi-agent réelle),
+sans capacité nouvelle prévue tant qu'un besoin concret ne le justifie
+(KISS/YAGNI).
+
 **Important — politique d'approbation optimiste (20 minutes)** : cette
 politique de silence = approbation ne concerne QUE la gouvernance
 roadmap/MVP (passage automatique au MVP suivant si personne ne répond à une
@@ -2139,7 +2151,10 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
 - **Phase 0 — DONE** : Spécification et architecture.
 - **Phase 0.5 — DONE** : Reuse Spike validant Ralph Orchestrator 2.10.1.
   Résultats détaillés dans `docs/SPIKE_RALPH.md`.
-- **Phase 1 — EN COURS** : MVP 0.1 (gouvernance + sélection + Ralph integration).
+- **Phase 1 — DONE (2026-09-17, clôture MVP 0.1)** : MVP 0.1 (gouvernance +
+  sélection + Ralph integration). Voir « Décision produit (2026-09-17) —
+  Clôture MVP 0.1 / Phase 1 » plus bas pour la revue de clôture complète
+  et `MVP_SPEC.yaml` v3 pour le contrat d'acceptation réaligné.
   - **Slice 0 (Contrats normalisés) — DONE** : `ProviderState`, `ProviderAvailability`,
     `QuotaWindow`, `ResetCredit`, interface `ProviderAdapter.probe()` — voir
     `src/orchestrator/providers/`. Purs, sans dépendance à Claude/Codex/Ralph.
@@ -2296,16 +2311,22 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     PASS. Smoke réel PASS ; self-dogfood acceptance BLOCKED_BY_PROVIDER
     (honnête — dev réel réussi, QA bloquée faute d'un second provider
     disponible, dépôt source vérifié inchangé).
-  - **Slice 24 (QA/Rework/Review/Merge Integration) — CODE_DONE,
-    ACCEPTANCE_PENDING_PROVIDER** : voir l'entrée détaillée ci-dessus et
+  - **Slice 24 (QA/Rework/Review/Merge Integration) — DONE,
+    `ACCEPTANCE_DONE` (2026-09-16)** : voir l'entrée détaillée ci-dessus et
     `docs/QA_GOVERNANCE.md` § « Slice 24 » — QA intégrée comme capacité
     opt-in de `MVPManager` (workflow complet Development → QA Authoring →
     Gates → Review → Final QA → Merge Eligibility → Merge), extension
     additive de `compute_merge_eligibility`/`ReleaseManager`, wait/recovery
-    QA, cycles bornés indépendants. 1089 tests offline PASS. Self-dogfood
-    non rejoué faute de second provider réel disponible (probe quota lu
-    seul, 2026-09-15) — `BLOCKED_BY_PROVIDER` déterministe, déjà prouvé
-    offline ; acceptance complète reste à faire dans une session future.
+    QA, cycles bornés indépendants. 1089 tests offline PASS.
+    `scripts/self_dogfood_full_pipeline_real.py` a fait passer un
+    WorkItem gouverné de bout en bout avec les deux providers réels
+    (Claude + Codex) jusqu'au merge réel — voir l'entrée détaillée
+    ci-dessus pour le détail complet et
+    `docs/reports/self-dogfood-full-pipeline-2026-09-15.html`. La
+    tentative précédente (probe quota lu seul, 2026-09-15, un seul
+    provider alors disponible) avait échoué en `BLOCKED_BY_PROVIDER`
+    déterministe — **statut historique, superseded par le succès du
+    2026-09-16 ci-dessus**, conservé ici uniquement comme événement passé.
 - **Décision produit (2026-09-16) — `LEAN_FEATURE_FLOW` devient le
   workflow PAR DÉFAUT de `MVPManager`, `GOVERNED_FULL` (Slices 17-24 :
   estimation adaptative avant chaque phase, QA Test Authoring isolée +
@@ -2354,9 +2375,16 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     + `HUMAN_REVIEW_REQUIRED`, l'intégrité workspace/SHA avant QA, et le
     wait/resume DEV B), 1154 tests offline PASS au total (contre 1144
     avant cette décision).
-  - Acceptance réelle : voir `docs/reports/mars-rover-lean-feature-flow-2026-09-16.html`
-    (comparaison factuelle avec le run5 `GOVERNED_FULL` précédent sur le
-    même kata Mars Rover).
+  - **Acceptance réelle externe : non versionnée.** Un rapport
+    `docs/reports/mars-rover-lean-feature-flow-2026-09-16.html` avait été
+    cité ici comme preuve d'acceptance réelle ; l'audit de clôture MVP 0.1
+    (2026-09-17) a confirmé qu'aucun fichier de ce nom n'existe dans le
+    dépôt (tracké ou non — `git log --all` sur ce chemin est vide).
+    Citation retirée. `LEAN_FEATURE_FLOW` est validé offline par sa suite
+    d'intégration dédiée (`tests/test_mvp_manager_lean_feature_flow.py`,
+    12 tests au 2026-09-17, voir AC-16 de `MVP_SPEC.yaml`) ; une
+    acceptance externe fraîche reste à réaliser dans un futur pilote (kata
+    Roman Numerals, voir « Next » plus bas), hors scope de cette clôture.
 - **Décision produit (2026-09-17) — Worker pool fallback (config
   uniquement, `provider`/`backend` restent sur `Worker`, aucun refactor
   `ExecutionProfile`).** Revue d'architecture (`WorkerSelector`,
@@ -2396,16 +2424,39 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
   Rover (pilote externe) mis en pause par décision utilisateur — le dépôt
   pilote reste intact comme preuve/audit, aucun nouveau run lancé cette
   session, aucun smoke réel, aucune consommation de quota provider réel.
-- **Next.** Le pool worker/provider fallback est fermé et prouvé offline ;
-  `LEAN_FEATURE_FLOW` reste stabilisé comme workflow `DEFAULT`. Prochaine
-  étape proposée mais **non exécutée** cette session : une nouvelle revue
-  produit/roadmap avec l'utilisateur avant toute nouvelle capacité —
-  notamment décider si/quand relancer un pilote externe (Mars Rover ou
-  autre) pour valider le pool à 4 workers en conditions réelles, et si la
-  CLI/productisation (mentionnée en fin de roadmap historique) devient
-  pertinente. Ni l'un ni l'autre ne démarre sans validation explicite.
-  Toutes les Slices 21-24 du cycle QA restent `CODE_DONE` — cette session
-  ne décide toujours pas seule si un POC QA externe ou la Slice 25
+- **Décision produit (2026-09-17) — Clôture MVP 0.1 / Phase 1.** Une revue
+  de clôture factuelle (matrice de preuves AC-par-AC contre le code/tests/
+  Git réels, aucun nouveau code/test/config) a conclu qu'aucun gap de
+  comportement produit ne bloque le MVP 0.1 — seul son contrat
+  (`MVP_SPEC.yaml` v2, jamais modifié depuis sa création le 2026-09-12)
+  était devenu stale. `MVP_SPEC.yaml` v3 réaligne les 14 critères
+  d'origine sur le comportement réellement construit (CLI/Ollama
+  de-scopés en options futures, `ModelRouter` → `WorkerSelector`, reset de
+  quota simulé → re-probe réel, Workspace 100% abstrait → gouvernance Git
+  centralisée avec une exception de lecture assumée) et ajoute 2 critères
+  reflétant des capacités construites au-delà du contrat v2 initial
+  (AC-15 indépendance auteur/second développeur, AC-16 workflow
+  `LEAN_FEATURE_FLOW`) — aucun texte v2 original supprimé, entièrement
+  récupérable via `git log -p -- MVP_SPEC.yaml`, chaque critère modifié
+  porte un `historical_note` explicite. Statut Slice 24 réconcilié vers
+  `ACCEPTANCE_DONE` (2026-09-16, déjà prouvé par
+  `scripts/self_dogfood_full_pipeline_real.py`, jamais reflété dans le
+  résumé « État actuel » jusqu'ici). Citation d'un rapport d'acceptance
+  Lean inexistant retirée (voir ci-dessus). `Phase 1 — DONE`. 1158 tests
+  offline PASS, inchangés (aucun code de production touché par cette
+  clôture).
+- **Next : POST-MVP 0.1 EXPERIMENT / DISCOVERY.** Pas encore un MVP 0.2 —
+  décision à prendre avec l'utilisateur après cette clôture. Axes déjà
+  convenus, **proposés, non démarrés** : (1) un pilote Lean frais sur un
+  kata plus simple (Roman Numerals) — prochain petit pilote envisagé ;
+  (2) étude de faisabilité Mistral/Vibe comme provider supplémentaire ;
+  (3) étude build-vs-reuse Mammouth AI ; (4) étude de l'écosystème des
+  workers/providers gratuits ou à coût marginal nul ; (5) échelle de
+  difficulté progressive des projets de validation. Ces axes ne sont pas
+  ordonnés au-delà du point (1). CLI/productisation reste une option
+  future, non requise pour démarrer ces axes. Toutes les Slices 21-24 du
+  cycle QA sont maintenant `DONE` (Slice 24 : `ACCEPTANCE_DONE`) — cette
+  session ne décide toujours pas seule si un POC QA externe ou la Slice 25
   (Advanced QA / External E2E, restée conditionnelle) sont réellement
   utiles — voir `docs/QA_GOVERNANCE.md` et
   `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`. OmniRoute reste une
