@@ -2466,23 +2466,44 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
   Lean inexistant retirée (voir ci-dessus). `Phase 1 — DONE`. 1158 tests
   offline PASS, inchangés (aucun code de production touché par cette
   clôture).
+- **Pilote d'acceptance réel (2026-09-17) — Roman Numerals /
+  `LEAN_FEATURE_FLOW` : PASS.** Premier pilote externe réel post-clôture
+  MVP 0.1, exécuté via le vrai `MVPManager.run_next_work_item(...)` sur un
+  dépôt jetable dédié (`~/projects/roman-numerals-kata`), aucun composant
+  factice (vrais `WorkerRegistry`/`WorkerSelector`/`QuotaManager`/
+  `ProviderAdapter`s/`RalphExecutionEngine`/`GitGovernanceService`/
+  `InternalQAEngine`). Résultat : DEV A = `alice` (anthropic/claude_code/
+  sonnet, 82,1 s), DEV B = `bob` (anthropic/claude_code/sonnet, 21,1 s,
+  aucune correction — review réelle sans changement) ; **repli
+  same-provider observé pour de vrai** (openai en `quota_exhausted` au
+  moment du run, `WorkerSelector` a basculé sur un 2ᵉ worker anthropic
+  plutôt que d'attendre — première confirmation en conditions réelles du
+  pool worker/provider fermé le 2026-09-17) ; QA déterministe PASS en 1
+  tentative (`python -m pytest -q`, 22 passed) ; merge fast-forward local +
+  tag `feature/wi-roman-numerals-kata/done`. Exactement 2 exécutions LLM,
+  0 `DEV FIX`, 0 `WAITING`. Dépôt de contrôle (`ai-dev-orchestrator`)
+  vérifié inchangé avant/après. Limites honnêtes : `TDD_STRICTNESS =
+  NOT_VERIFIABLE` (un seul commit englobant tout, la mention "test-first"
+  du message de commit n'est pas vérifiable indépendamment depuis
+  Git/Ralph) ; tokens `NOT_AVAILABLE` (télémétrie Ralph à zéro, déjà connue
+  peu fiable). Rapport complet :
+  `docs/reports/roman-numerals-lean-pilot-2026-09-17.md`.
 - **Next : POST-MVP 0.1 EXPERIMENT / DISCOVERY.** Pas encore un MVP 0.2 —
-  décision à prendre avec l'utilisateur après cette clôture. Axes déjà
-  convenus, **proposés, non démarrés** : (1) un pilote Lean frais sur un
-  kata plus simple (Roman Numerals) — prochain petit pilote envisagé ;
-  (2) étude de faisabilité Mistral/Vibe comme provider supplémentaire ;
-  (3) étude build-vs-reuse Mammouth AI ; (4) étude de l'écosystème des
-  workers/providers gratuits ou à coût marginal nul ; (5) échelle de
-  difficulté progressive des projets de validation. Ces axes ne sont pas
-  ordonnés au-delà du point (1). CLI/productisation reste une option
-  future, non requise pour démarrer ces axes. Toutes les Slices 21-24 du
-  cycle QA sont maintenant `DONE` (Slice 24 : `ACCEPTANCE_DONE`) — cette
-  session ne décide toujours pas seule si un POC QA externe ou la Slice 25
-  (Advanced QA / External E2E, restée conditionnelle) sont réellement
-  utiles — voir `docs/QA_GOVERNANCE.md` et
-  `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`. OmniRoute reste une
-  qualification future optionnelle, hors roadmap principale — voir
-  `docs/OMNIROUTE_ARBITRATION.md`.
+  décision à prendre avec l'utilisateur. Axe (1) — pilote Lean frais
+  (Roman Numerals) — **fait, PASS** (voir ci-dessus). Axes restants,
+  **proposés, non démarrés**, non ordonnés entre eux : (2) étude de
+  faisabilité Mistral/Vibe comme provider supplémentaire ; (3) étude
+  build-vs-reuse Mammouth AI ; (4) étude de l'écosystème des workers/
+  providers gratuits ou à coût marginal nul ; (5) échelle de difficulté
+  progressive des projets de validation (dont un futur pilote de niveau
+  supérieur à Roman Numerals). CLI/productisation reste une option future,
+  non requise pour démarrer ces axes. Toutes les Slices 21-24 du cycle QA
+  sont maintenant `DONE` (Slice 24 : `ACCEPTANCE_DONE`) — cette session ne
+  décide toujours pas seule si un POC QA externe ou la Slice 25 (Advanced
+  QA / External E2E, restée conditionnelle) sont réellement utiles — voir
+  `docs/QA_GOVERNANCE.md` et `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`.
+  OmniRoute reste une qualification future optionnelle, hors roadmap
+  principale — voir `docs/OMNIROUTE_ARBITRATION.md`.
 
 ## Comment reprendre ce projet à froid
 
