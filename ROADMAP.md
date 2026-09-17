@@ -252,10 +252,17 @@ celle d'un autre :
    externe peut avoir produit des effets avant l'interruption. Toute reprise
    passe par une détection explicite de l'incident et une étape de
    réconciliation, même minimale.
-8. **Le moteur ne dépend d'aucune stratégie Git particulière** : il ne
-   connaît qu'une abstraction de workspace/dépôt. La stratégie concrète
-   (branche locale, GitHub, worktree, PR) est un détail d'implémentation
-   interchangeable.
+8. **Le moteur ne décide jamais de stratégie Git** : toute décision de
+   branche/merge/tag appartient exclusivement à `GitGovernanceService`/
+   `LocalGitWorkspace`, jamais à `RalphExecutionEngine` ni aux workers.
+   Exception assumée et documentée (AC-12 de `MVP_SPEC.yaml`) :
+   `RalphExecutionEngine` peut effectuer une lecture Git minimale et
+   strictement en lecture seule (`git rev-parse HEAD`) pour capturer un
+   fait d'audit SHA — jamais une opération d'écriture, jamais un choix de
+   stratégie. Une abstraction `Workspace` générique et interchangeable
+   n'est pas actuellement implémentée ; la stratégie concrète (branche
+   locale, GitHub, worktree, PR) reste néanmoins centralisée dans une
+   couche séparée du moteur.
 9. **REUSE FIRST** : avant l'implémentation d'une nouvelle capability,
    rechercher et documenter les implémentations existantes. Préférer
    reuse > adaptation > développement spécifique lorsque la qualité, la
@@ -437,10 +444,12 @@ les hats, la revue ou le cycle TDD que Ralph fournit déjà.
   Claude/Codex, uniquement à `ProviderAdapter.probe()`
 - `QuotaPolicy(state_ttl: timedelta)` injectable, validée (TTL positif
   obligatoire) ; clock injectable et vérifiée timezone-aware à chaque appel
-- `get(provider)` : sert le cache si frais, probe sinon ; si le probe
-  échoue et qu'un ancien état existe, le retourne inchangé (jamais présenté
-  comme frais, `observed_at` jamais réécrit) plutôt que de fabriquer une
-  disponibilité ; sans ancien état, propage `ProviderProbeError`
+- `get(provider)` : sert le cache si frais, probe sinon ; **si le probe
+  échoue, propage toujours `ProviderProbeError`** — que le cache soit
+  absent ou expiré, jamais de repli silencieux sur un ancien état, même
+  inchangé/non réétiqueté (STALE != USABLE FOR ROUTING ; vérifié dans le
+  code réel et par `tests/test_quota_manager.py::
+  test_expired_cache_with_failing_probe_raises_and_never_returns_stale_available`)
 - `refresh(provider)` : probe toujours forcé, ne substitue jamais
   silencieusement un ancien état — échoue explicitement si le probe échoue
 - `refresh_all()` : fan-out concurrent de `refresh()` sur tous les
@@ -2024,12 +2033,20 @@ Ce résumé sert de repère rapide ; le détail vérifiable est dans
   (`prefer_distinct_provider_for_review=True`,
   `require_distinct_provider_for_review=False`). `model` n'est jamais un
   invariant de gouvernance en lui-même.
-- **QuotaWindow** : une fenêtre de quota observée pour un provider/modèle
-  (il peut y en avoir plusieurs par worker : quotidienne, horaire,
-  concurrente, etc.).
-- **Workspace** : abstraction du dépôt de code sur lequel une tâche
-  s'exécute ; le moteur ne connaît que cette interface, jamais une stratégie
-  Git concrète.
+- **QuotaWindow** : une fenêtre de quota observée pour un provider (porté
+  par `ProviderState`, jamais par un `Worker` individuellement) ; plusieurs
+  fenêtres peuvent coexister pour ce provider (quotidienne, horaire,
+  concurrente, etc.). Plusieurs workers déclarés sur le même provider
+  partagent le même quota observé — ils ne créent jamais des fenêtres
+  distinctes.
+- **Workspace** : le dépôt de code sur lequel une tâche s'exécute. La
+  gouvernance de branche/merge/tag appartient exclusivement à
+  `GitGovernanceService`/`LocalGitWorkspace`, jamais au moteur d'exécution
+  ni aux workers ; `RalphExecutionEngine` peut effectuer une seule lecture
+  Git minimale (`git rev-parse HEAD`, en lecture seule) pour capturer un
+  fait d'audit SHA. Une abstraction `Workspace` générique et
+  interchangeable n'est pas actuellement implémentée — voir AC-12 de
+  `MVP_SPEC.yaml`.
 
 ### Phase 2 — GitHub : branches et Pull Requests
 
@@ -2044,14 +2061,18 @@ Ce résumé sert de repère rapide ; le détail vérifiable est dans
 Objectif : remplacer le Git purement local par un flux Git + GitHub complet.
 
 Livrables (esquisse, à détailler en phase 1 via un ADR dédié) :
-- Nouvelle implémentation de l'abstraction Workspace (`GitHubWorkspace` :
-  création de PR, lecture de statut CI) — le moteur n'est pas modifié
-  puisqu'il ne dépend déjà que de l'interface Workspace
-- **REUSE FIRST** : `GitHubWorkspace` s'appuie sur le CLI `gh` (subprocess,
-  déjà installé et authentifié) pour créer branches/PR/commentaires, plutôt
-  que d'écrire un client API GitHub maison ; s'inspirer de l'abstraction
-  multi-provider Git de The-PR-Agent/pr-agent (`git_providers/`) pour la
-  forme de l'interface (voir `docs/ECOSYSTEM.md`, section 10)
+- Une intégration GitHub (création de PR, lecture de statut CI)
+  viendrait s'ajouter à `GitGovernanceService`, qui centralise déjà toute
+  décision de branche/merge/tag — pas au moteur d'exécution, qui n'en
+  possède aucune (voir « Modèle conceptuel » ci-dessus et AC-12 de
+  `MVP_SPEC.yaml` : aucune abstraction `Workspace` générique
+  interchangeable n'existe actuellement à modifier ou étendre)
+- **REUSE FIRST** : cette future intégration s'appuierait sur le CLI `gh`
+  (subprocess, déjà installé et authentifié) pour créer branches/PR/
+  commentaires, plutôt que d'écrire un client API GitHub maison ;
+  s'inspirer de l'abstraction multi-provider Git de The-PR-Agent/pr-agent
+  (`git_providers/`) pour la forme de l'interface (voir
+  `docs/ECOSYSTEM.md`, section 10)
 - `Task` gagne des champs optionnels `branch_name`, `pr_url`, `pr_status`
   (migration additive, pas de rupture de schéma)
 - Politique de merge : uniquement si tests + quality gates + review sont au
