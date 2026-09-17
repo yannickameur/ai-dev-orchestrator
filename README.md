@@ -25,17 +25,19 @@ résumé qui se périmerait vite ici).
 
 ### Workflow par défaut : `LEAN_FEATURE_FLOW`
 
-Chaque WorkItem passe par un chemin nominal court — au plus 3 exécutions
-IA réelles sur le chemin heureux :
+Chaque WorkItem passe par un chemin nominal court — exactement **2
+exécutions LLM** sur le chemin heureux (DEV A, DEV B). La QA n'est pas un
+agent IA : elle est déterministe, non-LLM, ne consomme donc aucun worker
+IA supplémentaire.
 
 ```
 FEATURE
   ↓
-DEV A
+DEV A — AI
   ↓
-DEV B corrective review  (2e développeur indépendant, pas en lecture
-  ↓                        seule — il corrige et committe directement)
-QA                        (déterministe, unique, lecture seule)
+DEV B — AI corrective review  (2e développeur indépendant, pas en
+  ↓                             lecture seule — il corrige et committe)
+QA — deterministic             (unique, lecture seule, non-LLM)
   ↓
 PASS
   ↓
@@ -43,10 +45,10 @@ MERGE + TAG + DONE
 
 QA FAIL
   ↓
-DEV FIX
+DEV FIX — AI
   ↓
-QA
-  ↓ (jusqu'à 3 tentatives au total)
+QA — deterministic
+  ↓ (jusqu'à 3 tentatives QA au total)
 HUMAN_REVIEW_REQUIRED     (BLOCKED + TODO ajouté à la roadmap du projet
                             cible ; les autres WorkItems continuent)
 ```

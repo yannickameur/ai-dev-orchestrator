@@ -1,16 +1,37 @@
 # ADAPTIVE_EXECUTION.md — Adaptive Worker/Profile selection architecture
 
-Document d'étude (Phase 1, avant Slices 15-18). Aucune de ces slices n'est
-implémentée : ce document fixe l'architecture cible et les décisions déjà
-tranchées, pour que l'implémentation future n'ait plus à ré-ouvrir ces
-questions. Voir `ROADMAP.md`, section « Découpage incrémental », pour le
-séquencement retenu.
+**Note historique :** ce document a été écrit comme un document d'étude
+*avant* l'implémentation des Slices 15-18 (Phase 1) — il fixait alors
+l'architecture cible et les décisions tranchées pour que l'implémentation
+future n'ait plus à ré-ouvrir ces questions. Cette architecture a depuis
+été **implémentée intégralement** (Slices 15-19). Certaines sections
+conservent volontairement le raisonnement/le formalisme *tel qu'il a été
+pensé avant construction* (utile pour comprendre le "pourquoi") ; les
+annotations « Fait (Slice N) » / « Résolu par Slice N » insérées au fil de
+l'implémentation reflètent l'état final réellement construit et font
+autorité sur le texte d'étude environnant en cas de doute. Voir
+`ROADMAP.md`, section « Découpage incrémental », pour le détail
+slice-par-slice, et `ROADMAP.md`, section « Chemin nominal actuel », pour
+la note de statut courante ci-dessous.
 
-Contexte : depuis Slice 14, la boucle Release -> ActivityReport -> planning
--> RoadmapProposal -> approbation -> `RoadmapApplicationService` -> MVP N+1
-est fonctionnelle de bout en bout. L'adaptive execution **améliore** comment
-les Workers sont choisis/configurés à l'intérieur de cette boucle — elle ne
-la remplace pas et ne remet en cause aucune des Slices 0-14.
+**CURRENT STATUS (2026-09-17)** :
+- Slices 15-19 implémentées (Worker Registry, Execution Profiles, quality
+  tiers, complexity pre-flight, sélection adaptative development/rework/
+  review/planning) — voir statuts individuels dans `ROADMAP.md`.
+- La machinerie adaptative reste disponible et n'est pas retirée.
+- `LEAN_FEATURE_FLOW` est désormais le workflow `DEFAULT` ; son chemin
+  nominal n'invoque **aucune** estimation de complexité/sélection adaptative.
+- Cette machinerie est conservée telle quelle mais **non enrichie** sans
+  besoin réel démontré (KISS/YAGNI).
+- `GOVERNED_FULL` (qui l'utilise pleinement) est `DEPRECATED`/
+  `REMOVAL_CANDIDATE`.
+
+Contexte (au moment de l'étude) : depuis Slice 14, la boucle Release ->
+ActivityReport -> planning -> RoadmapProposal -> approbation ->
+`RoadmapApplicationService` -> MVP N+1 est fonctionnelle de bout en bout.
+L'adaptive execution **améliore** comment les Workers sont choisis/
+configurés à l'intérieur de cette boucle — elle ne la remplace pas et ne
+remet en cause aucune des Slices 0-14.
 
 ## 1. Ce que Ralph fournit déjà (findings)
 
@@ -85,11 +106,13 @@ config. Les modèles/efforts fixes actuels (`Worker.model`,
 aucune rupture.
 
 Chargement externe (Slice 15) : `config/workers.yaml`, répondant enfin à
-l'AC-2 de `MVP_SPEC.yaml` (jamais implémenté jusqu'ici — vérifié : aucun
-`WorkerRegistry`, aucun loader YAML, aucun `config/` n'existe encore dans
-`src/`). Aucun nom de modèle n'est câblé en dur dans le moteur ; aucun
-secret dans ce fichier (clés d'API/auth restent gérées par l'environnement/
-les CLIs Claude Code et Codex eux-mêmes, jamais dans `workers.yaml`).
+l'AC-2 de `MVP_SPEC.yaml` (au moment de l'étude, aucun `WorkerRegistry`,
+aucun loader YAML, aucun `config/` n'existait encore dans `src/` — cette
+lacune a depuis été résolue par Slice 15, voir
+`src/orchestrator/worker_registry.py`). Aucun nom de modèle n'est câblé en
+dur dans le moteur ; aucun secret dans ce fichier (clés d'API/auth restent
+gérées par l'environnement/les CLIs Claude Code et Codex eux-mêmes, jamais
+dans `workers.yaml`).
 
 ```yaml
 workers:

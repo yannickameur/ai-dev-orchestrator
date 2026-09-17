@@ -132,8 +132,19 @@ depuis leur introduction — voir `src/orchestrator/worker_selector.py`) :
   défaut** (`prefer_distinct_provider_for_review=True`,
   `require_distinct_provider_for_review=False`) : un repli sur un second
   worker du même provider reste toujours valide plutôt que de bloquer.
-- QA (chemin Lean) ne sélectionne aucun worker du tout — déterministe,
-  donc jamais concerné par la disponibilité d'un provider.
+- QA (chemin Lean) n'utilise aucun `WorkerSelector`, ne sélectionne et
+  n'exécute aucun agent/worker IA : elle réutilise directement la
+  validation déterministe existante (`QAEngine.run`,
+  `QAPhase.FINAL_VERIFICATION`), sur le SHA exact du WorkItem, working
+  tree clean, en lecture seule — c'est la dernière preuve exécutable avant
+  merge, jamais une troisième opinion LLM. Jamais concernée par la
+  disponibilité d'un provider.
+
+**Nominal LLM executions: DEV A + DEV B only.** Le chemin heureux consomme
+exactement 2 exécutions LLM (DEV A, DEV B) — la QA n'en consomme aucune.
+`LLM IS NOT ORACLE` : le second regard IA est DEV B (corrective review,
+write-capable) ; la QA finale apporte une preuve exécutable déterministe,
+pas une troisième opinion LLM systématique.
 
 **Invariant de continuité (2026-09-17)** :
 
@@ -245,7 +256,7 @@ celle d'un autre :
 
 ## Phases
 
-### Phase 0 — Spécification (en cours)
+### Phase 0 — Spécification (DONE)
 
 Objectif : aligner le besoin, l'architecture et les critères d'acceptation
 avant d'écrire du code.
@@ -997,9 +1008,11 @@ testable offline, et documenter explicitement ses dépendances.
 > **Adaptive execution (Slices 15-18)** — étudiée en détail dans
 > `docs/ADAPTIVE_EXECUTION.md` (findings Ralph, frontière Ralph/
 > orchestrateur, Worker Registry, Execution Profiles, quality tiers,
-> complexity pre-flight, séquence de sélection retenue). Aucune de ces
-> slices n'est DONE — cette section documente uniquement le découpage
-> retenu pour les implémenter une par une, dans l'ordre.
+> complexity pre-flight, séquence de sélection retenue). Le texte qui suit
+> décrit le plan de découpage tel qu'établi **avant** l'implémentation ;
+> les slices ont depuis été implémentées une par une, dans l'ordre — voir
+> les statuts individuels ci-dessous (chacun fait autorité, pas ce
+> paragraphe d'introduction).
 >
 > Justification du découpage en 4 slices plutôt qu'une seule grosse
 > slice « adaptive execution » : chacune touche un sous-ensemble distinct
@@ -2296,8 +2309,9 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
     réutilise `QAPhase.FINAL_VERIFICATION` tel quel — aucune nouvelle
     phase) → merge gouverné (`GitGovernanceService.compute_merge_eligibility`/
     `merge`, réutilisés à l'identique) → tag Git (`feature/<work-item-id>/done`,
-    nouveau : `LocalGitWorkspace.create_tag`). Au plus 3 exécutions IA sur
-    le chemin nominal.
+    nouveau : `LocalGitWorkspace.create_tag`). Exactement 2 exécutions LLM
+    sur le chemin nominal (DEV A, DEV B) — QA est déterministe/lecture
+    seule, jamais un agent IA.
   - QA FAIL : jusqu'à 3 tentatives QA au total (`QAPolicy.max_qa_cycles`,
     déjà 3 par défaut — aucun changement de politique nécessaire) — les
     2 premiers échecs déclenchent `DEV FIX → QA` (jamais un second DEV B) ;
