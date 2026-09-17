@@ -94,10 +94,10 @@ def _counting_id_factory():
     return id_factory
 
 
-def _worker(worker_id: str, *, provider: str = "anthropic", backend: str = "claude_code") -> Worker:
+def _worker(worker_id: str, *, provider: str = "anthropic", backend: str = "claude_code", priority: int = 0) -> Worker:
     return Worker.with_single_profile(
         worker_id=worker_id, display_name=worker_id.title(), provider=provider, backend=backend,
-        model="m", capabilities=frozenset({"developer"}),
+        model="m", capabilities=frozenset({"developer"}), priority=priority,
     )
 
 
@@ -138,6 +138,61 @@ def _real_worker_selector(workers: list[Worker]):
 
     manager = QuotaManager(
         {"anthropic": _AlwaysAvailableAdapter("anthropic"), "openai": _AlwaysAvailableAdapter("openai")},
+        QuotaPolicy(state_ttl=timedelta(hours=1)), clock=lambda: UTC_NOW,
+    )
+    return WorkerSelector(workers, manager)
+
+
+def _real_worker_selector_with_unavailable(workers: list[Worker], *, unavailable_provider: str):
+    """Same real ``WorkerSelector``/``QuotaManager`` wiring as
+    ``_real_worker_selector``, except ``unavailable_provider`` reports
+    QUOTA_EXHAUSTED (with a known ``reset_at``, like a real probe would).
+    Used to prove the worker-pool fallback (>= 2 independent workers per
+    participating provider, 2026-09-17 product decision): DEV B selection
+    must fall back to a second worker on the *other*, still-available
+    provider-mate rather than ever waiting while an eligible worker
+    exists — see ROADMAP.md, "Worker pool"."""
+    from orchestrator.providers.adapter import ProviderAdapter
+    from orchestrator.providers.contracts import (
+        ProviderAvailability,
+        ProviderState,
+        QuotaWindow,
+        UnavailabilityReason,
+    )
+    from orchestrator.quota_manager import QuotaManager, QuotaPolicy
+    from orchestrator.worker_selector import WorkerSelector
+
+    class _FixedAdapter(ProviderAdapter):
+        def __init__(self, provider: str, *, available: bool) -> None:
+            self._provider = provider
+            self._available = available
+
+        async def probe(self) -> ProviderState:
+            if self._available:
+                return ProviderState(
+                    provider=self._provider,
+                    availability=ProviderAvailability(available=True, observed_at=UTC_NOW, reason=None),
+                    observed_at=UTC_NOW,
+                )
+            return ProviderState(
+                provider=self._provider,
+                availability=ProviderAvailability(
+                    available=False, observed_at=UTC_NOW, reason=UnavailabilityReason.QUOTA_EXHAUSTED,
+                ),
+                observed_at=UTC_NOW,
+                quota_windows=(
+                    QuotaWindow(
+                        window_type="primary", source="fake", observed_at=UTC_NOW,
+                        reset_at=UTC_NOW + timedelta(hours=2),
+                    ),
+                ),
+            )
+
+    manager = QuotaManager(
+        {
+            "anthropic": _FixedAdapter("anthropic", available=unavailable_provider != "anthropic"),
+            "openai": _FixedAdapter("openai", available=unavailable_provider != "openai"),
+        },
         QuotaPolicy(state_ttl=timedelta(hours=1)), clock=lambda: UTC_NOW,
     )
     return WorkerSelector(workers, manager)
@@ -245,14 +300,20 @@ def _manager(
     )
 
 
-def _new_stack(tmp_path: Path, *, workers: list[Worker], dev_actions=None, qa_script=None, qa_policy=None, wait_store=None):
+def _new_stack(
+    tmp_path: Path, *, workers: list[Worker], dev_actions=None, qa_script=None, qa_policy=None,
+    wait_store=None, unavailable_provider: str | None = None,
+):
     repo = _git_repo(tmp_path)
     project_store, handoff_store = _stores(tmp_path, repo)
     project_store.create_work_item(work_item_id="wi-1", mvp_id="mvp-1", title="A")
     git_service, git_store = _git_service(tmp_path)
     qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
     engine = LeanFakeEngine(dev_actions=dev_actions)
-    selector = _real_worker_selector(workers)
+    selector = (
+        _real_worker_selector(workers) if unavailable_provider is None
+        else _real_worker_selector_with_unavailable(workers, unavailable_provider=unavailable_provider)
+    )
     qa_engine = DynamicQAEngine(qa_script)
     manager = _manager(
         project_store, handoff_store, selector, engine,
@@ -531,6 +592,65 @@ class TestLeanDevBQuotaWait:
         assert result.work_item.status is WorkItemStatus.BLOCKED
         assert "DEV B" in (result.work_item.blocked_reason or "")
         assert stack["git_store"].get("wi-1").status is not GitWorkItemStatus.MERGED
+
+
+# --- Worker pool fallback (2026-09-17): >= 2 independent workers per -------
+# --- participating provider, so provider exhaustion never forces a WAIT ----
+# --- while another eligible worker exists.                                --
+#
+# CASE C (both providers available, cross-provider preferred for DEV B) is
+# already fully covered by the nominal happy-path tests above (alice/victor,
+# via ``_real_worker_selector`` where both providers are always available) —
+# not duplicated here.
+
+
+class TestLeanWorkerPoolSameProviderFallback:
+    def test_dev_b_falls_back_to_same_provider_when_the_other_provider_is_exhausted_anthropic_only(
+        self, tmp_path: Path,
+    ) -> None:
+        """CASE A: anthropic AVAILABLE, openai QUOTA_EXHAUSTED. DEV A picks
+        the higher-priority anthropic worker (alice); DEV B must never wait
+        for openai to reset — it falls back to the second anthropic worker
+        (bob) instead, and the WorkItem completes straight through QA."""
+        alice, bob = _worker("alice", priority=100), _worker("bob", priority=90)
+        victor = _worker("victor", provider="openai", backend="codex", priority=100)
+        oscar = _worker("oscar", provider="openai", backend="codex", priority=90)
+        stack = _new_stack(
+            tmp_path, workers=[alice, bob, victor, oscar],
+            dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A"), None],
+            unavailable_provider="openai",
+        )
+
+        result = asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert result.wait is None
+        dev_requests = [r for r in stack["engine"].requests if r.role == "developer"]
+        assert [r.worker.worker_id for r in dev_requests] == ["alice", "bob"]
+        assert stack["git_store"].get("wi-1").status is GitWorkItemStatus.MERGED
+
+    def test_dev_b_falls_back_to_same_provider_when_the_other_provider_is_exhausted_openai_only(
+        self, tmp_path: Path,
+    ) -> None:
+        """CASE B: anthropic QUOTA_EXHAUSTED, openai AVAILABLE — the mirror
+        of CASE A. DEV A/DEV B both come from the openai pool (victor/
+        oscar); the WorkItem never waits for anthropic to reset."""
+        alice, bob = _worker("alice", priority=100), _worker("bob", priority=90)
+        victor = _worker("victor", provider="openai", backend="codex", priority=100)
+        oscar = _worker("oscar", provider="openai", backend="codex", priority=90)
+        stack = _new_stack(
+            tmp_path, workers=[alice, bob, victor, oscar],
+            dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A"), None],
+            unavailable_provider="anthropic",
+        )
+
+        result = asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert result.wait is None
+        dev_requests = [r for r in stack["engine"].requests if r.role == "developer"]
+        assert [r.worker.worker_id for r in dev_requests] == ["victor", "oscar"]
+        assert stack["git_store"].get("wi-1").status is GitWorkItemStatus.MERGED
 
 
 # --- B/X: GOVERNED_FULL stays available and green ---------------------------

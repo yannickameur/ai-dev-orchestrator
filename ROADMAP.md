@@ -89,6 +89,93 @@ réponse autorise une action destructive, financière ou sensible ailleurs
 dans le système. Elle devra rester configurable (délai, activation).
 Non implémentée avant Slice 13 — voir plus bas.
 
+### Chemin nominal actuel d'un WorkItem — `LEAN_FEATURE_FLOW` (DEFAULT)
+
+Ceci est le chemin réellement exécuté aujourd'hui pour un WorkItem, tel
+qu'implémenté par `MVPManager` (`workflow_mode` par défaut
+`WorkflowMode.LEAN_FEATURE_FLOW`, décision produit du 2026-09-16) — à ne
+pas confondre avec le cycle MVP/release long terme ci-dessus :
+
+```
+ROADMAP / WorkItem
+      ↓
+WorkerSelector (capability > gouvernance > quota > priorité)
+      ↓
+DEV A
+      ↓
+DEV B — corrective review (2e développeur indépendant,
+        pas en lecture seule : il corrige et committe directement)
+      ↓
+QA déterministe, unique, en lecture seule (QAPhase.FINAL_VERIFICATION
+réutilisée telle quelle — pas de QA Test Authoring séparée, pas de
+Final QA supplémentaire, pas d'estimation adaptative obligatoire)
+      ↓
+   PASS ────────────────────────────────► merge (gouverné, SHA-pinné)
+      │                                       ↓
+   FAIL                                      tag (`feature/<work-item-id>/done`)
+      ↓                                       ↓
+   DEV FIX → QA (jusqu'à 3 tentatives QA      DONE
+   au total, `QAPolicy.max_qa_cycles`)
+      ↓ (3e FAIL)
+   HUMAN_REVIEW_REQUIRED
+   (`BLOCKED` + TODO déterministe ajouté au ROADMAP.md du projet cible,
+   commité sur sa branche de travail ; les autres WorkItems indépendants
+   continuent normalement)
+```
+
+Invariants de gouvernance de ce chemin (`WorkerSelectionPolicy`, inchangés
+depuis leur introduction — voir `src/orchestrator/worker_selector.py`) :
+
+- **`DEV_B.worker_id != DEV_A.worker_id` — REQUIRED**, non désactivable
+  (`require_distinct_worker_for_review=True`, épinglé).
+- **`DEV_B.provider != DEV_A.provider` — PREFERRED, jamais REQUIRED par
+  défaut** (`prefer_distinct_provider_for_review=True`,
+  `require_distinct_provider_for_review=False`) : un repli sur un second
+  worker du même provider reste toujours valide plutôt que de bloquer.
+- QA (chemin Lean) ne sélectionne aucun worker du tout — déterministe,
+  donc jamais concerné par la disponibilité d'un provider.
+
+**Invariant de continuité (2026-09-17)** :
+
+> *Provider exhaustion must never produce WAITING while another compatible
+> worker on an AVAILABLE provider exists.*
+>
+> Un quota provider épuisé ne doit jamais provoquer `WAITING` si un autre
+> worker compatible sur un provider disponible peut poursuivre. `WAITING`
+> n'intervient que si aucun worker éligible n'existe actuellement et qu'au
+> moins un provider candidat est diagnosticable comme `quota_exhausted`
+> avec un `reset_at` connu (`WaitCoordinator.record_wait`) ; `BLOCKED`
+> intervient quand aucune capacité structurellement compatible n'existe
+> (jamais un `WAITING` fabriqué sans deadline plausible).
+
+**Worker pool — recommandation actuelle** : au moins **2 workers
+indépendants par provider participant** (`config/workers.yaml`), pour que
+l'exclusion `DEV B != DEV A` puisse toujours se satisfaire sans dépendre
+de la disponibilité de l'*autre* provider. Aujourd'hui : `alice`/`bob`
+(anthropic), `victor`/`oscar` (openai) — mêmes capabilities/profils que
+leur worker primaire, priorité inférieure (90 vs 100) pour que la
+sélection sans auteur préfère naturellement le worker primaire quand tous
+les providers sont disponibles. Important : **plusieurs workers d'un même
+provider ne créent pas plusieurs quotas provider** — `QuotaManager`
+continue d'interroger un seul état par nom de provider ; ces workers
+représentent uniquement plusieurs identités d'exécution indépendantes
+partageant le même quota sous-jacent.
+
+**Adaptive execution** (Slices 15-19, `docs/ADAPTIVE_EXECUTION.md`) :
+`WorkerSelector`/`AdaptiveExecutionSelector`/`resolve_profile()`/
+l'estimation de complexité restent disponibles et inchangés, mais
+`LEAN_FEATURE_FLOW` ne dépend d'aucun d'eux sur son chemin nominal —
+aucune nouvelle sophistication adaptative n'est à ajouter sans besoin réel
+prouvé (voir « KISS/YAGNI » ci-dessous).
+
+**`GOVERNED_FULL`** (l'ancien pipeline : estimation adaptative avant
+chaque phase, QA Test Authoring isolée, Review isolée en lecture seule,
+Final QA séparée) : **`DEPRECATED` / `REMOVAL_CANDIDATE`**. Reste
+sélectionnable explicitement (`workflow_mode=WorkflowMode.GOVERNED_FULL`),
+sa suite de tests reste verte, seules des régressions critiques y seront
+corrigées ; aucune nouvelle capacité n'y est ajoutée. Suppression évaluée
+plus tard, après suffisamment de recul sur `LEAN_FEATURE_FLOW`.
+
 ## Responsabilités (ne pas confondre)
 
 Chaque composant a une responsabilité unique et ne doit jamais empiéter sur
@@ -149,6 +236,12 @@ celle d'un autre :
    reuse > adaptation > développement spécifique lorsque la qualité, la
    licence et le coût d'intégration le permettent. Ne pas recréer un
    orchestrateur déjà disponible sans raison. Voir `docs/ECOSYSTEM.md`.
+10. **KISS / YAGNI** : préférer le plus petit changement qui satisfait le
+    besoin prouvé. Ne pas ajouter une abstraction, un store, un routeur,
+    un agent ou une phase tant qu'un besoin concret ne le justifie (voir
+    la décision produit `LEAN_FEATURE_FLOW`, section « Chemin nominal
+    actuel » ci-dessus, et l'arbitrage worker↔provider dans « État
+    actuel »).
 
 ## Phases
 
@@ -1888,12 +1981,22 @@ Ce résumé sert de repère rapide ; le détail vérifiable est dans
 - **MVP** : périmètre + critères d'acceptation d'un objectif produit.
 - **Task** : unité de travail rattachée à un MVP, avec `required_role`,
   `required_capabilities`, et un `status` incluant `RECOVERY_REQUIRED`.
-- **Worker** : un couple (provider, modèle, adaptateur) déclaré en config,
-  avec `roles`, `capabilities`, `priority_tier`/`cost_tier`.
+- **Worker** (depuis Slice 15) : identité d'exécution de gouvernance —
+  `worker_id`, `provider`, `backend` fixes, `capabilities`, `priority`,
+  `enabled`, et un ou plusieurs `ExecutionProfile` déclarés
+  (`quality_tier`/`model`/`reasoning_effort`/`cost_rank`). Ce n'est donc
+  plus simplement « un couple (provider, modèle, adaptateur) » : le modèle
+  concret vit sur l'`ExecutionProfile` choisi, jamais figé sur le Worker
+  lui-même. Voir `docs/ADAPTIVE_EXECUTION.md` §4-5.
 - **Execution** : une exécution concrète d'un worker sur une tâche —
-  identité complète (voir Phase 1 ci-dessus), c'est la seule source pour
-  vérifier plus tard `Developer.model != Reviewer.model` et
-  `Developer.provider != Reviewer.provider`.
+  identité complète (voir Phase 1 ci-dessus). L'invariant de gouvernance
+  réel, vérifiable a posteriori à partir de cette identité, porte sur
+  `worker_id` (`Reviewer.worker_id != Author.worker_id`, **obligatoire** —
+  `WorkerSelectionPolicy.require_distinct_worker_for_review`) ; un
+  `provider` distinct est **préféré** mais jamais requis par défaut
+  (`prefer_distinct_provider_for_review=True`,
+  `require_distinct_provider_for_review=False`). `model` n'est jamais un
+  invariant de gouvernance en lui-même.
 - **QuotaWindow** : une fenêtre de quota observée pour un provider/modèle
   (il peut y en avoir plusieurs par worker : quotidienne, horaire,
   concurrente, etc.).
@@ -2224,10 +2327,55 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
   - Acceptance réelle : voir `docs/reports/mars-rover-lean-feature-flow-2026-09-16.html`
     (comparaison factuelle avec le run5 `GOVERNED_FULL` précédent sur le
     même kata Mars Rover).
-- **Next : revue de roadmap avec l'utilisateur.** Toutes les Slices 21-24
-  du cycle QA sont maintenant `CODE_DONE` — c'est le point de contrôle
-  prévu par le principe du projet avant toute nouvelle Slice. Cette
-  session ne décide **pas** seule si un POC QA externe ou la Slice 25
+- **Décision produit (2026-09-17) — Worker pool fallback (config
+  uniquement, `provider`/`backend` restent sur `Worker`, aucun refactor
+  `ExecutionProfile`).** Revue d'architecture (`WorkerSelector`,
+  `WorkerRegistry`, `QuotaManager`, `wait.py`, `handoff.py`) confirmant
+  que le seul écart réel entre le comportement observé et l'invariant de
+  continuité visé (« un quota provider épuisé ne doit jamais forcer
+  `WAITING` si un autre worker compatible sur un provider disponible
+  existe ») était la taille du pool : `config/workers.yaml` ne déclarait
+  qu'un seul worker par provider (`alice`/anthropic, `victor`/openai), si
+  bien qu'un DEV B sans provider différent disponible attendait toujours
+  le reset — comportement prouvé par un test déjà existant
+  (`tests/test_mvp_manager_lean_feature_flow.py::TestLeanDevBQuotaWait::
+  test_no_eligible_dev_b_waits_then_resumes_on_reset`). Décision : YAGNI
+  sur le découplage worker↔provider envisagé (`ExecutionProfile` reste
+  `quality_tier`/`model`/`reasoning_effort`/`cost_rank` uniquement,
+  `provider`/`backend` restent des attributs fixes de `Worker`) — aucun
+  besoin concret non couvert par un second worker par provider, coût de
+  refactor disproportionné pour un bénéfice nul. Seul changement réel :
+  `config/workers.yaml` étendu à 4 workers (`bob`/anthropic,
+  `oscar`/openai, capabilities/profils strictement identiques à leur
+  worker primaire, `priority: 90` contre `100` pour que la sélection sans
+  auteur préfère naturellement le worker primaire). **`src/orchestrator/`
+  non modifié** — `WorkerSelector`/`WorkerRegistry`/`WorkerSelectionPolicy`
+  fonctionnent sans changement, aucun nom de worker câblé en dur. 4 tests
+  offline ajoutés (2 dans `tests/test_worker_registry.py` couvrant la
+  forme du pool réel à 4 workers/2 par provider et le miroir
+  bob≡alice/oscar≡victor ; 2 dans
+  `tests/test_mvp_manager_lean_feature_flow.py` prouvant le repli
+  same-provider — anthropic seul disponible et openai seul disponible —
+  sans jamais passer par `WAITING`), 1158 tests offline PASS au total
+  (contre 1154 avant cette décision). Documentation alignée
+  (`ROADMAP.md`, `docs/status.md`, `docs/ADAPTIVE_EXECUTION.md`,
+  `docs/QA_GOVERNANCE.md`, `README.md`) pour ne plus présenter
+  `Developer.model`/`Developer.provider != Reviewer.*` comme un invariant
+  du chemin nominal actuel (l'invariant réel porte sur `worker_id`,
+  `provider` distinct restant préféré, jamais requis par défaut). Mars
+  Rover (pilote externe) mis en pause par décision utilisateur — le dépôt
+  pilote reste intact comme preuve/audit, aucun nouveau run lancé cette
+  session, aucun smoke réel, aucune consommation de quota provider réel.
+- **Next.** Le pool worker/provider fallback est fermé et prouvé offline ;
+  `LEAN_FEATURE_FLOW` reste stabilisé comme workflow `DEFAULT`. Prochaine
+  étape proposée mais **non exécutée** cette session : une nouvelle revue
+  produit/roadmap avec l'utilisateur avant toute nouvelle capacité —
+  notamment décider si/quand relancer un pilote externe (Mars Rover ou
+  autre) pour valider le pool à 4 workers en conditions réelles, et si la
+  CLI/productisation (mentionnée en fin de roadmap historique) devient
+  pertinente. Ni l'un ni l'autre ne démarre sans validation explicite.
+  Toutes les Slices 21-24 du cycle QA restent `CODE_DONE` — cette session
+  ne décide toujours pas seule si un POC QA externe ou la Slice 25
   (Advanced QA / External E2E, restée conditionnelle) sont réellement
   utiles — voir `docs/QA_GOVERNANCE.md` et
   `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`. OmniRoute reste une

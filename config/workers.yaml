@@ -57,12 +57,92 @@ workers:
         model: sonnet
         cost_rank: 30
 
+  # Worker pool fallback (2026-09-17 product decision): a second,
+  # independent worker per participating provider. Same capabilities/
+  # profiles as the provider's primary worker — no artificial functional
+  # difference. priority=90 (< the primary's 100) so a fresh selection
+  # with no author still naturally prefers the primary worker; the
+  # priority gap never blocks DEV B/fallback selection, which is governed
+  # entirely by WorkerSelector's existing author-exclusion + cross-
+  # provider preference (see docs/ADAPTIVE_EXECUTION.md and ROADMAP.md,
+  # "Worker pool").
+  - worker_id: bob
+    display_name: Bob
+    enabled: true
+    provider: anthropic
+    backend: claude_code
+    priority: 90
+
+    capabilities:
+      - development
+      - code_review
+      - release_planning
+      - roadmap_synthesis
+      - complexity_estimation
+      - qa_testing
+
+    default_profile_id: standard
+    estimator_profile_id: economy
+
+    profiles:
+      economy:
+        quality_tier: SIMPLE
+        model: haiku
+        cost_rank: 10
+
+      standard:
+        quality_tier: STANDARD
+        model: sonnet
+        cost_rank: 20
+
+      deep:
+        quality_tier: COMPLEX
+        model: sonnet
+        cost_rank: 30
+
   - worker_id: victor
     display_name: Victor
     enabled: true
     provider: openai
     backend: codex
     priority: 100
+
+    capabilities:
+      - development
+      - code_review
+      - release_planning
+      - roadmap_synthesis
+      - complexity_estimation
+      - qa_testing
+
+    default_profile_id: standard
+    estimator_profile_id: economy
+
+    profiles:
+      economy:
+        quality_tier: SIMPLE
+        model: gpt-5.6-terra
+        reasoning_effort: low
+        cost_rank: 10
+
+      standard:
+        quality_tier: STANDARD
+        model: gpt-5.6-terra
+        reasoning_effort: medium
+        cost_rank: 20
+
+      deep:
+        quality_tier: COMPLEX
+        model: gpt-5.6-terra
+        reasoning_effort: high
+        cost_rank: 30
+
+  - worker_id: oscar
+    display_name: Oscar
+    enabled: true
+    provider: openai
+    backend: codex
+    priority: 90
 
     capabilities:
       - development

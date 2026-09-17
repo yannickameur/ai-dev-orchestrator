@@ -116,10 +116,13 @@ Execution          = snapshot réel utilisé (déjà existant, ExecutionRecord)
 
 `ExecutionRecord` (Slice 5) **ne change pas de forme** : il continue de
 capturer `worker_id`, `provider`, `backend`, `model`, `reasoning_effort`,
-`role` — l'audit existant (dont la vérification `Developer.model !=
-Reviewer.model`) reste exact sans modification. Un `ExecutionProfile` n'est
-qu'une entrée de configuration nommée ; une fois sélectionné, il se traduit
-exactement dans les mêmes champs `model`/`reasoning_effort` déjà présents.
+`role`. Un `ExecutionProfile` n'est qu'une entrée de configuration nommée ;
+une fois sélectionné, il se traduit exactement dans les mêmes champs
+`model`/`reasoning_effort` déjà présents. L'invariant de gouvernance réel
+(inchangé depuis, voir `WorkerSelectionPolicy`) porte sur `worker_id` —
+jamais sur `model`/`provider` : un reviewer ne peut jamais être le même
+`worker_id` que l'auteur (obligatoire), un provider distinct est préféré
+mais jamais requis par défaut (`require_distinct_provider_for_review=False`).
 
 ## 6. Quality tiers
 
