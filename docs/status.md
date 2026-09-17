@@ -1,6 +1,6 @@
 # Status
 
-Dernière mise à jour : Clôture MVP 0.1 / Phase 1 (2026-09-17).
+Dernière mise à jour : Pilote d'acceptance réel Roman Numerals — PASS (2026-09-17).
 
 ## État actuel (résumé factuel)
 
@@ -19,10 +19,16 @@ Dernière mise à jour : Clôture MVP 0.1 / Phase 1 (2026-09-17).
   sélectionnable explicitement, tests verts, non enrichi).
 - **Slice 24** : `ACCEPTANCE_DONE` (2026-09-16) — voir détail ci-dessous.
 - **Tests offline** : 1158 PASS.
+- **Pilote externe Roman Numerals (2026-09-17)** : `PASS` — premier
+  pilote réel post-clôture MVP 0.1, repli same-provider observé pour de
+  vrai (openai en quota épuisé au moment du run). Détail : voir
+  `docs/reports/roman-numerals-lean-pilot-2026-09-17.md` et l'entrée
+  datée ci-dessous.
 - **Mars Rover (pilote externe)** : en pause, aucun pilote actif.
 - **Slice active** : aucune.
-- **Next** : POST-MVP 0.1 EXPERIMENT / DISCOVERY (proposé, non démarré) —
-  voir `ROADMAP.md`, « Next ».
+- **Next** : POST-MVP 0.1 EXPERIMENT / DISCOVERY — axe (1) Roman Numerals
+  fait (PASS) ; axes (2)-(5) proposés, non démarrés — voir `ROADMAP.md`,
+  « Next ».
 
 Le détail daté ci-dessous fait foi pour l'historique ; ce résumé reflète
 l'état courant.
@@ -353,19 +359,37 @@ l'état courant.
   d'un rapport d'acceptance Lean inexistant retirée (voir ci-dessus).
   `MVP 0.1` = `DONE`, `Phase 1` = `DONE`. 1158 tests offline PASS,
   inchangés.
+- **Pilote d'acceptance réel (2026-09-17) — Roman Numerals /
+  `LEAN_FEATURE_FLOW` : `PASS`.** Premier pilote externe réel post-clôture
+  MVP 0.1, `MVPManager.run_next_work_item(...)` réel sur dépôt jetable
+  dédié (`~/projects/roman-numerals-kata`), aucun composant factice. DEV A
+  = `alice` (anthropic, 82,1 s), DEV B = `bob` (anthropic, 21,1 s, aucune
+  correction). **Repli same-provider observé pour de vrai** : `openai` en
+  `quota_exhausted` au moment du run, `WorkerSelector` a basculé sur un 2ᵉ
+  worker anthropic plutôt que d'attendre — première confirmation en
+  conditions réelles du pool worker/provider fermé le 2026-09-17. QA
+  déterministe `PASS` en 1 tentative (22 tests, dont un test de propriété
+  round-trip 1..3000 conçu par les développeurs). Merge fast-forward local
+  + tag `feature/wi-roman-numerals-kata/done`. 2 exécutions LLM, 0
+  `DEV FIX`, 0 `WAITING`. Dépôt de contrôle vérifié inchangé avant/après.
+  Limites honnêtes rapportées : `TDD_STRICTNESS = NOT_VERIFIABLE` (commit
+  unique, non vérifiable indépendamment), tokens `NOT_AVAILABLE`
+  (télémétrie Ralph à zéro, déjà connue peu fiable). Rapport complet :
+  `docs/reports/roman-numerals-lean-pilot-2026-09-17.md`.
 - **Next : POST-MVP 0.1 EXPERIMENT / DISCOVERY.** Pas encore un MVP 0.2 —
-  décision à prendre avec l'utilisateur. Axes convenus, **proposés, non
-  démarrés** : (1) pilote Lean frais sur un kata plus simple (Roman
-  Numerals, prochain petit pilote envisagé) ; (2) étude de faisabilité
-  Mistral/Vibe ; (3) étude build-vs-reuse Mammouth AI ; (4) étude de
-  l'écosystème des workers/providers gratuits/coût marginal nul ;
-  (5) échelle de difficulté progressive des projets de validation. Non
-  ordonnés au-delà du point (1). CLI/productisation reste une option
-  future, non requise pour démarrer ces axes. Toutes les Slices 21-24 du
-  cycle QA sont maintenant `DONE` (Slice 24 : `ACCEPTANCE_DONE`) — cette
-  session ne décide pas seule si un POC QA externe ou la Slice 25
-  (conditionnelle) sont réellement utiles. OmniRoute reste une
-  qualification future optionnelle, hors roadmap principale (voir
+  décision à prendre avec l'utilisateur. Axe (1) — pilote Lean frais
+  (Roman Numerals) — **fait, `PASS`** (voir ci-dessus). Axes restants,
+  **proposés, non démarrés**, non ordonnés entre eux : (2) étude de
+  faisabilité Mistral/Vibe ; (3) étude build-vs-reuse Mammouth AI ;
+  (4) étude de l'écosystème des workers/providers gratuits/coût marginal
+  nul ; (5) échelle de difficulté progressive des projets de validation
+  (dont un futur pilote de niveau supérieur à Roman Numerals).
+  CLI/productisation reste une option future, non requise pour démarrer
+  ces axes. Toutes les Slices 21-24 du cycle QA sont maintenant `DONE`
+  (Slice 24 : `ACCEPTANCE_DONE`) — cette session ne décide pas seule si un
+  POC QA externe ou la Slice 25 (conditionnelle) sont réellement utiles.
+  OmniRoute reste une qualification future optionnelle, hors roadmap
+  principale (voir
   `docs/OMNIROUTE_ARBITRATION.md`).
 
 Détail complet des slices, de la vision cible et du découpage incrémental :
