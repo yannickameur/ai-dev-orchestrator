@@ -1,6 +1,6 @@
 # Status
 
-Dernière mise à jour : Slice 24 — QA/Rework/Review/Merge Integration (2026-09-15).
+Dernière mise à jour : Worker pool fallback + alignement documentaire (2026-09-17).
 
 - **Slice 24 — QA/Rework/Review/Merge Integration : CODE_DONE,
   ACCEPTANCE_PENDING_PROVIDER.** QA devient une capacité opt-in de plus
@@ -35,6 +35,17 @@ Dernière mise à jour : Slice 24 — QA/Rework/Review/Merge Integration (2026-0
   (déjà prouvé offline, aucune session réelle supplémentaire dépensée
   pour reconfirmer un résultat déjà certain). Voir `docs/QA_GOVERNANCE.md`
   § « Slice 24 » pour le détail et la justification complète.
+  **Note (2026-09-17)** : le pool de workers a depuis été étendu à 2
+  workers par provider (`bob`/anthropic, `oscar`/openai — voir la
+  décision « Worker pool fallback » plus bas), ce qui lève
+  structurellement la cause de ce `BLOCKED_BY_PROVIDER` (un second worker
+  `qa_testing` du même provider que le développeur redevient éligible
+  même si l'autre provider est en quota). Non re-testé en acceptance
+  réelle cette session (aucun smoke provider réel lancé, périmètre
+  volontairement limité à la config/aux tests offline) — `CODE_DONE`
+  reste correct, l'étiquette `ACCEPTANCE_PENDING_PROVIDER` décrit l'état
+  du 2026-09-15 et n'est plus nécessairement bloquante aujourd'hui, sans
+  qu'une ré-acceptance réelle l'ait confirmé.
 - **Slice 23 — QA Engine MVP : DONE (Python/pytest uniquement).** Nouveau
   `src/orchestrator/internal_qa_engine.py` — `InternalQAEngine` (implémente
   le `QAEngine` Slice 22), `InternalQAPlan`, `InternalQATestAuthor`,
@@ -262,12 +273,51 @@ Dernière mise à jour : Slice 24 — QA/Rework/Review/Merge Integration (2026-0
   `ROADMAP.md`. 1154 tests offline PASS (1144 avant + 10 nouveaux dans
   `tests/test_mvp_manager_lean_feature_flow.py`). Acceptance réelle :
   `docs/reports/mars-rover-lean-feature-flow-2026-09-16.html`.
-- **Next : revue de roadmap avec l'utilisateur.** Toutes les Slices
-  21-24 du cycle QA sont `CODE_DONE` — point de contrôle prévu par le
-  projet avant toute nouvelle Slice. Cette session ne décide pas seule
-  si un POC QA externe ou la Slice 25 (conditionnelle) sont réellement
-  utiles. OmniRoute reste une qualification future optionnelle, hors
-  roadmap principale (voir `docs/OMNIROUTE_ARBITRATION.md`).
+- **Décision produit (2026-09-17) — Worker pool fallback : config
+  uniquement, `provider`/`backend` restent sur `Worker` (pas de refactor
+  `ExecutionProfile`, YAGNI confirmé).** Revue d'architecture
+  (`WorkerSelector`/`WorkerRegistry`/`QuotaManager`/`wait.py`/`handoff.py`)
+  confirmant que le seul écart réel avec l'invariant de continuité visé
+  (« un quota provider épuisé ne doit jamais forcer `WAITING` si un autre
+  worker compatible sur un provider disponible existe ») était la taille
+  du pool déclaré : un seul worker par provider
+  (`alice`/anthropic, `victor`/openai). Corrigé par config seule :
+  `config/workers.yaml` étend à 4 workers — `bob` (anthropic) et `oscar`
+  (openai), capabilities/profils strictement identiques à leur worker
+  primaire, `priority: 90` (contre `100`) pour que la sélection sans
+  auteur préfère naturellement le worker primaire quand tous les
+  providers sont disponibles. **`src/orchestrator/` non modifié** — aucun
+  nom de worker câblé en dur, `WorkerSelector`/`WorkerSelectionPolicy`
+  inchangés (`require_distinct_worker_for_review=True` épinglé,
+  `prefer_distinct_provider_for_review=True`,
+  `require_distinct_provider_for_review=False`, déjà les valeurs par
+  défaut). 4 tests offline ajoutés (2 dans `tests/test_worker_registry.py`
+  vérifiant la forme du pool réel — 4 workers, 2 par provider, Bob≡Alice/
+  Oscar≡Victor ; 2 dans `tests/test_mvp_manager_lean_feature_flow.py`
+  prouvant le repli same-provider — anthropic seul disponible, puis
+  openai seul disponible — sans jamais passer par `WAITING`). 1158 tests
+  offline PASS (1154 avant + 4). Documentation alignée (`ROADMAP.md`,
+  `README.md`, `docs/ADAPTIVE_EXECUTION.md`, `docs/QA_GOVERNANCE.md`) :
+  plus aucune section courante ne présente `Developer.model`/
+  `Developer.provider != Reviewer.*` comme un invariant du chemin nominal
+  (l'invariant réel porte sur `worker_id`, `provider` distinct restant
+  préféré, jamais requis par défaut). Mars Rover (pilote externe) mis en
+  pause par décision utilisateur ce même jour — dépôt pilote intact comme
+  preuve/audit, aucun nouveau run, aucun smoke réel, aucune consommation
+  de quota provider réel cette session.
+- **Next : nouvelle revue produit/roadmap avec l'utilisateur avant toute
+  nouvelle capacité.** Le pool worker/provider fallback est fermé et
+  prouvé offline ; `LEAN_FEATURE_FLOW` reste `DEFAULT` et stabilisé.
+  Aucune nouvelle Slice active. Reste à décider avec l'utilisateur :
+  relancer (ou non) un pilote externe pour valider le pool à 4 workers en
+  conditions réelles, et si la CLI/productisation devient pertinente —
+  ni l'un ni l'autre ne démarre sans validation explicite. Toutes les
+  Slices 21-24 du cycle QA restent `CODE_DONE` — point de contrôle prévu
+  par le projet avant toute nouvelle Slice. Cette session ne décide pas
+  seule si un POC QA externe ou la Slice 25 (conditionnelle) sont
+  réellement utiles. OmniRoute reste une qualification future
+  optionnelle, hors roadmap principale (voir
+  `docs/OMNIROUTE_ARBITRATION.md`).
 
 Détail complet des slices, de la vision cible et du découpage incrémental :
 voir `ROADMAP.md` (source de vérité fonctionnelle).

@@ -376,11 +376,41 @@ class TestNoSecretsInConfig:
 class TestShippedExampleConfig:
     def test_config_workers_yaml_loads(self) -> None:
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
-        assert {w.worker_id for w in registry.all_workers()} == {"alice", "victor"}
+        assert {w.worker_id for w in registry.all_workers()} == {"alice", "bob", "victor", "oscar"}
 
     def test_config_workers_yaml_workers_are_enabled(self) -> None:
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
-        assert len(registry.enabled_workers()) == 2
+        assert len(registry.enabled_workers()) == 4
+
+    def test_config_workers_yaml_worker_pool_is_at_least_two_per_provider(self) -> None:
+        """Worker pool fallback (2026-09-17): >= 2 independent workers per
+        participating provider, so DEV B selection never has to wait for
+        the *other* provider to reset when the author's own provider is
+        still available — see ROADMAP.md, "Worker pool"."""
+        registry = WorkerRegistry.load(Path("config/workers.yaml"))
+        by_provider: dict[str, list] = {}
+        for worker in registry.enabled_workers():
+            by_provider.setdefault(worker.provider, []).append(worker)
+        assert set(by_provider) == {"anthropic", "openai"}
+        for provider, workers in by_provider.items():
+            assert len(workers) >= 2, f"provider {provider!r} has fewer than 2 enabled workers"
+
+    def test_config_workers_yaml_secondary_workers_mirror_their_primary(self) -> None:
+        """Bob/Oscar must declare the same capabilities/profiles as
+        Alice/Victor — no artificial functional difference, only priority
+        differs (secondary workers are a fallback, not a distinct role)."""
+        registry = WorkerRegistry.load(Path("config/workers.yaml"))
+        for primary_id, secondary_id in (("alice", "bob"), ("victor", "oscar")):
+            primary, secondary = registry.get(primary_id), registry.get(secondary_id)
+            assert secondary.provider == primary.provider
+            assert secondary.backend == primary.backend
+            assert secondary.capabilities == primary.capabilities
+            assert secondary.default_profile_id == primary.default_profile_id
+            assert secondary.estimator_profile_id == primary.estimator_profile_id
+            assert {p.profile_id: (p.quality_tier, p.model, p.reasoning_effort, p.cost_rank) for p in secondary.profiles} == {
+                p.profile_id: (p.quality_tier, p.model, p.reasoning_effort, p.cost_rank) for p in primary.profiles
+            }
+            assert secondary.priority < primary.priority
 
     def test_config_workers_yaml_has_estimator_profile(self) -> None:
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
@@ -464,7 +494,7 @@ class TestShippedExampleConfigReviewCapability:
                 )
             )
         )
-        assert chosen.worker_id == "victor"  # only other candidate; also cross-provider
+        assert chosen.worker_id == "victor"  # highest-priority cross-provider candidate
 
     def test_author_cannot_review_their_own_work(self) -> None:
         import asyncio
@@ -473,7 +503,9 @@ class TestShippedExampleConfigReviewCapability:
         from orchestrator.worker_selector import NoEligibleWorkerError, WorkerSelectionRequest
 
         selector = self._selector()
-        # Excluding the only other real worker leaves nothing but the
+        # Excluding every other real worker (the worker pool fallback,
+        # 2026-09-17, means "alice" is no longer the only anthropic
+        # candidate — bob must be excluded too) leaves nothing but the
         # author herself — proves there is no same-worker review fallback,
         # even though "alice" genuinely declares code_review.
         with pytest.raises(NoEligibleWorkerError):
@@ -482,7 +514,7 @@ class TestShippedExampleConfigReviewCapability:
                     WorkerSelectionRequest(
                         required_capabilities=frozenset({REVIEW_CAPABILITY}),
                         author_worker_id="alice",
-                        excluded_worker_ids=frozenset({"victor"}),
+                        excluded_worker_ids=frozenset({"bob", "victor", "oscar"}),
                     )
                 )
             )

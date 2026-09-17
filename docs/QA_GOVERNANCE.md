@@ -16,6 +16,16 @@ implemented and tested (`tests/test_qa.py`, `tests/test_qa_knowledge.py`,
 Plays the same role for Slice 22/23/24 that `docs/GIT_GOVERNANCE.md` plays
 for Slice 20.
 
+**Scope note (2026-09-17):** the QA Test Authoring / Final QA Verification
+wiring into `MVPManager` described below (§"Slice 24") is specific to
+`WorkflowMode.GOVERNED_FULL` (now `DEPRECATED`/`REMOVAL_CANDIDATE` — see
+`ROADMAP.md`, "Worker pool" / "Lean Feature Flow"). The default workflow,
+`LEAN_FEATURE_FLOW`, reuses only the underlying provider-independent
+primitives this document defines (`QAEngine`, `evaluate_qa_verdict`,
+`QAPhase.FINAL_VERIFICATION`) directly — a single, deterministic,
+read-only QA call with no separate QA Test Authoring phase and no worker
+selection for QA at all. See `ROADMAP.md` for the Lean QA integration.
+
 ## Why this exists
 
 Slice 21's arbitration (`docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`) decided
