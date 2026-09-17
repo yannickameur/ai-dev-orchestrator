@@ -2,6 +2,24 @@
 
 Dernière mise à jour : Worker pool fallback + alignement documentaire (2026-09-17).
 
+## État actuel (résumé factuel)
+
+- **Workflow** : `LEAN_FEATURE_FLOW` = `DEFAULT`.
+- **Nominal AI executions** : 2 (DEV A, DEV B corrective review).
+- **QA** : déterministe / non-LLM (`QAPhase.FINAL_VERIFICATION`, aucun
+  `WorkerSelector`, aucun agent IA) ; jusqu'à 3 tentatives QA au total,
+  puis `HUMAN_REVIEW_REQUIRED`.
+- **Worker pool** (`config/workers.yaml`) : `alice`/`bob` = anthropic,
+  `victor`/`oscar` = openai — 2 workers indépendants par provider.
+- **GOVERNED_FULL** : `DEPRECATED` / `REMOVAL_CANDIDATE` (reste
+  sélectionnable explicitement, tests verts, non enrichi).
+- **Mars Rover (pilote externe)** : en pause, aucun pilote actif.
+- **Slice active** : aucune.
+- **Next** : revue produit/roadmap avec l'utilisateur.
+
+Le détail daté ci-dessous fait foi pour l'historique ; ce résumé reflète
+l'état courant.
+
 - **Slice 24 — QA/Rework/Review/Merge Integration : CODE_DONE,
   ACCEPTANCE_PENDING_PROVIDER.** QA devient une capacité opt-in de plus
   de `MVPManager` (`qa_engine`/`qa_policy`/`qa_run_store`/
