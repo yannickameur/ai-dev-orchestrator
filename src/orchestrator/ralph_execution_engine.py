@@ -81,8 +81,31 @@ _RESERVED_EVENT_TOPICS = frozenset({"task.start", "task.resume"})
 # Worker.backend -> Ralph's own `backend.type` identifier. Only remapped
 # where they differ; anything not listed here is passed through unchanged
 # (e.g. "codex" already matches Ralph's own naming).
+#
+# "vibe" maps to Ralph's own "custom" backend type deliberately: Ralph's
+# hats mechanism (used by every other backend below) rejects any backend
+# type it does not natively know — VERIFIED in docs/VIBE_SPIKE.md §5
+# (`ralph doctor` reports "Unknown hat backend" for anything other than
+# Ralph's fixed native list). Only Ralph's top-level, solo-mode
+# `cli.backend: "custom"` accepts an arbitrary command — see
+# `_SOLO_MODE_BACKENDS`/`_BACKEND_COMMANDS` below, which drive
+# `_write_runtime_config`/`_build_ralph_args` to skip hats.yml entirely
+# for these backends, exactly as the spike's real experiment required.
 _RALPH_BACKEND_TYPE: dict[str, str] = {
     "claude_code": "claude",
+    "vibe": "custom",
+}
+
+# Backends that must run via Ralph's solo/no-hats "custom" mechanism
+# instead of the hats.yml path every native backend uses (see comment
+# above). Each entry's command is the thin bridge script that translates
+# Ralph's file-path-argument convention into that backend's own CLI
+# invocation — never a second execution engine, never business-event
+# logic of its own (Ralph's existing `.ralph/events-*.jsonl` reading is
+# unchanged and unaware of this distinction).
+_SOLO_MODE_BACKENDS: frozenset[str] = frozenset({"vibe"})
+_BACKEND_COMMANDS: dict[str, Path] = {
+    "vibe": Path(__file__).resolve().parent / "vibe_ralph_bridge.py",
 }
 
 
@@ -110,6 +133,18 @@ class UnsupportedBackendError(RalphExecutionEngineError):
 
     def __init__(self, backend: str) -> None:
         super().__init__(f"unsupported backend for Ralph translation: {backend!r}")
+
+
+class UnsupportedProfileOptionError(RalphExecutionEngineError):
+    """Raised when an ExecutionProfile option has no honest translation for a
+    backend (e.g. ``reasoning_effort`` for a backend with no such CLI
+    concept) — distinct from ``UnsupportedBackendError``: the backend
+    itself is known, only this specific option is not representable."""
+
+    def __init__(self, backend: str, option: str, value: str) -> None:
+        super().__init__(f"{backend!r} backend does not support {option}={value!r}")
+        self.backend = backend
+        self.option = option
         self.backend = backend
 
 
@@ -145,6 +180,17 @@ def _build_backend_args(backend: str, model: str, reasoning_effort: str | None) 
         if reasoning_effort:
             args += ["--effort", reasoning_effort]
         return args
+    if backend == "vibe":
+        # Vibe has no `--model`/reasoning-effort CLI flag at all (VERIFIED
+        # via `vibe --help`, docs/VIBE_SPIKE.md §6/§13) — model selection
+        # is env/config-driven (`VIBE_ACTIVE_MODEL`). `--model <name>` here
+        # is consumed by `vibe_ralph_bridge.py`, never forwarded to `vibe`
+        # itself as a literal flag. reasoning_effort has no honest
+        # translation for this backend — failing closed rather than
+        # silently dropping a configured value.
+        if reasoning_effort:
+            raise UnsupportedProfileOptionError(backend, "reasoning_effort", reasoning_effort)
+        return ["--model", model]
     raise UnsupportedBackendError(backend)
 
 
@@ -364,11 +410,23 @@ def _yaml_indented_block(text: str, *, indent: int) -> str:
 
 
 def _render_ralph_config(
-    *, backend_type: str, backend_args: list[str], prompt_path: Path, max_runtime_seconds: int
+    *,
+    backend_type: str,
+    backend_args: list[str],
+    prompt_path: Path,
+    max_runtime_seconds: int,
+    backend_command: str | None = None,
 ) -> str:
+    # `backend_command` is only set for solo-mode backends (see
+    # `_SOLO_MODE_BACKENDS`) — Ralph's "custom" backend requires an
+    # explicit `cli.command` (VERIFIED: `ralph doctor` fails closed
+    # without it, docs/VIBE_SPIKE.md §5); native backends never set this,
+    # Ralph resolves their binary itself.
+    command_line = f"  command: {_yaml_str(backend_command)}\n" if backend_command else ""
     return (
         "cli:\n"
         f"  backend: {_yaml_str(backend_type)}\n"
+        f"{command_line}"
         f"  args: {_yaml_list(backend_args)}\n"
         "\n"
         "event_loop:\n"
@@ -411,9 +469,13 @@ def _render_hats_config(
     )
 
 
-def _write_runtime_config(runtime_dir: Path, request: ExecutionRequest) -> tuple[Path, Path, Path]:
-    backend_type = _ralph_backend_type(request.worker.backend)
-    backend_args = _build_backend_args(request.worker.backend, request.model, request.reasoning_effort)
+def _write_runtime_config(
+    runtime_dir: Path, request: ExecutionRequest
+) -> tuple[Path, Path | None, Path]:
+    backend = request.worker.backend
+    backend_type = _ralph_backend_type(backend)
+    backend_args = _build_backend_args(backend, request.model, request.reasoning_effort)
+    solo_mode = backend in _SOLO_MODE_BACKENDS
 
     prompt_path = runtime_dir / "PROMPT.md"
     prompt_path.write_text(request.instructions)
@@ -425,8 +487,17 @@ def _write_runtime_config(runtime_dir: Path, request: ExecutionRequest) -> tuple
             backend_args=backend_args,
             prompt_path=prompt_path,
             max_runtime_seconds=max(1, int(request.timeout_seconds)),
+            backend_command=str(_BACKEND_COMMANDS[backend]) if solo_mode else None,
         )
     )
+
+    if solo_mode:
+        # Ralph's hats mechanism rejects solo-mode backends entirely
+        # (VERIFIED, docs/VIBE_SPIKE.md §5) — no hats.yml is written or
+        # referenced for these; business events are still read from
+        # `.ralph/events-*.jsonl` exactly as for every other backend (see
+        # `_read_ralph_events`, which is hat-agnostic already).
+        return config_path, None, prompt_path
 
     hats_path = runtime_dir / "hats.yml"
     hats_path.write_text(
@@ -566,15 +637,8 @@ class RalphExecutionEngine:
 
     def _build_ralph_args(self, runtime_dir: Path, request: ExecutionRequest) -> list[str]:
         config_path, hats_path, prompt_path = _write_runtime_config(runtime_dir, request)
-        return [
-            self._ralph_binary,
-            "run",
-            "-a",
-            "-q",
-            "-c",
-            str(config_path),
-            "-H",
-            str(hats_path),
-            "-P",
-            str(prompt_path),
-        ]
+        args = [self._ralph_binary, "run", "-a", "-q", "-c", str(config_path)]
+        if hats_path is not None:
+            args += ["-H", str(hats_path)]
+        args += ["-P", str(prompt_path)]
+        return args

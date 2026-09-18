@@ -815,3 +815,149 @@ class TestSelectionFailureDiagnostics:
         # diagnostics (e.g. tests injecting a fake WorkerSelector failure).
         error = NoEligibleWorkerError(WorkerSelectionRequest(required_capabilities=frozenset()))
         assert error.diagnostics == ()
+
+
+def _milo(**overrides) -> Worker:
+    fields = dict(
+        worker_id="mistral_dev_01",
+        display_name="Milo",
+        provider="mistral",
+        backend="vibe",
+        model="vibe-default",
+        capabilities=frozenset({"developer"}),
+        priority=60,
+    )
+    fields.update(overrides)
+    return Worker.with_single_profile(**fields)
+
+
+def _juno(**overrides) -> Worker:
+    fields = dict(
+        worker_id="mistral_dev_02",
+        display_name="Juno",
+        provider="mistral",
+        backend="vibe",
+        model="vibe-default",
+        capabilities=frozenset({"developer"}),
+        priority=60,
+    )
+    fields.update(overrides)
+    return Worker.with_single_profile(**fields)
+
+
+class TestMistralProviderIntegration:
+    """Mistral (Vibe, post-MVP 0.1 — see docs/VIBE_SPIKE.md) is a third
+    provider added purely by configuration: none of these tests require
+    WorkerSelector to know the string "mistral" exists — the same generic
+    capability/governance/quota pipeline as Anthropic/OpenAI is exercised
+    unchanged, using ``milo``/``juno`` fixtures shaped exactly like the
+    real ``config/workers.yaml`` entries."""
+
+    def test_provider_mistral_goes_through_normal_availability_diagnosis(self) -> None:
+        milo = _milo()
+        manager = _quota_manager({"mistral": FakeAdapter(_state("mistral", available=False))})
+        selector = WorkerSelector([milo], manager)
+
+        with pytest.raises(NoEligibleWorkerError) as exc_info:
+            asyncio.run(
+                selector.select(WorkerSelectionRequest(required_capabilities=frozenset({"developer"})))
+            )
+        assert exc_info.value.diagnostics == (
+            ProviderSelectionDiagnostic(provider="mistral", available=False, reason="unknown"),
+        )
+
+    def test_milo_and_juno_are_distinct_worker_ids(self) -> None:
+        assert _milo().worker_id != _juno().worker_id
+
+    def test_dev_b_can_use_second_mistral_worker_when_only_mistral_available(self) -> None:
+        milo, juno = _milo(), _juno()
+        manager = _quota_manager({"mistral": FakeAdapter(_state("mistral"))})
+        selector = WorkerSelector([milo, juno], manager)
+
+        chosen = asyncio.run(
+            selector.select(
+                WorkerSelectionRequest(
+                    required_capabilities=frozenset({"developer"}), author_worker_id="mistral_dev_01",
+                )
+            )
+        )
+
+        assert chosen.worker_id == "mistral_dev_02"
+        assert chosen.worker_id != milo.worker_id
+
+    def test_provider_diversity_still_preferred_when_anthropic_and_mistral_both_available(self) -> None:
+        alice, milo = _alice(), _milo()
+        manager = _quota_manager({
+            "anthropic": FakeAdapter(_state("anthropic")),
+            "mistral": FakeAdapter(_state("mistral")),
+        })
+        selector = WorkerSelector([alice, milo], manager)
+
+        chosen = asyncio.run(
+            selector.select(
+                WorkerSelectionRequest(
+                    required_capabilities=frozenset({"developer"}), author_worker_id="claude_dev_01",
+                )
+            )
+        )
+
+        assert chosen.provider == "mistral"  # only cross-provider candidate
+
+    def test_same_provider_mistral_fallback_when_no_other_provider_available(self) -> None:
+        milo, juno = _milo(), _juno()
+        victor = _victor(capabilities=frozenset({"developer"}))
+        manager = _quota_manager({
+            "mistral": FakeAdapter(_state("mistral")),
+            "openai": FakeAdapter(_state("openai", available=False, reason=UnavailabilityReason.QUOTA_EXHAUSTED)),
+        })
+        selector = WorkerSelector([milo, juno, victor], manager)
+
+        chosen = asyncio.run(
+            selector.select(
+                WorkerSelectionRequest(
+                    required_capabilities=frozenset({"developer"}), author_worker_id="mistral_dev_01",
+                )
+            )
+        )
+
+        assert chosen.worker_id == "mistral_dev_02"  # same-provider fallback, never a WAIT-inducing failure
+
+    def test_no_wait_inducing_failure_solely_because_dev_b_lacks_a_different_provider(self) -> None:
+        """Mirrors the existing cross-provider fallback guarantee: with two
+        independent Mistral workers, excluding the author never raises
+        NoEligibleWorkerError merely because no *other* provider exists."""
+        milo, juno = _milo(), _juno()
+        manager = _quota_manager({"mistral": FakeAdapter(_state("mistral"))})
+        selector = WorkerSelector([milo, juno], manager)
+
+        chosen = asyncio.run(
+            selector.select(
+                WorkerSelectionRequest(
+                    required_capabilities=frozenset({"developer"}), author_worker_id="mistral_dev_01",
+                )
+            )
+        )
+        assert chosen.worker_id == "mistral_dev_02"
+
+    def test_mistral_provider_state_is_shared_across_both_workers(self) -> None:
+        """A single QuotaManager.get("mistral") probe covers both milo and
+        juno — never an independent quota per worker (see
+        MistralVibeAdapter's own EXECUTION_PROBE_ONLY docstring)."""
+        milo, juno = _milo(), _juno()
+        adapter = FakeAdapter(_state("mistral"))
+        manager = _quota_manager({"mistral": adapter})
+        selector = WorkerSelector([milo, juno], manager)
+
+        asyncio.run(
+            selector.select(WorkerSelectionRequest(required_capabilities=frozenset({"developer"})))
+        )
+
+        assert adapter.probe_count == 1  # one shared probe, not one per worker
+
+    def test_worker_selector_source_never_names_mistral_or_vibe(self) -> None:
+        """Extends TestNoHardcodedProvider to the newly added provider:
+        WorkerSelector's own logic must never special-case "mistral"/"vibe"
+        any more than it does "anthropic"/"openai"/"claude"/"codex"."""
+        source = inspect.getsource(worker_selector_module)
+        for needle in ("mistral", "vibe", "milo", "juno"):
+            assert needle not in source.lower()

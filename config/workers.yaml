@@ -3,13 +3,17 @@
 # docs/ADAPTIVE_EXECUTION.md sections 4-5 for the design behind this file,
 # and src/orchestrator/worker_registry.py for the loader/validator.
 #
-# No secrets here: authentication stays with the Claude Code / Codex CLIs
-# themselves (already logged in outside this project) — never an API key,
-# token, or credential in this file.
+# No secrets here: authentication stays with the Claude Code / Codex / Vibe
+# CLIs themselves (already logged in outside this project) — never an API
+# key, token, or credential in this file.
 #
 # Model names below are the ones already confirmed in this project's own
 # tests/docs (docs/SPIKE_RALPH.md, ralph.yml/ralph-codex.yml in
-# ~/projects/ralph-spike) — never invented.
+# ~/projects/ralph-spike) — never invented. Exception: the Mistral workers'
+# `model: vibe-default` is a deliberate sentinel, not a real model name —
+# see docs/VIBE_SPIKE.md §13 and src/orchestrator/vibe_ralph_bridge.py
+# (no specific Mistral model identifier was verified by the spike, so none
+# is fabricated here; Vibe's own configured default is used instead).
 #
 # quality_tier: one of SIMPLE, STANDARD, COMPLEX, CRITICAL (see
 # orchestrator.worker_selector.QualityTier) — the minimum capability level
@@ -173,3 +177,51 @@ workers:
         model: gpt-5.6-terra
         reasoning_effort: high
         cost_rank: 30
+
+  # Mistral (Vibe) — added post-MVP 0.1, see docs/VIBE_SPIKE.md.
+  # Priority deliberately below the validated Anthropic/OpenAI pool
+  # (100/90): this adds capacity/provider diversity, it never silently
+  # displaces an already-validated primary. Only `development` is granted
+  # — the spike only produced execution evidence for development-shaped
+  # work (autonomous file edit + test run); qa_testing/code_review/
+  # release_planning/roadmap_synthesis are not granted without evidence.
+  # `quota_windows` for this provider are always empty (EXECUTION_PROBE_ONLY,
+  # see MistralVibeAdapter) — both workers below share that same
+  # provider-level signal, never an independent quota each.
+  - worker_id: milo
+    display_name: Milo
+    enabled: true
+    provider: mistral
+    backend: vibe
+    priority: 60
+
+    capabilities:
+      - development
+
+    default_profile_id: standard
+    estimator_profile_id: standard
+
+    profiles:
+      standard:
+        quality_tier: STANDARD
+        model: vibe-default
+        cost_rank: 20
+
+  - worker_id: juno
+    display_name: Juno
+    enabled: true
+    provider: mistral
+    backend: vibe
+    priority: 60
+
+    capabilities:
+      - development
+
+    default_profile_id: standard
+    estimator_profile_id: standard
+
+    profiles:
+      standard:
+        quality_tier: STANDARD
+        model: vibe-default
+        cost_rank: 20
