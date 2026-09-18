@@ -5,8 +5,9 @@ and opinionated — please read this before opening a PR.
 
 ## Development setup
 
-Requires Python 3.10+ (per `pyproject.toml`; developed/tested against
-3.14).
+Package requirement: Python 3.10+ (per `pyproject.toml`; developed/tested
+against 3.14). CI release checks currently validate Python 3.10 and 3.12
+(`.github/workflows/ci.yml`) — that pair is what every PR must pass.
 
 ```bash
 git clone https://github.com/yannickameur/ai-dev-orchestrator.git
@@ -44,12 +45,42 @@ into an unrelated change.
    building something new, we look for an existing mechanism it can
    extend, and a PR that duplicates existing machinery will likely be
    asked to reuse it instead.
-2. Keep changes focused. A bug fix doesn't need an accompanying
+2. Start from an up-to-date `main`:
+
+   ```bash
+   git switch main
+   git pull --ff-only
+   git switch -c <branch-name>
+   ```
+
+3. Keep the change focused. A bug fix doesn't need an accompanying
    refactor.
-3. Add or update tests for behavior you change. Tests should exercise
+4. Add or update tests for behavior you change. Tests should exercise
    the real code path they claim to cover — a test that can't actually
    fail isn't worth adding.
-4. Open the PR against `main`.
+5. Run the offline suite locally before opening a PR: `pytest`.
+6. Commit normally, then push your branch — never force-push to `main`.
+7. Open a Pull Request against `main`.
+8. The PR must be up to date with `main`, and both required GitHub
+   Actions checks must pass: `test (3.10)` and `test (3.12)`. A failed
+   required check must be fixed on the branch and rerun — never
+   bypassed.
+9. There is currently no mandatory human approval on PRs, because this
+   project has a single maintainer today. This is intentional and may
+   change once additional maintainers join.
+10. `main` requires linear history, so integration must not introduce a
+    merge commit — use a repository-supported linear-history strategy
+    (squash merge or rebase merge) when integrating a PR.
+
+### Protected `main`
+
+`main` is protected by a GitHub ruleset: required CI checks (`test
+(3.10)` and `test (3.12)`, kept up to date with `main`), no force
+pushes, no branch deletion, linear history — and, today, no mandatory
+reviewer. This is the project's actual GitHub configuration, not just a
+convention. It enforces CI and history hygiene, not the use of Pull
+Requests as such — using PRs against `main` is this project's
+contribution workflow, described above.
 
 ## Architecture principles
 
