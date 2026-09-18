@@ -82,6 +82,45 @@ convention. It enforces CI and history hygiene, not the use of Pull
 Requests as such — using PRs against `main` is this project's
 contribution workflow, described above.
 
+## Real worker execution and permissions
+
+The offline test suite (`pytest`, what CI runs) needs no provider access
+or permission configuration at all — it never touches a real Claude/
+Codex/Vibe CLI.
+
+Running a *real* worker (e.g. via `scripts/run_external_project_pilot.py`
+or your own harness) is different, and this is a current, real limitation
+you should know about before trying it:
+
+- The provider CLI you use (Claude Code, Codex, Mistral Vibe) must
+  already be installed and authenticated on your machine — AIDO never
+  manages provider credentials.
+- As of v0.1.1, AIDO does not yet configure a provider's permission/
+  bypass policy per project. It has no opinion on this at all today.
+- A real, unattended orchestration run therefore currently depends
+  entirely on *your own* local provider-CLI permission configuration.
+  If the CLI is set up to ask for interactive approvals, an unattended
+  run can block or fail waiting on a prompt nothing will answer.
+- On the maintainer's own development machine, Claude Code and Codex are
+  configured to run in a permissive/unattended ("YOLO"/bypass-permission)
+  mode. **Do not assume this is configured for you by AIDO** — it is
+  purely local, provider-CLI-level configuration, outside this project.
+- A permissive/bypass mode is security-sensitive: depending on the
+  provider, it can let a worker process run shell commands and touch the
+  filesystem broadly, as your current OS user, without per-action
+  approval. Only enable such a mode in a workspace you trust and that is
+  appropriately isolated (a disposable clone/VM/container is safer than
+  your primary machine).
+- Making this policy explicit and project-controlled, instead of
+  silently inherited from whatever the operator's machine happens to be
+  configured as, is exactly why P1 (CLI) and P12 (project configuration
+  format) — approved as the next product cycle — include a
+  project-declared worker execution permission mode as a cross-cutting
+  requirement. See `ROADMAP.md`, §13, for the current target contract;
+  the exact provider CLI flags involved are intentionally not fixed yet
+  and must be verified against each CLI's own current documentation/
+  `--help` output during that implementation work, not guessed.
+
 ## Architecture principles
 
 These are load-bearing product decisions, not style preferences — see
