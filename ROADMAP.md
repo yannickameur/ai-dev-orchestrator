@@ -2518,20 +2518,53 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
   critères d'acceptation restants pour `VALIDATED` : `docs/VIBE_SPIKE.md`
   §19. Image d'architecture ajoutée au README
   (`docs/images/Architecture_orchestration_IA_multi-agents.png`).
+- **Gouvernance de commit Vibe + reprise Morpion Web 3D multi-provider
+  (2026-09-18, plus tard le même jour) — Mistral / Vibe ✅ VALIDATED.**
+  Le blocage identifié ci-dessus est résolu par une consigne de
+  gouvernance Git générique (commit avec l'identité déjà configurée du
+  dépôt, aucun trailer d'attribution IA), ajoutée sans branche
+  spécifique à un backend aux deux fonctions de construction
+  d'instructions de `src/orchestrator/mvp_manager.py`
+  (`_build_dev_instructions`/`_build_dev_b_instructions`). Option
+  retenue après comparaison explicite : la réutilisation du mécanisme de
+  landing/auto-commit de Ralph a été écartée (`ralph loops`/`ralph run
+  --help` confirment que ce mécanisme est scopé aux loops parallèles en
+  `--worktree`, jamais utilisé par `RalphExecutionEngine` pour aucun
+  backend). Validée d'abord en isolation (`milo`, dépôt jetable, PASS
+  dès le premier essai, 1188 tests offline inchangés, commit produit
+  séparé `53b009d` « Finalize Mistral Vibe governed execution »). Le MVP
+  Morpion Web 3D existant a ensuite été **repris depuis son état
+  `WAITING` durable, jamais recréé** — les stores sqlite du pilote
+  précédent (survécus intacts dans un répertoire `tempfile.mkdtemp()`)
+  ont été rouverts par un nouveau process, confirmant en lecture seule
+  WI-6 `WAITING`/`PENDING`/`DUE` sans aucune reconstruction manuelle
+  (test de récupération durable réussi). `MVPManager.run_next_work_item`
+  a ensuite tourné avec le `WorkerSelector` réel et le pool complet des
+  6 workers/3 providers, `QuotaManager` désormais câblé aux trois
+  adaptateurs réels. Résultat observé, jamais forcé : pour WI-6, WI-7 et
+  WI-8, DEV A = `alice` (anthropic), DEV B = `juno` (mistral/vibe) —
+  paire cross-provider naturelle à chaque fois (OpenAI réellement en
+  quota épuisé au moment du run) ; `juno` a réellement committé ses
+  changements pour WI-7 et WI-8, preuve directe en production que la
+  consigne de gouvernance fonctionne. Les 3 WorkItems restants sont
+  `COMPLETED`, mergés, tagués, QA `pass` en une tentative chacun ; HEAD
+  cible final `edbc576` ; 7 nouveaux commits tous identité
+  `yannickameur <yannick.ameur@gmail.com>`, zéro trailer interdit ; suite
+  de vérification finale verte (6/6 pytest, 43/43 Node). Détail complet :
+  `docs/VIBE_SPIKE.md` §20,
+  `docs/reports/morpion-vibe-continuation-2026-09-18.md`.
 - **Next : POST-MVP 0.1 EXPERIMENT / DISCOVERY.** Pas encore un MVP 0.2 —
   décision à prendre avec l'utilisateur. Axe (1) — pilote Lean frais
-  (Roman Numerals) — **fait, PASS**. Axe (2) — Mistral/Vibe — **étude +
-  implémentation faites, reste `🧪 SPIKE`** : décision produit requise sur
-  la gestion des commits Vibe avant de viser `VALIDATED` (voir
-  ci-dessus). Axes restants, **proposés, non démarrés**, non ordonnés
-  entre eux : (3) étude build-vs-reuse Mammouth AI ; (4) étude de
-  l'écosystème des workers/providers gratuits ou à coût marginal nul ;
-  (5) échelle de difficulté progressive des projets de validation (dont
-  un futur pilote de niveau supérieur à Roman Numerals). Le pilote Morpion
-  Web 3D (WI-0..WI-5 complétés, WI-6 en attente de quota — voir
-  `docs/reports/morpion-web-3d-lean-pilot-2026-09-17.md`) reste en pause,
-  à reprendre après décision utilisateur. CLI/productisation reste une
-  option future, non requise pour démarrer ces axes. Toutes les
+  (Roman Numerals) — **fait, PASS**. Axe (2) — Mistral/Vibe — **fait,
+  ✅ VALIDATED** (voir ci-dessus). Axes restants, **proposés, non
+  démarrés**, non ordonnés entre eux : (3) étude build-vs-reuse Mammouth
+  AI ; (4) étude de l'écosystème des workers/providers gratuits ou à coût
+  marginal nul ; (5) échelle de difficulté progressive des projets de
+  validation (dont un futur pilote de niveau supérieur à Roman
+  Numerals). Le pilote Morpion Web 3D est maintenant `DONE`
+  (WI-0..WI-8 — voir `docs/reports/morpion-vibe-continuation-2026-09-18.md`).
+  CLI/productisation reste une option future, non requise pour démarrer
+  ces axes. Toutes les
   Slices 21-24 du cycle QA sont maintenant `DONE` (Slice 24 :
   `ACCEPTANCE_DONE`) — cette session ne décide toujours pas seule si un
   POC QA externe ou la Slice 25 (Advanced QA / External E2E, restée
