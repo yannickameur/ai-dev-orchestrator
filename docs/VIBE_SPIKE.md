@@ -313,3 +313,131 @@ shape, one new adapter, one new backend-mapping branch, one small bridging
 script, two worker identities, `development` capability only until
 `code_review`/other roles are separately evidenced. Do not build this in
 the same session as this spike.
+
+---
+
+## 19. Implementation follow-up (2026-09-18)
+
+Everything below is additive — nothing above this line was rewritten;
+history stays exactly as observed during the spike.
+
+**Implemented, following §13/§14 almost exactly:**
+
+- `src/orchestrator/providers/mistral_vibe_adapter.py` —
+  `MistralVibeAdapter(ProviderAdapter)`. Real invocation: `vibe -p "<probe
+  prompt>" --output json --trust --auto-approve --max-turns 1`, bounded by
+  timeout. `EXECUTION_PROBE_ONLY` as designed: `quota_windows` always
+  empty, `reset_at` never fabricated; a non-zero exit is classified
+  `UNKNOWN` unless stderr/stdout matches a small, explicitly fragile set
+  of generic auth/rate-limit text markers (§9's caveats fully preserved).
+- `src/orchestrator/ralph_execution_engine.py` — `_SOLO_MODE_BACKENDS`/
+  `_BACKEND_COMMANDS` (`{"vibe"}`), a `backend == "vibe"` branch in
+  `_build_backend_args` (new `UnsupportedProfileOptionError` — fails
+  closed on `reasoning_effort`, which Vibe has no CLI concept for), and a
+  solo-mode branch in `_write_runtime_config`/`_render_ralph_config`/
+  `_build_ralph_args` that emits `cli.backend: "custom"` +
+  `cli.command: <bridge>` and omits `-H <hats>` entirely for this backend
+  — exactly the mechanism §5/§12 identified as required. Native
+  (claude/codex) backends are unchanged (regression-tested explicitly).
+- `src/orchestrator/vibe_ralph_bridge.py` — the thin bridge §7/§13
+  proposed, as a small checked-in script (not per-execution generated),
+  referenced by absolute path relative to its own module location.
+- `config/workers.yaml` — two new workers, `milo` and `juno`
+  (`provider: mistral`, `backend: vibe`, `priority: 60` — below the
+  validated Anthropic/OpenAI pool, deliberately never a silent default),
+  `development` capability only, `model: vibe-default` (a documented
+  sentinel — see below, not a fabricated real model name).
+- Offline tests: 10 new `WorkerSelector` tests
+  (`TestMistralProviderIntegration`), 14 new `MistralVibeAdapter` tests,
+  8 new `RalphExecutionEngine` tests (`TestVibeBackendMapping`) — 30 new
+  tests, 1188 total offline, 0 failures.
+
+**Real evidence gathered this session (all against real Vibe 2.25.4, real
+account, FREE plan):**
+
+- Direct `vibe -p "Reply with exactly: OK" --output json --trust
+  --auto-approve --max-turns 1` (the adapter's exact probe invocation):
+  **PASS**, exit 0, 4.1s.
+- Real `RalphExecutionEngine.execute()` → the real `ralph` binary → the
+  real bridge → real Vibe, against a disposable repo
+  (`/tmp/ralph-vibe-real-smoke`, never a real project): **first attempt
+  FAILED** — 5 rapid, ~0s iterations, no real Vibe call ever happened.
+  Root-caused (not guessed) via a debug-level Ralph log
+  (`ralph_adapters::cli_executor`): Ralph's real custom-backend argv is
+  **not** a bare file path, contrary to the spike's own §5/§7
+  characterization — it is a full instructional sentence with the path
+  embedded at the end (`"Please read and execute the task in
+  /tmp/.tmpXXXXXX"`). This is a corrected, more precise finding, not a
+  contradiction of the spike's core conclusion (solo-mode custom backend
+  is still the right mechanism). Fixed deterministically in the bridge
+  (extract the last whitespace-separated token) — one corrective retry,
+  exactly as the implementation brief allowed for a clear
+  implementation-syntax bug, never for model behavior or quota.
+  **Second attempt: PASS** — `status=succeeded`, `shout()` genuinely
+  added to the disposable `greet.py`, verified by a real Python import
+  check (`hello` + `HELLO`), correct business-event detection
+  (`work.completed`), 43.3s real duration.
+- **New confirmed limitation (real evidence, not spike speculation):**
+  despite the successful, verified file edit, **`git_sha_before ==
+  git_sha_after`** — Vibe did not commit its change. The prompt used
+  (mirroring `MVPManager._build_dev_instructions`'s real shape) never
+  explicitly said "commit your changes" — Claude Code/Codex commit as
+  their own default agentic behavior in this same situation (observed
+  repeatedly in the Roman Numerals/Morpion pilots); this one real trial
+  shows Vibe does not. This directly matches the risk already flagged in
+  §15/§10 as untested — it is now tested, and confirmed real.
+- **Two-worker real validation: NOT_RUN**, deliberately, **not**
+  `BLOCKED_BY_PROVIDER_CAPACITY` (capacity was not the limiter here) — a
+  second real Vibe execution would not have produced clean evidence given
+  the unresolved commit gap above (DEV B would be reviewing an
+  uncommitted worktree state, materially different from what
+  `GitGovernanceService` actually orchestrates in production). Resuming
+  this validation is contingent on deciding how Vibe workers' commits are
+  handled — a product decision, correctly out of scope for this
+  implementation slice. The **offline** structural-independence proof
+  (`DEV_B.worker_id != DEV_A.worker_id` achievable with only Mistral
+  available) already passes — see `TestMistralProviderIntegration` in
+  `tests/test_worker_selector.py`.
+- No second corrective retry was taken for the commit-gap finding — it is
+  model/product behavior, not implementation syntax, and the brief
+  explicitly forbids retrying for that reason.
+
+**`model: vibe-default` sentinel:** the spike never established a
+verified, real Mistral model identifier `VIBE_ACTIVE_MODEL` should carry
+(§13 already flagged this as unresolved) — rather than fabricate one now,
+`vibe_ralph_bridge.py` treats the literal string `"vibe-default"` as "no
+override," deferring to whatever Vibe's own local config already resolves
+as its default. This is honestly encoded in `config/workers.yaml`'s own
+comment, not hidden.
+
+**Final support classification: 🧪 SPIKE (not `VALIDATED`).** Per the
+implementation brief's own rule ("✅ VALIDATED only if: adapter
+integrated; RalphExecutionEngine → Vibe real smoke PASS; normal
+WorkerSelector integration works; no unresolved execution blocker
+remains"): the first three hold, but the no-commit finding is exactly an
+unresolved execution blocker for real Lean Feature Flow use (Git
+governance depends on real SHA advancement). `VALIDATED` requires that
+gap to be explicitly resolved (see below) and re-verified with real
+execution — never simply reclassified because the code merged cleanly.
+
+**Remaining limitations (honest, not exhaustive):**
+
+- No auto-commit confirmed (above) — the single largest blocker to real
+  product use.
+- `EXECUTION_PROBE_ONLY` availability signal is unchanged from the spike
+  — still no way to distinguish a real quota failure from any other
+  failure with confidence; never exercised against a real failure in
+  this session either (the FREE-plan account never actually failed). This
+  was an explicit, accepted trade-off in the spike itself and remains so.
+- `code_review`/`qa_testing`/`release_planning`/`roadmap_synthesis`
+  remain ungranted — no evidence gathered for any of them in this
+  session (only plain `development`-shaped work was exercised).
+- Cost/rate-limit real-world behavior over a longer session (multiple
+  executions in sequence) was not exercised — only two real calls total
+  this session (probe + one execution).
+
+**Acceptance criteria for `VALIDATED` (updates §17):** items 1, 2, 4 of
+§17 are now done. Still open: §17 item 3 (commit behavior — now
+confirmed as a real gap, not just a question), item 5 (real Lean pilot
+routing to Mistral), item 6 (docs update after that real acceptance,
+not before).
