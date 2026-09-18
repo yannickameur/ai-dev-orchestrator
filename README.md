@@ -140,7 +140,7 @@ n'est qu'une chaîne opaque pour `WorkerSelector`. Statuts possibles :
 |---|---|---|
 | Anthropic | Claude Code | ✅ VALIDATED |
 | OpenAI | Codex CLI | ✅ VALIDATED |
-| Mistral | Vibe | 🧪 SPIKE — `MistralVibeAdapter`/mapping `RalphExecutionEngine` implémentés et testés offline ; smoke réel `RalphExecutionEngine → Vibe` PASS (édition de fichier + verdict métier corrects), mais Vibe ne committe pas ses changements automatiquement (limite confirmée, pas encore résolue) — reste non `VALIDATED` tant que ce point n'est pas tranché ; voir [docs/VIBE_SPIKE.md](docs/VIBE_SPIKE.md) |
+| Mistral | Vibe | ✅ VALIDATED — la limite de commit automatique (Vibe ne committait pas ses changements) est résolue par une consigne générique de gouvernance Git ajoutée aux instructions de tout worker (non spécifique à un backend) ; validée par une exécution réelle isolée puis par une exécution réelle sélectionnée normalement par `WorkerSelector` dans le pool complet (Morpion Web 3D, WI-6/7/8, worker `juno`, review DEV B contre `alice`/anthropic) ; voir [docs/VIBE_SPIKE.md](docs/VIBE_SPIKE.md) et [docs/reports/morpion-vibe-continuation-2026-09-18.md](docs/reports/morpion-vibe-continuation-2026-09-18.md) |
 | Local | Ollama | 🔎 STUDY |
 | Mammouth AI | Hub/transport multi-provider (candidat, pas un modèle/provider de plus) | 🔎 STUDY |
 
@@ -154,8 +154,7 @@ du même provider est **valide** ; plusieurs workers d'un même provider
 **partagent le même quota provider** (voir « Sélection des workers et
 fallback provider » ci-dessus). Actuel : `alice`/`bob` (anthropic),
 `victor`/`oscar` (openai), `milo`/`juno` (mistral — configurés, capacité
-`development` uniquement, statut 🧪 SPIKE tant que le point de gouvernance
-Git ci-dessus n'est pas résolu ; voir `docs/VIBE_SPIKE.md`).
+`development` uniquement, statut ✅ VALIDATED ; voir `docs/VIBE_SPIKE.md`).
 
 ### Ajouter un provider
 

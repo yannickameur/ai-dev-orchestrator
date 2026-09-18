@@ -441,3 +441,117 @@ execution — never simply reclassified because the code merged cleanly.
 confirmed as a real gap, not just a question), item 5 (real Lean pilot
 routing to Mistral), item 6 (docs update after that real acceptance,
 not before).
+
+---
+
+## 20. Commit-governance resolution and real multi-provider Morpion continuation (2026-09-18, later same day)
+
+Everything below is additive — §1–19 stay exactly as observed; nothing
+above this line was rewritten.
+
+**§17 item 3 resolved — commit governance:**
+
+Two options were compared, priority order per the implementation brief:
+
+1. *Reuse Ralph's own landing/auto-commit mechanism* — **rejected,
+   structurally inapplicable**. `ralph loops --help`/`ralph run --help`
+   show Ralph's only commit/merge ("landing") machinery is scoped to
+   parallel `--worktree` loops; `RalphExecutionEngine` never launches
+   `ralph` with `--worktree` for **any** backend, so this option does not
+   exist in the code path actually used, independent of Vibe.
+2. *Explicit worker commit instruction, generic (not Mistral-specific)*
+   — **accepted**. A `_COMMIT_GOVERNANCE_REMINDER` constant was added to
+   `src/orchestrator/mvp_manager.py`, included unconditionally in both
+   `_build_dev_instructions` (DEV A) and `_build_dev_b_instructions`
+   (DEV B) for every worker regardless of backend: commit with git,
+   reuse the repository's already-configured identity as author and
+   committer, never add AI-attribution trailers, leave the tree clean.
+   No `if backend == "vibe"` branch anywhere — Claude Code/Codex already
+   commit reliably on their own agentic default, so the added reminder
+   is harmless there and is exactly what was missing for Vibe.
+3. *Generic post-execution governed commit performed by the
+   orchestrator itself* — not needed; option 2 fully closed the gap on
+   the first real trial, so this heavier option was never built.
+
+Validated first in isolation (real `RalphExecutionEngine` → real
+`milo` → disposable repo `/tmp/ai-dev-orchestrator-vibe-commit-validation`):
+**PASS**, first attempt, no corrective retry. `calc2.py` gained
+`multiply(a, b)`, `test_calc2.py` added, 1/1 pytest passing, commit
+`c17c4eaf` author/committer both `yannickameur
+<yannick.ameur@gmail.com>`, zero AI-attribution trailers, clean working
+tree after commit.
+
+Full offline suite after the `mvp_manager.py` change: 1188 passed, 0
+failed (no test asserted on the previous instruction-text shape, so no
+test needed updating). Committed separately as `53b009d` ("Finalize
+Mistral Vibe governed execution").
+
+**§17 item 5 resolved — real Lean pilot routing to Mistral, full
+worker pool, WorkerSelector never forced:**
+
+The existing Morpion Web 3D MVP (from the earlier `ba271a4`-era pilot,
+WI-0..WI-5 completed, WI-6 durably `WAITING`) was resumed — not
+recreated — by pointing a fresh script at the exact same sqlite stores
+the original pilot run had written to
+(`/tmp/morpion-3d-lean-pilot-dgnfys7r/*.sqlite3`, a `tempfile.mkdtemp()`
+directory that had survived, unmodified, since the previous session). A
+read-only inspection (`ProjectStateStore.list_work_items`,
+`WaitStore.list_pending`/`list_due`) confirmed, with zero manual
+reconstruction, that WI-6 was genuinely `WAITING` with a `PENDING`,
+`DUE` wait record (`eligible_at` in the past) — the **critical durable
+recovery test passed**: a completely separate process invocation, with
+no shared in-memory state, recovered the exact prior workflow position
+from disk alone.
+
+`MVPManager.run_next_work_item` was then called against the real,
+unmodified `WorkerSelector` and the **full six-worker registry**
+(`alice`/`bob`/anthropic, `victor`/`oscar`/openai, `milo`/`juno`/mistral)
+with a `QuotaManager` now wired to all three real provider adapters
+(previously only two, in the original pilot). No worker was forced, no
+registry was reduced. Real, observed routing:
+
+| WorkItem | DEV A | DEV B | Cross-provider? | Code changed by DEV B? |
+|---|---|---|---|---|
+| WI-6 (UX/animations) | `alice` (anthropic) | `juno` (mistral/vibe) | yes | no (review found nothing to fix) |
+| WI-7 (responsive/accessibilité) | `alice` (anthropic) | `juno` (mistral/vibe) | yes | yes — committed by Vibe |
+| WI-8 (stabilisation) | `alice` (anthropic) | `juno` (mistral/vibe) | yes | yes — committed by Vibe |
+
+A real, unforced quota probe taken immediately before this run showed
+`anthropic: available`, `openai: quota_exhausted`, `mistral: available`
+— OpenAI's real unavailability, not manipulation, is the honest reason
+`victor`/`oscar` were never candidates; `juno` was selected by
+`WorkerSelector`'s existing, unmodified priority/tie-break logic
+(`milo`/`juno` tie on priority, `juno` wins lexical tie-break) every
+time a cross-provider DEV B was possible. All three WorkItems reached
+`COMPLETED`, merged, tagged (`feature/wi-6.../done` through
+`feature/wi-8.../done`), single-attempt QA `pass` each (no rework loop
+triggered for any of the three). Final target HEAD
+`edbc57612b4885359f2edec089238a6d08bc09cc`. All 7 new commits (WI-6
+through WI-8, by both `alice` and `juno`) verified with correct
+`yannickameur <yannick.ameur@gmail.com>` author/committer identity and
+zero forbidden trailers. Full verification suite green: 6/6 pytest,
+43/43 Node (`node --test tests/js/*.test.mjs`).
+
+**§17 item 6 — docs updated now, after this real acceptance evidence,
+not before:** README.md provider table and worker-pool note updated to
+✅ VALIDATED; this section.
+
+**Final support classification: ✅ VALIDATED.** All conditions now
+hold: the governed-commit mechanism works (generic, non-Mistral-
+specific); real `RalphExecutionEngine` → Vibe remains working; Vibe is
+selected through the **normal, unforced** worker pool; at least one
+real governed project execution through Vibe succeeded (three, in
+fact, across WI-6/7/8); Git governance holds (verified identity, zero
+attribution trailers); no manual repair or workaround was required at
+any point in this run; no unresolved backend blocker remains. A
+`milo`/`juno` same-provider DEV A/DEV B pair was never observed in this
+run (`juno` always won DEV B against `alice`/anthropic as DEV A,
+because OpenAI was genuinely unavailable and Anthropic was genuinely
+available) — this was never forced and is not required for
+`VALIDATED`; it remains a documented, honestly-reported gap in the
+evidence (structural independence with two Mistral identities was
+already proven offline in §19's `TestMistralProviderIntegration`, just
+never exercised as a real live execution pair).
+
+Full report:
+[docs/reports/morpion-vibe-continuation-2026-09-18.md](reports/morpion-vibe-continuation-2026-09-18.md).
