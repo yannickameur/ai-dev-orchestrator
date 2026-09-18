@@ -119,6 +119,54 @@ synthèse multi-agent → approbation optimiste 20 min → MVP suivant), et
 « Chemin nominal actuel » (même fichier) pour ce qui s'exécute réellement
 aujourd'hui par WorkItem.
 
+## AI / Providers supportés
+
+L'orchestrateur ne connaît que des `Worker` déclaratifs
+(`config/workers.yaml`) : **`Worker` ≠ `Provider` ≠ `ExecutionProfile`**.
+Un `Worker` a un `provider`/`backend` fixes et un ou plusieurs
+`ExecutionProfile` (`model`/`reasoning_effort`) ; le provider lui-même
+n'est qu'une chaîne opaque pour `WorkerSelector`. Statuts possibles :
+
+- ✅ **VALIDATED** — intégré dans l'orchestrateur ET validé par une
+  exécution réelle.
+- 🧪 **SPIKE** — en cours de qualification technique ; pas encore une
+  intégration produit supportée.
+- 🔎 **STUDY** — candidat identifié, non intégré.
+- ⏸️ **DEFERRED** — possible, mais aucun besoin produit actuel.
+
+| Provider | CLI/Backend | Statut |
+|---|---|---|
+| Anthropic | Claude Code | ✅ VALIDATED |
+| OpenAI | Codex CLI | ✅ VALIDATED |
+| Mistral | Vibe | 🧪 SPIKE — techniquement viable, non intégré ; voir [docs/VIBE_SPIKE.md](docs/VIBE_SPIKE.md) |
+| Local | Ollama | 🔎 STUDY |
+| Mammouth AI | Hub/transport multi-provider (candidat, pas un modèle/provider de plus) | 🔎 STUDY |
+
+### Règle du pool de workers
+
+Pour qu'un provider supporte seul tout le chemin Lean nominal, il doit
+normalement exposer **au moins deux identités de worker distinctes** :
+`DEV_B.worker_id != DEV_A.worker_id` est **obligatoire** ; un provider
+différent est **préféré**, jamais requis ; un repli sur un second worker
+du même provider est **valide** ; plusieurs workers d'un même provider
+**partagent le même quota provider** (voir « Sélection des workers et
+fallback provider » ci-dessus). Actuel : `alice`/`bob` (anthropic),
+`victor`/`oscar` (openai). Mistral : à définir après une éventuelle
+intégration (voir `docs/VIBE_SPIKE.md`).
+
+### Ajouter un provider
+
+```
+Candidat provider/CLI
+  → spike de faisabilité
+  → ProviderAdapter si nécessaire
+  → compatibilité backend Ralph
+  → config/workers.yaml
+  → tests offline
+  → smoke réel
+  → VALIDATED
+```
+
 ### Documentation
 
 - [ROADMAP.md](ROADMAP.md) — phases, architecture, vision cible, source de vérité
@@ -126,6 +174,7 @@ aujourd'hui par WorkItem.
 - [MVP_SPEC.yaml](MVP_SPEC.yaml) — critères d'acceptation mesurables du MVP 0.1
 - [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md) — étude des projets comparables
 - [docs/SPIKE_RALPH.md](docs/SPIKE_RALPH.md) — **résultats du spike Phase 0.5**
+- [docs/VIBE_SPIKE.md](docs/VIBE_SPIKE.md) — étude de faisabilité Mistral Vibe (2026-09-18)
 
 Prérequis :
 - Ralph CLI installé (`npm install -g @ralph-orchestrator/ralph-cli`)
