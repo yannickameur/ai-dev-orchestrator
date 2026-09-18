@@ -30,7 +30,7 @@ et propositions à voter — la source de vérité fonctionnelle de ce
 projet).
 
 **MVP 0.1 : `DONE`** (contrat d'acceptation dans
-[`MVP_SPEC.yaml`](MVP_SPEC.yaml)). Gouvernance Git/PR/merge, QA gouvernée,
+[`MVP_SPEC.yaml`](MVP_SPEC.yaml)). Gouvernance Git/merge/tag, QA gouvernée,
 et le workflow ci-dessous sont implémentés, testés, et validés par une
 exécution réelle de bout en bout sur un projet externe (voir « Exemple
 réel » plus bas).
