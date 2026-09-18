@@ -195,7 +195,7 @@ def _worker_c() -> Worker:
     """A second worker on Worker B's own provider — mirrors this
     project's real worker-pool shape (>= 2 independent workers per
     participating provider, config/workers.yaml). Under
-    LEAN_FEATURE_FLOW, Worker B (resumed as the developer) needs a
+    WorkItem Flow, Worker B (resumed as the developer) needs a
     genuinely independent DEV B; lower priority than Worker B so it is
     never chosen over Worker B for the developer role itself, only for
     DEV B once Worker B is excluded as author."""
@@ -318,7 +318,7 @@ class _AlwaysPassQAEngine:
     """Minimal ``QAEngine`` Protocol fake for this E2E scenario — no
     LLM/Ralph execution. Real deterministic QA behavior (bounded retry,
     verdict computation) is already exhaustively covered by
-    ``tests/test_mvp_manager_lean_feature_flow.py`` and ``tests/test_qa.py``;
+    ``tests/test_mvp_manager_workitem_flow.py`` and ``tests/test_qa.py``;
     this file's own scope is cross-worker cold-resume + adaptive
     selection, so QA here only needs to genuinely run and PASS."""
 
@@ -368,7 +368,7 @@ def _run_phase_two(facts: PhaseOneFacts) -> PhaseTwoResult:
     # process could have been killed in the first place. Never a fake
     # "no capable profile" situation: Worker B genuinely has one. Worker
     # C shares Worker B's own provider (real product worker-pool shape)
-    # and exists only so LEAN_FEATURE_FLOW's own DEV B has a genuinely
+    # and exists only so WorkItem Flow's own DEV B has a genuinely
     # independent developer available once Worker B is excluded as
     # author for that role.
     quota_manager = QuotaManager(
@@ -384,7 +384,7 @@ def _run_phase_two(facts: PhaseOneFacts) -> PhaseTwoResult:
     runner = _ScriptedFileMutatingRunner([
         {"topic": "execution.profile_recommended", "payload": _STANDARD_TIER_PAYLOAD},
         {"topic": "work.completed", "payload": "done", "mutate": _mutate_fix},
-        # LEAN_FEATURE_FLOW's own DEV B corrective review (Worker C) —
+        # WorkItem Flow's own DEV B corrective review (Worker C) —
         # the fix Worker B already committed is genuinely fine, so DEV B
         # makes no further change.
         {"topic": "work.completed", "payload": "done"},

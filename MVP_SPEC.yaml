@@ -1,46 +1,58 @@
 # Spécification du MVP 0.1 — AI Dev Orchestrator
 #
-# v3 (2026-09-17) — CLOSURE ALIGNMENT.
+# v4 (2026-09-18) — PRE-PUBLIC REALIGNMENT.
 #
 # Ce fichier reste la source de vérité du CONTRAT D'ACCEPTATION du MVP 0.1.
-# Son contenu v2 (2026-09-12, commit c9a7b49, jamais modifié depuis)
-# décrivait un produit hypothétique — CLI `orchestrator`, `ModelRouter`,
-# adaptateur Ollama obligatoire, machine à états de quota locale, moteur
-# strictement zéro-Git — qui n'est plus celui réellement construit. Le
-# texte v2 intégral reste entièrement récupérable via
-# `git log -p -- MVP_SPEC.yaml` : IL N'EST PAS RÉÉCRIT NI EFFACÉ, seul
-# l'historique Git en fait foi comme archive du contrat initial.
+# Son contenu v2 (2026-09-12, commit c9a7b49) décrivait un produit
+# hypothétique jamais construit tel quel ; son contenu v3 (2026-09-17,
+# clôture MVP 0.1) reflétait fidèlement le produit de cette date, y
+# compris certains faits devenus stales depuis (workflow nommé
+# `LEAN_FEATURE_FLOW`/`WorkflowMode.GOVERNED_FULL` encore mentionné comme
+# disponible, pool de 4 workers/2 providers, compteur de tests figé à
+# 1158). Les textes v2 ET v3 intégraux restent entièrement récupérables
+# via `git log -p -- MVP_SPEC.yaml` : ILS NE SONT PAS RÉÉCRITS NI EFFACÉS,
+# seul l'historique Git en fait foi comme archive de chaque contrat
+# antérieur.
 #
 # Chaque critère devenu obsolète a été réécrit ci-dessous pour représenter
-# le comportement réellement accepté, avec un champ `historical_note`
-# indiquant explicitement ce qu'il remplace — jamais une suppression
-# silencieuse. Aucune garantie utile déjà construite n'a été affaiblie :
-# voir provenance.closure_reason et docs/status.md pour la revue complète
-# qui a produit cette version.
+# le comportement réellement accepté aujourd'hui, avec un champ
+# `historical_note` indiquant explicitement ce qu'il remplace — jamais une
+# suppression silencieuse. Le contrat comportemental du chemin DEV A ->
+# DEV B -> QA déterministe accepté en v3 est INCHANGÉ par cette
+# réalignement — seuls son nom public et des faits d'inventaire
+# (workers/tests) sont mis à jour.
 
-version: 3
+version: 4
 
 provenance:
-  previous_version: 2
+  previous_version: 3
   previous_version_note: >
-    v2 était le contrat initial du MVP 0.1 ("Boucle cœur locale,
-    mono-projet, sans GitHub"), jamais modifié depuis sa création
-    (2026-09-12) jusqu'à cette clôture (2026-09-17), malgré une évolution
-    architecturale majeure du produit sur la même période. Son texte
-    original reste consultable via `git log -p -- MVP_SPEC.yaml`.
-  closure_decision_date: "2026-09-17"
-  closure_reason: >
-    Une revue de clôture factuelle (2026-09-17) a construit une matrice
-    de preuves AC-par-AC contre le code/tests/Git réels et conclu
-    qu'aucun gap de comportement produit ne bloque le MVP 0.1 : seul ce
-    contrat était devenu stale. L'architecture réellement livrée
-    (WorkerSelector, ExecutionProfile, QuotaManager, GitGovernanceService,
-    QA governance, LEAN_FEATURE_FLOW, worker pool fallback) dépasse
-    largement le contrat v2 initial sur la gouvernance, mais diverge de sa
-    lettre sur plusieurs points explicitement de-scopés ou remplacés
-    ci-dessous. Voir ROADMAP.md, "Décision produit (2026-09-17) — Clôture
-    MVP 0.1 / Phase 1", pour le détail complet de la revue.
-  scope_changes:
+    v3 (2026-09-17) était le contrat de clôture du MVP 0.1 — voir
+    `git log -p -- MVP_SPEC.yaml` pour son texte intégral, et sa propre
+    section `provenance` (conservée ci-dessous) pour l'historique v2->v3.
+  alignment_date: "2026-09-18"
+  alignment_reason: >
+    Simplification pré-publique (décision utilisateur explicite) : le
+    pipeline alternatif `WorkflowMode.GOVERNED_FULL` (Reviewer indépendant
+    en lecture seule, QA Test Authoring isolée, Final QA séparée) a été
+    retiré avant la première release publique, laissant le chemin
+    DEV A -> DEV B corrective review -> QA déterministe -> merge -> tag
+    comme SEUL workflow d'exécution de WorkItem — `WorkflowMode` lui-même
+    n'existe plus (un seul mode restant, KISS/YAGNI). Le comportement de
+    ce chemin, déjà accepté en v3 sous le nom `LEAN_FEATURE_FLOW`, est
+    INCHANGÉ ; seul son statut passe de "workflow par défaut parmi
+    plusieurs" à "seul workflow implémenté", et son nom public devient
+    "WorkItem Flow" (voir ROADMAP.md, entrée datée 2026-09-18). Cette
+    version corrige aussi des faits d'inventaire devenus stales sans lien
+    avec ce retrait : le pool de workers shippé est passé de 4/2 providers
+    à 6/3 providers (Mistral/Vibe `milo`/`juno`, ✅ VALIDATED — voir
+    docs/VIBE_SPIKE.md), et la suite de tests offline compte aujourd'hui
+    983 tests (contre 1158 au 2026-09-17), une baisse entièrement
+    attribuable à la suppression des tests qui ne validaient QUE le
+    pipeline retiré (voir ROADMAP.md pour le détail exact). Aucun gap de
+    comportement produit n'est introduit par cette réalignement — voir
+    docs/status.md pour la revue complète.
+  scope_changes_v2_to_v3:
     - "CLI/productisation : de-scopée du MVP 0.1, devient une option future (voir non_goals)."
     - "Ollama/providers locaux : de-scopés du MVP 0.1, deviennent une option future (Worker Ecosystem Study)."
     - "ModelRouter : superseded par WorkerSelector (capability > governance > provider availability > priority)."
@@ -48,6 +60,11 @@ provenance:
     - "Workspace 100% abstrait/zéro appel Git direct : assoupli — un seul appel `git rev-parse HEAD` en lecture seule est accepté dans RalphExecutionEngine pour capturer un fait d'audit SHA ; toute décision de branche/merge/tag reste exclusivement dans GitGovernanceService."
     - "Séparation Developer/Reviewer : n'est plus un non_goal Phase 3 — construite dès Phase 1 (Slice 9), puis étendue (worker_id independence REQUIRED, provider diversity PREFERRED, model diversity non-invariant)."
     - "LEAN_FEATURE_FLOW ajouté comme workflow DEFAULT (2 exécutions LLM nominales, QA déterministe/non-LLM) — non prévu par le contrat v2, qui ne connaissait pas encore la notion de QA."
+  scope_changes_v3_to_v4:
+    - "WorkflowMode.GOVERNED_FULL retiré avant la première release publique ; WorkflowMode lui-même supprimé (un seul workflow restant)."
+    - "LEAN_FEATURE_FLOW renommé WorkItem Flow dans toute la documentation publique — comportement inchangé."
+    - "Pool de workers shippé : 4 workers/2 providers -> 6 workers/3 providers (Mistral/Vibe milo/juno ajoutés, ✅ VALIDATED)."
+    - "Compteur de tests offline : 1158 (2026-09-17) -> 983 (2026-09-18), baisse due exclusivement à la suppression des tests spécifiques à GOVERNED_FULL — voir ROADMAP.md."
 
 mvp:
   id: mvp-0.1
@@ -68,9 +85,9 @@ mvp:
     priorité/le coût, un suivi de quota réel par provider, une identité
     d'exécution complète, une gouvernance Git centralisée découplée des
     workers, et une détection explicite des interruptions qui interdit
-    tout retry aveugle. Le contrat v3 reconnaît en plus, comme faisant
+    tout retry aveugle. Le contrat reconnaît en plus, comme faisant
     partie du MVP 0.1 réellement livré : l'indépendance auteur/second
-    développeur (worker_id), et le workflow nominal `LEAN_FEATURE_FLOW`
+    développeur (worker_id), et le workflow nominal WorkItem Flow
     (DEV A -> DEV B correctif -> QA déterministe -> merge -> tag).
 
   non_goals:
@@ -109,7 +126,9 @@ mvp:
         `import orchestrator` et les imports de ses sous-modules
         (`orchestrator.mvp_manager`, `orchestrator.worker_selector`, ...)
         réussissent — prouvé en continu par la suite `pytest` elle-même
-        (1158 tests, tous important le paquet réel).
+        (tous les tests importent le paquet réel ; suite offline complète
+        passante — 983 PASS au 2026-09-18, voir docs/status.md pour le
+        compteur courant).
       historical_note: >
         v2 exigeait `python -m orchestrator --help` et une CLI listant des
         commandes `mvp`/`task`. Aucune CLI n'existe (`__main__.py`/
@@ -133,10 +152,11 @@ mvp:
         `worker_id`, `provider`, `backend`, `capabilities`, `priority`,
         `enabled`, et un ou plusieurs `ExecutionProfile`
         (`model`/`reasoning_effort`/`quality_tier`/`cost_rank`). Le fichier
-        shippé déclare aujourd'hui 4 workers sur 2 providers (anthropic:
-        alice/bob, openai: victor/oscar) — voir
-        `tests/test_worker_registry.py::TestShippedExampleConfig` et
-        `::test_config_workers_yaml_worker_pool_is_at_least_two_per_provider`.
+        shippé déclare aujourd'hui 6 workers sur 3 providers (anthropic:
+        alice/bob ; openai: victor/oscar ; mistral: milo/juno, capacité
+        `development` uniquement, ✅ VALIDATED — voir docs/VIBE_SPIKE.md)
+        — voir `tests/test_worker_registry.py::TestShippedExampleConfig`
+        et `::test_config_workers_yaml_worker_pool_is_at_least_two_per_provider`.
       historical_note: >
         v2 exigeait exactement 3 entrées nommées (claude_code, codex_cli,
         ollama_qwen) avec des champs `name`/`adapter`/`roles`/
@@ -170,9 +190,12 @@ mvp:
       measurable_check: >
         `ProjectStateStore.create_work_item(...)` persiste un `WorkItem`
         avec `required_capabilities` et un `status` (`PLANNED`/`READY`/
-        `RUNNING`/`REVIEWING`/`NEEDS_REWORK`/`WAITING`/
-        `RECOVERY_REQUIRED`/`COMPLETED`/`FAILED`/`BLOCKED`) — voir
-        `tests/test_project_state.py`.
+        `RUNNING`/`NEEDS_REWORK`/`WAITING`/`RECOVERY_REQUIRED`/
+        `COMPLETED`/`FAILED`/`BLOCKED`) — voir `tests/test_project_state.py`.
+        `REVIEWING` reste un membre valide de l'énumération, mais
+        uniquement pour décoder un état SQLite historique persisté par
+        l'ancien pipeline `GOVERNED_FULL` (retiré, voir AC-16) ; aucun
+        chemin de code actuel n'y transitionne.
       historical_note: >
         v2 décrivait un statut initial `PENDING` et un `required_role`
         distinct, exposés via CLI. Le modèle réel utilise `PLANNED`/
@@ -298,7 +321,7 @@ mvp:
         `WorkItem` correspondant par `RUNNING` puis `COMPLETED`/`FAILED`/
         `NEEDS_REWORK`/`WAITING`/`BLOCKED` selon l'issue — voir
         `tests/test_ralph_execution_engine.py`,
-        `tests/test_mvp_manager*.py`. Preuve réelle : smoke Claude Haiku
+        `tests/test_mvp_manager_workitem_flow.py`. Preuve réelle : smoke Claude Haiku
         réel (Slice 6, documenté ROADMAP.md).
       historical_note: >
         v2 exposait ce comportement via `orchestrator task run <task_id>`.
@@ -342,7 +365,7 @@ mvp:
         de nouveau orchestrable (`RECOVERY_REQUIRED`), à charge du
         prochain `run_next_work_item` de sélectionner un worker frais
         (possiblement différent) — voir `tests/test_recovery.py`,
-        `tests/test_mvp_manager*.py`.
+        `tests/test_mvp_manager_workitem_flow.py`.
       historical_note: >
         v2 exposait ce contrat via `orchestrator task run` (refus explicite)
         et `orchestrator task reconcile --retry`. Comportement réel
@@ -435,9 +458,11 @@ mvp:
         dans cette policy. Voir
         `tests/test_worker_selector.py::TestAuthorReviewerIndependence`.
         Le pool shippé (`config/workers.yaml`) déclare au moins 2 workers
-        indépendants par provider participant (anthropic: alice/bob,
-        openai: victor/oscar) pour que ce repli soit toujours possible —
-        voir `tests/test_mvp_manager_lean_feature_flow.py::TestLeanWorkerPoolSameProviderFallback`.
+        indépendants par provider participant (anthropic: alice/bob ;
+        openai: victor/oscar ; mistral: milo/juno) pour que ce repli soit
+        toujours possible — voir
+        `tests/test_worker_registry.py::TestShippedExampleConfig::test_config_workers_yaml_worker_pool_is_at_least_two_per_provider`
+        et `tests/test_mvp_manager_workitem_flow.py::TestWorkItemWorkerPoolSameProviderFallback`.
       historical_note: >
         Absent de v2, qui plaçait explicitement cette séparation en
         "non_goal" pour une Phase 3 hypothétique (voir provenance et
@@ -446,48 +471,64 @@ mvp:
         Actée comme critère du MVP 0.1 par décision produit (2026-09-17).
 
     - id: AC-16
-      title: Workflow nominal LEAN_FEATURE_FLOW (DEFAULT)
+      title: WorkItem Flow — le seul workflow d'exécution de WorkItem
       description: >
-        Le workflow par défaut d'un WorkItem est DEV A -> DEV B correctif
-        (second développeur indépendant, write-capable, pas en lecture
-        seule) -> une phase QA unique, déterministe et non-LLM -> merge
-        gouverné -> tag Git -> DONE. Exactement 2 exécutions LLM sur le
-        chemin nominal (DEV A, DEV B) ; la QA ne consomme et ne sélectionne
-        aucun worker IA. En cas de QA FAIL, jusqu'à 3 tentatives QA au
-        total (dont des cycles `DEV FIX -> QA`) ; le 3ème échec passe le
-        WorkItem en `BLOCKED` avec un motif `HUMAN_REVIEW_REQUIRED`
-        explicite, sans bloquer les autres WorkItems indépendants.
+        Le workflow d'un WorkItem est DEV A -> DEV B correctif (second
+        développeur indépendant, write-capable, pas en lecture seule) ->
+        une phase QA unique, déterministe et non-LLM -> merge gouverné ->
+        tag Git -> DONE. Exactement 2 exécutions LLM sur le chemin nominal
+        (DEV A, DEV B) ; la QA ne consomme et ne sélectionne aucun worker
+        IA. En cas de QA FAIL, jusqu'à 3 tentatives QA au total (dont des
+        cycles `DEV FIX -> QA`) ; le 3ème échec passe le WorkItem en
+        `BLOCKED` avec un motif `HUMAN_REVIEW_REQUIRED` explicite, sans
+        bloquer les autres WorkItems indépendants. C'est le SEUL workflow
+        d'exécution de WorkItem que `MVPManager` implémente — il n'existe
+        ni mode alternatif, ni sélecteur de workflow, ni notion de
+        "défaut parmi plusieurs".
       measurable_check: >
-        `MVPManager` par défaut (`workflow_mode` non spécifié) exécute
-        `WorkflowMode.LEAN_FEATURE_FLOW` — voir
-        `tests/test_mvp_manager_lean_feature_flow.py::TestLeanNominalFlow`
+        `MVPManager.run_next_work_item(...)` exécute ce chemin
+        inconditionnellement — voir
+        `tests/test_mvp_manager_workitem_flow.py::TestWorkItemNominalFlow`
         (chemin nominal DEV A -> DEV B -> QA -> merge -> tag),
-        `TestLeanQAFailBoundedRetry` (3 tentatives QA bornées +
+        `TestWorkItemQAFailBoundedRetry` (3 tentatives QA bornées +
         `HUMAN_REVIEW_REQUIRED`, progression des WorkItems indépendants),
-        `TestLeanDevBQuotaWait`/`TestLeanWorkerPoolSameProviderFallback`
+        `TestWorkItemDevBQuotaWait`/`TestWorkItemWorkerPoolSameProviderFallback`
         (repli/attente conformes à l'invariant de continuité). La QA
         (`QAPhase.FINAL_VERIFICATION`) n'invoque jamais
         `WorkerSelector.select()` (vérifiable par lecture de
-        `mvp_manager.py::_run_qa_cycle`). `WorkflowMode.GOVERNED_FULL`
-        reste disponible explicitement (`DEPRECATED`/`REMOVAL_CANDIDATE`),
-        non requis par ce MVP.
+        `mvp_manager.py::_run_qa_cycle`).
       historical_note: >
         Absent de v2, qui ne connaissait pas encore la notion de QA
-        gouvernée. Construit en Slices 21-24 (`GOVERNED_FULL`) puis
-        simplifié en `LEAN_FEATURE_FLOW` (décision produit 2026-09-16),
-        acté comme critère du MVP 0.1 par décision produit (2026-09-17).
-        Validation offline complète (suite dédiée ci-dessus) ; une
-        acceptance externe réelle fraîche (kata Roman Numerals) reste à
-        réaliser dans un futur pilote, hors scope de cette clôture — voir
-        ROADMAP.md, "Next".
+        gouvernée. Construit en Slices 21-24 sous un pipeline plus lourd
+        nommé `GOVERNED_FULL` (Reviewer indépendant en lecture seule, QA
+        Test Authoring isolée, Final QA séparée), puis simplifié
+        (décision produit 2026-09-16) en un second workflow nommé
+        `LEAN_FEATURE_FLOW`, accepté comme critère du MVP 0.1 par décision
+        produit (2026-09-17) alors que `GOVERNED_FULL` restait
+        sélectionnable en parallèle. `GOVERNED_FULL` a été retiré avant la
+        première release publique (2026-09-18, décision utilisateur
+        explicite — voir ROADMAP.md, entrée datée) : `WorkflowMode`
+        lui-même a été supprimé, et l'ancien `LEAN_FEATURE_FLOW` — dont le
+        contrat comportemental est resté strictement inchangé par ce
+        retrait — est renommé WorkItem Flow dans toute la documentation
+        publique. Validation offline complète (suite dédiée ci-dessus) ;
+        validation externe réelle : pilote Roman Numerals (PASS, voir
+        docs/reports/roman-numerals-lean-pilot-2026-09-17.md) et projet
+        Morpion Web 3D (DONE, voir ROADMAP.md).
 
   definition_of_done: >
-    Le MVP 0.1 est considéré terminé (statut `done`, ci-dessus) quand les
-    16 critères d'acceptation de ce fichier v3 sont vérifiés
-    mécaniquement (tests automatisés passants — 1158 tests offline PASS
-    au 2026-09-17) et que `ROADMAP.md` reflète la clôture de Phase 1.
-    Cette condition est remplie à la date `closure_decision_date`
-    ci-dessus. Les seuls écarts restants par rapport au texte v2 original
-    sont des de-scopes/remplacements explicites et tracés (voir
-    `historical_note` par critère et `provenance.scope_changes`), jamais
+    Le MVP 0.1 est considéré terminé (statut `done`, ci-dessus) depuis que
+    les 16 critères d'acceptation ont été vérifiés mécaniquement (tests
+    automatisés passants — 1158 tests offline PASS au 2026-09-17, date de
+    clôture réelle ; voir docs/status.md pour le compteur courant, mis à
+    jour depuis) et que `ROADMAP.md` reflétait la clôture de Phase 1.
+    Cette condition a été remplie à la date `provenance.closure_decision_date`
+    (v3, ci-dessous). Le réalignement v4 (2026-09-18) ne rouvre pas cette
+    clôture : il met à jour le TEXTE de certains critères pour rester
+    honnête sur l'état actuel du dépôt (retrait de `GOVERNED_FULL`, pool
+    de workers, compteur de tests), sans changer le comportement déjà
+    accepté. Les seuls écarts restants par rapport aux textes v2/v3
+    originaux sont des de-scopes/remplacements/renommages explicites et
+    tracés (voir `historical_note` par critère et
+    `provenance.scope_changes_v2_to_v3`/`scope_changes_v3_to_v4`), jamais
     un gap de comportement non couvert.

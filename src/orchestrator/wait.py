@@ -81,7 +81,7 @@ class WaitPhase(str, Enum):
     #: only under GOVERNED_FULL. No current code path ever records a
     #: wait with this phase.
     QA_AUTHORING = "qa_authoring"
-    #: LEAN_FEATURE_FLOW (2026-09-16): DEV A already succeeded before this
+    #: WorkItem Flow: DEV A already succeeded before this
     #: wait is ever recorded — resuming re-enters RUNNING directly (like
     #: QA_AUTHORING above) and re-selects an independent DEV B, never
     #: re-running DEV A.

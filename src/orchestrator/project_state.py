@@ -66,7 +66,7 @@ class WorkItemStatus(str, Enum):
     """Minimal WorkItem lifecycle.
 
     PLANNED/READY/RUNNING/NEEDS_REWORK/WAITING are non-terminal.
-    NEEDS_REWORK means QA (LEAN_FEATURE_FLOW's deterministic gate) failed
+    NEEDS_REWORK means QA (WorkItem Flow's deterministic gate) failed
     with attempts remaining — it is directly eligible for a new
     development execution (no dependency re-check needed, since the
     WorkItem was already READY once).
@@ -159,7 +159,7 @@ _WORK_ITEM_TRANSITIONS: dict[WorkItemStatus, frozenset[WorkItemStatus]] = {
     WorkItemStatus.NEEDS_REWORK: frozenset({WorkItemStatus.RUNNING, WorkItemStatus.WAITING}),
     # WAITING only ever resumes into the exact state it was waiting to
     # re-attempt (READY/NEEDS_REWORK for a new development-side selection,
-    # RUNNING for LEAN_FEATURE_FLOW's own DEV B review) or gives up to
+    # RUNNING for WorkItem Flow's own DEV B review) or gives up to
     # BLOCKED when no reliable retry moment remains — never "in place".
     WorkItemStatus.WAITING: frozenset(
         {

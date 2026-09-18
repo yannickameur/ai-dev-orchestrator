@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """External project pilot harness: drives a real, approved
 SPEC.md/ROADMAP.md through the real ai-dev-orchestrator MVPManager
-(LEAN_FEATURE_FLOW — the only WorkItem execution pipeline this project
+(WorkItem Flow — the only WorkItem execution pipeline this project
 implements) against a REAL external project workspace — never a
 disposable /tmp copy, never a synthetic defect, never a negative
 control (those only make sense for self-dogfood on this control plane
@@ -240,9 +240,9 @@ def main() -> int:
         validation_id="pytest-suite", kind=ValidationKind.UNIT_TEST,
         argv=(str(target_python), "-m", "pytest"),
     )
-    # The single QA phase's own deterministic gate — in LEAN_FEATURE_FLOW
+    # The single QA phase's own deterministic gate — under WorkItem Flow
     # this command run IS the quality gate (no separate governed_full-style
-    # quality-gate step exists in the lean pipeline at all).
+    # quality-gate step exists in this pipeline at all).
     qa_validation_store.set_project_commands(PROJECT_ID, [targeted_command])
 
     registry = WorkerRegistry.load(WORKERS_CONFIG)
@@ -256,7 +256,7 @@ def main() -> int:
     qa_engine = InternalQAEngine(validation_store=qa_validation_store, gate_runner=qa_gate_runner, clock=_utcnow)
 
     # require_review/require_required_gates default to True in
-    # GitGovernancePolicy but LEAN_FEATURE_FLOW (the only workflow
+    # GitGovernancePolicy but WorkItem Flow (the only workflow
     # MVPManager implements — GOVERNED_FULL was removed before the first
     # public release, see ROADMAP.md's dated removal entry) wires neither
     # a quality_gate_runner nor a review_store (the QA phase's own
@@ -264,7 +264,7 @@ def main() -> int:
     # replaces independent review) — left at their default, merge
     # eligibility can never be satisfied no matter how many real QA
     # commands pass. Exactly the wiring
-    # tests/test_mvp_manager_lean_feature_flow.py's own fixture uses.
+    # tests/test_mvp_manager_workitem_flow.py's own fixture uses.
     # Found via a real external-project pilot (Morpion Web 3D WI-11): a
     # WorkItem reached COMPLETED with a real QA PASS but its git record
     # stayed IN_PROGRESS forever.

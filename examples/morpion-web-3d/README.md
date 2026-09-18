@@ -2,9 +2,8 @@
 
 This is a real, end-to-end validated example of AI Dev Orchestrator
 governing an external project: a 3×3 tic-tac-toe ("morpion") web app,
-built from a roadmap, by AI developer workers, under the default
-`LEAN_FEATURE_FLOW` workflow (see the [main README](../../README.md)) —
-not a synthetic demo.
+built from a roadmap, by AI developer workers, under WorkItem Flow (see
+the [main README](../../README.md)) — not a synthetic demo.
 
 ## 1. Objective
 

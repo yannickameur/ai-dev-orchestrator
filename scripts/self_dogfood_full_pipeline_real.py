@@ -263,7 +263,7 @@ def main() -> int:
 
     # require_review/require_required_gates default to True but this
     # MVPManager wires neither a quality_gate_runner nor a review_store
-    # (LEAN_FEATURE_FLOW — GOVERNED_FULL was removed before the first
+    # (WorkItem Flow — GOVERNED_FULL was removed before the first
     # public release, see ROADMAP.md's dated removal entry) — left at
     # default, merge eligibility could never be satisfied. See
     # scripts/run_external_project_pilot.py's identical fix.

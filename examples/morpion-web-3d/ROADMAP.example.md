@@ -3,7 +3,7 @@
 Educational summary of the real WorkItem sequence used in this example
 (see [`README.md`](README.md) for the full narrative). This is not a
 dump of internal pilot-run logs — it is the shape a roadmap for a
-project like this actually takes under `LEAN_FEATURE_FLOW`.
+project like this actually takes under WorkItem Flow.
 
 | WorkItem | Goal | Outcome |
 |---|---|---|
@@ -38,7 +38,7 @@ For WI-11, roughly:
 
 ## Why WI-9 and WI-10 are not deleted from this history
 
-`LEAN_FEATURE_FLOW` never rewrites a WorkItem's terminal outcome to
+WorkItem Flow never rewrites a WorkItem's terminal outcome to
 make a roadmap look cleaner. WI-9's `FAILED` status and preserved
 branch, and WI-10's lost-runtime-state finding, are both real facts
 about this project's history — a future reader (human or agent) needs

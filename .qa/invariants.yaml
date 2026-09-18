@@ -25,15 +25,15 @@ invariants:
 
   - invariant_id: AIDO-QA-002
     description: >
-      A review's author worker can never also be its reviewer — cross-
-      provider/cross-worker independence is enforced by WorkerSelector,
-      never bypassed for cost, tier, or convenience.
+      DEV B can never be the same worker as DEV A — cross-provider/
+      cross-worker independence is enforced by WorkerSelector, never
+      bypassed for cost, tier, or convenience.
     criticality: critical
-    source: "Slice 4 (worker_selector.py) / Slice 9 (review.py)"
+    source: "Slice 4 (worker_selector.py) / WorkItem Flow (mvp_manager.py)"
     introduced_by_work_item: "Slice 4 — WorkerSelector"
     related_tests:
       - tests/test_worker_selector.py::test_reviewer_can_never_be_the_author_worker
-      - tests/test_mvp_manager.py::TestReviewSelectionIsAdaptive
+      - tests/test_mvp_manager_workitem_flow.py::TestWorkItemNominalFlow::test_workitem_flow_completes_dev_a_dev_b_qa_merge_tag
     active: true
 
   - invariant_id: AIDO-QA-003

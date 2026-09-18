@@ -27,10 +27,10 @@ THIN BY DESIGN — never a second implementation of what already exists:
 A QA Test Authoring capability (an adaptive-worker-driven, isolated-
 workspace test-authoring/promotion flow) existed here historically, under
 the now-removed ``GOVERNED_FULL`` pipeline (see ROADMAP.md's dated
-removal entry). ``LEAN_FEATURE_FLOW`` — the only workflow this project
+removal entry). WorkItem Flow — the only workflow this project
 implements now — never needs it: DEV B's corrective review can add tests
 directly, and this module's own deterministic Final Verification (the
-class below) is all the QA `LEAN_FEATURE_FLOW` requires.
+class below) is all the QA WorkItem Flow requires.
 
 SCOPE BOUNDARY (Slice 24, not here): this module is never imported by
 ``mvp_manager.py``, never referenced by
