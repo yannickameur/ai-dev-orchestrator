@@ -1,17 +1,19 @@
 """Cross-worker cold-resume E2E — Slice 17 acceptance validation.
 
 Validates, end to end and offline, the assembly the unit/integration
-tests only exercise separately: a small real project (a disposable copy
-of ``~/projects/ralph-spike``), Worker A starts real work, an execution
-is interrupted (simulating a crashed process), every store/service is
-closed, a cold restart reconstructs the entire graph from the persisted
-SQLite files and workspace alone, ``RecoveryCoordinator`` reconciles the
-orphaned execution into a durable handoff, adaptive selection (Slice 17)
-re-runs the pre-flight and picks a *different* Worker B (Worker A's
-provider is out of quota at restart — a realistic reason a process would
-have been interrupted in the first place), and Worker B finishes the
-work — never using anything from Worker A's "conversational memory",
-only durable, persisted facts.
+tests only exercise separately: a small real project (a self-contained
+temporary Git fixture, built fresh under pytest's own ``tmp_path`` —
+see ``_create_ralph_spike_fixture_source``), Worker A starts real work,
+an execution is interrupted (simulating a crashed process), every
+store/service is closed, a cold restart reconstructs the entire graph
+from the persisted SQLite files and workspace alone,
+``RecoveryCoordinator`` reconciles the orphaned execution into a
+durable handoff, adaptive selection (Slice 17) re-runs the pre-flight
+and picks a *different* Worker B (Worker A's provider is out of quota
+at restart — a realistic reason a process would have been interrupted
+in the first place), and Worker B finishes the work — never using
+anything from Worker A's "conversational memory", only durable,
+persisted facts.
 
 REAL, not mocked: ``ProjectStateStore``/``ExecutionStore``/``HandoffStore``/
 ``ExecutionRecommendationStore``/``AdaptiveExecutionDecisionStore`` are all
@@ -27,17 +29,22 @@ subprocess runner used here genuinely mutates files and makes real git
 commits in the disposable workspace copy, so the scenario is concrete,
 not simulated in memory.
 
-The chosen "tiny but real" feature: ``review_candidate.py`` in
-ralph-spike contains a deliberately-wrong ``add(a, b): return a - b``
-(the exact artifact ``docs/SPIKE_RALPH.md``'s author!=reviewer spike
-already used). Worker A writes the regression test (TDD red) before
-being interrupted; Worker B fixes the bug (TDD green) after the cold
-resume, and the mini-project's own test script is run for real at the
-end.
+The chosen "tiny but real" feature: a fixture ``review_candidate.py``
+contains a deliberately-wrong ``add(a, b): return a - b`` — the same
+tiny bug shape ``docs/SPIKE_RALPH.md``'s author!=reviewer spike
+historically used (that original spike lived in a real, separate
+developer-machine checkout; this test no longer depends on it existing
+and instead reproduces the same bug in a real, disposable Git
+repository it creates itself). Worker A writes the regression test
+(TDD red) before being interrupted; Worker B fixes the bug (TDD green)
+after the cold resume, and the mini-project's own test script is run
+for real at the end.
 
-~/projects/ralph-spike itself is NEVER modified — only a disposable
-``tmp_path``-based copy (pytest's own tempfile-backed fixture) is ever
-touched, and it is torn down automatically at the end of the test.
+The fixture *source* repository (``_create_ralph_spike_fixture_source``)
+is itself real Git — real ``git init``, a real commit, a real deterministic
+test identity — but it is NEVER modified by the scenario: only a disposable
+copy of it (``_copy_fixture_project``, ``tmp_path``-based) is ever touched,
+and both are torn down automatically at the end of the test.
 """
 
 from __future__ import annotations
@@ -68,7 +75,7 @@ from orchestrator.quota_manager import QuotaManager, QuotaPolicy
 from orchestrator.ralph_execution_engine import RalphExecutionEngine
 from orchestrator.worker_selector import ExecutionProfile, QualityTier, Worker, WorkerSelector
 
-RALPH_SPIKE_SOURCE = Path.home() / "projects" / "ralph-spike"
+FIXTURE_SOURCE_BUG_CONTENT = "def add(a, b):\n    return a - b\n"
 
 UTC_T0 = datetime(2026, 9, 13, 16, 0, tzinfo=timezone.utc)
 UTC_T1 = UTC_T0 + timedelta(minutes=1)
@@ -115,11 +122,24 @@ def _git_commit_all(cwd: Path, message: str) -> str:
     return _run_git(cwd, "rev-parse", "HEAD")
 
 
-def _copy_ralph_spike(tmp_path: Path) -> Path:
+def _create_ralph_spike_fixture_source(tmp_path: Path) -> Path:
+    """Builds a real, self-contained Git repository reproducing the tiny
+    ``review_candidate.py`` bug historically used by the Ralph spike —
+    no developer-machine checkout, no network, no clone. This source
+    repository is never itself mutated by the scenario; only a disposable
+    copy of it (``_copy_fixture_project``) is ever touched."""
+    source = tmp_path / "fixture-source"
+    source.mkdir(parents=True)
+    _run_git(source, "init", "-q")
+    (source / "review_candidate.py").write_text(FIXTURE_SOURCE_BUG_CONTENT)
+    _git_commit_all(source, "Initial fixture: review_candidate.py with a deliberate bug")
+    return source
+
+
+def _copy_fixture_project(source: Path, tmp_path: Path) -> Path:
     """A disposable copy — the only thing this test ever writes to."""
-    assert RALPH_SPIKE_SOURCE.is_dir(), f"expected {RALPH_SPIKE_SOURCE} to exist for this test"
-    destination = tmp_path / "ralph-spike-copy"
-    copytree(RALPH_SPIKE_SOURCE, destination)
+    destination = tmp_path / "fixture-workspace"
+    copytree(source, destination)
     return destination
 
 
@@ -223,8 +243,8 @@ class PhaseOneFacts:
     decision_id_a: str
 
 
-def _run_phase_one(tmp_path: Path) -> PhaseOneFacts:
-    workspace = _copy_ralph_spike(tmp_path)
+def _run_phase_one(tmp_path: Path, source: Path) -> PhaseOneFacts:
+    workspace = _copy_fixture_project(source, tmp_path)
     project_db = tmp_path / "project.sqlite3"
     execution_db = tmp_path / "execution.sqlite3"
     handoff_db = tmp_path / "handoff.sqlite3"
@@ -456,7 +476,8 @@ def _run_phase_two(facts: PhaseOneFacts) -> PhaseTwoResult:
 
 class TestCrossWorkerColdResumeE2E:
     def test_worker_a_interrupted_worker_b_completes_after_cold_restart(self, tmp_path: Path) -> None:
-        facts = _run_phase_one(tmp_path)
+        source = _create_ralph_spike_fixture_source(tmp_path)
+        facts = _run_phase_one(tmp_path, source)
         result = _run_phase_two(facts)
 
         # --- worker identity: never the same worker ---------------------
@@ -502,12 +523,22 @@ class TestCrossWorkerColdResumeE2E:
         # --- WorkItem reached a real terminal success ---------------------
         assert result.work_item_status is WorkItemStatus.COMPLETED
 
-    def test_ralph_spike_original_is_never_modified(self, tmp_path: Path) -> None:
-        before = subprocess.run(
-            ["git", "status", "--short"], cwd=str(RALPH_SPIKE_SOURCE), capture_output=True, text=True,
+    def test_fixture_source_repository_is_never_modified(self, tmp_path: Path) -> None:
+        source = _create_ralph_spike_fixture_source(tmp_path)
+        before_sha = _run_git(source, "rev-parse", "HEAD")
+        before_status = subprocess.run(
+            ["git", "status", "--short"], cwd=str(source), capture_output=True, text=True,
         ).stdout
-        _run_phase_two(_run_phase_one(tmp_path))
-        after = subprocess.run(
-            ["git", "status", "--short"], cwd=str(RALPH_SPIKE_SOURCE), capture_output=True, text=True,
+        before_content = (source / "review_candidate.py").read_text()
+
+        _run_phase_two(_run_phase_one(tmp_path, source))
+
+        after_sha = _run_git(source, "rev-parse", "HEAD")
+        after_status = subprocess.run(
+            ["git", "status", "--short"], cwd=str(source), capture_output=True, text=True,
         ).stdout
-        assert before == after
+        after_content = (source / "review_candidate.py").read_text()
+
+        assert before_sha == after_sha
+        assert before_status == after_status == ""
+        assert before_content == after_content == FIXTURE_SOURCE_BUG_CONTENT
