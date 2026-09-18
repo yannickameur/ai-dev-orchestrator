@@ -207,6 +207,25 @@ framework de persistance). Une copie de travail purement jetable
 sous `/tmp` sans problème. Voir l'exemple Morpion ci-dessus pour le cas
 réel qui a établi cette leçon.
 
+## Soutenir le projet
+
+AI Dev Orchestrator est développé en open source. Le sponsoring via
+[GitHub Sponsors](https://github.com/sponsors/yannickameur) aide à financer les
+abonnements IA, les appels API, les tests multi-modèles et le temps consacré au
+développement, à la maintenance et à la documentation.
+
+Les paliers donnent un repère simple de ce que votre soutien rend possible :
+
+| Palier | Idée |
+|---|---|
+| ☕ **5 €/mois — Keep it running** | Contribuer aux petits coûts récurrents : API, tests ponctuels et outils annexes. |
+| 🛠️ **10 €/mois — Build supporter** | Permettre davantage d'expérimentations multi-agents et de tests avec plusieurs providers. |
+| 🤖 **25 €/mois — AI Junior Developer** | Aider à financer chaque mois l'équivalent d'un agent IA "junior" pour coder, tester, documenter et corriger. |
+| 🚀 **100 €/mois — AI Senior Developer** | Aider à financer l'usage régulier des modèles de dernière génération pour les tâches complexes : architecture, refactoring, investigation et revue indépendante. |
+
+Le sponsoring soutient le projet sans donner de contrôle particulier sur sa
+roadmap ou ses décisions techniques.
+
 ## Development
 
 Voir [`CONTRIBUTING.md`](CONTRIBUTING.md) : configuration de
