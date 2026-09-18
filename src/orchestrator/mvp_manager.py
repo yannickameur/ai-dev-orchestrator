@@ -336,6 +336,25 @@ def _summarize_findings(findings: tuple[ReviewFinding, ...]) -> str:
     return "; ".join(f"[{f.severity}] {f.summary}" for f in findings)
 
 
+# Generic, backend-agnostic commit-governance reminder included in every
+# development-role instruction (DEV A and DEV B alike). Not backend- or
+# provider-specific: Claude Code/Codex already commit reliably on their
+# own agentic default and this reminder is harmless for them; some
+# backends (e.g. Vibe — see docs/VIBE_SPIKE.md §19) do not commit unless
+# explicitly told to, and this is what makes them do so reliably —
+# VERIFIED by a real disposable execution, not assumed. Never a
+# backend-specific branch in code: the same instructions text for every
+# worker, regardless of provider/backend.
+_COMMIT_GOVERNANCE_REMINDER = (
+    "Before emitting completion, ensure any code/test changes are committed with "
+    "git — do not leave them uncommitted. Use this repository's already "
+    "configured git identity (git config user.name/user.email) as both author "
+    "and committer; never pass --author, never use a different identity. Do not "
+    "add any AI attribution, Co-Authored-By, Signed-off-by, or similar trailer "
+    "to the commit message. Leave the working tree clean after committing."
+)
+
+
 def _build_dev_instructions(work_item: WorkItem, *, resume_context: str | None) -> str:
     criteria = "\n".join(f"- {c}" for c in work_item.acceptance_criteria) or "- (none specified)"
     rework_block = f"{resume_context}\n\n" if resume_context else ""
@@ -343,6 +362,7 @@ def _build_dev_instructions(work_item: WorkItem, *, resume_context: str | None) 
         f"{work_item.title}\n\n"
         f"Acceptance criteria:\n{criteria}\n\n"
         f"{rework_block}"
+        f"{_COMMIT_GOVERNANCE_REMINDER}\n\n"
         "When this work item is genuinely complete, emit exactly:\n\n"
         f'ralph emit "{SUCCESS_TOPIC}" "done"\n\n'
         "If you cannot complete it, emit exactly:\n\n"
@@ -366,6 +386,7 @@ def _build_dev_b_instructions(work_item: WorkItem, *, dev_a_worker_id: str) -> s
         "directly and commit the fix — do not just write a list of suggestions for someone else "
         "to apply. Do not implement the next feature, refactor unrelated code, or add "
         "frameworks/abstractions not required here.\n\n"
+        f"{_COMMIT_GOVERNANCE_REMINDER}\n\n"
         "When you are done reviewing (whether or not you made changes), emit exactly:\n\n"
         f'ralph emit "{SUCCESS_TOPIC}" "done"\n\n'
         "If you cannot complete this review, emit exactly:\n\n"
