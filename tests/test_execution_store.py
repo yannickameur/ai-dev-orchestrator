@@ -327,3 +327,99 @@ class TestNoRealExecutionDependency:
             "ClaudeCodeAdapter", "CodexAdapter", "WorkerSelector",
         ):
             assert forbidden not in source
+
+
+class TestPermissionModeAudit:
+    """P12 — project-controlled worker execution permission mode must be
+    observable/auditable per execution (ROADMAP.md §13)."""
+
+    def test_new_execution_stores_requested_permission_mode(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        record = _create_running(store, permission_mode="standard")
+        assert record.permission_mode == "standard"
+
+    def test_transition_preserves_permission_mode(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _create_running(store, permission_mode="unrestricted")
+        updated = store.mark_succeeded("exec-001", exit_code=0)
+        assert updated.permission_mode == "unrestricted"
+
+    def test_get_after_reopen_preserves_permission_mode(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "executions.sqlite3"
+        store = ExecutionStore(db_path, clock=lambda: UTC_NOW)
+        _create_running(store, permission_mode="standard")
+        store.close()
+
+        reopened = ExecutionStore(db_path, clock=lambda: UTC_NOW)
+        assert reopened.get("exec-001").permission_mode == "standard"
+
+    def test_list_for_task_preserves_permission_mode(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        _create_running(store, permission_mode="unrestricted")
+        records = store.list_for_task("task-001")
+        assert records[0].permission_mode == "unrestricted"
+
+    def test_create_without_permission_mode_stores_none(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        record = _create_running(store)
+        assert record.permission_mode is None
+
+    def test_old_v0_1_1_schema_without_the_column_opens_successfully(self, tmp_path: Path) -> None:
+        """Simulates a real pre-P12 database: create the table exactly as
+        it existed in v0.1.1 (no permission_mode column at all), insert a
+        real historical row the old way, then reopen through the current
+        ExecutionStore and confirm it still works and decodes that row
+        honestly as unknown."""
+        import sqlite3
+
+        db_path = tmp_path / "legacy.sqlite3"
+        legacy_conn = sqlite3.connect(str(db_path))
+        legacy_conn.execute(
+            """
+            CREATE TABLE executions (
+                execution_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                worker_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                backend TEXT NOT NULL,
+                model TEXT NOT NULL,
+                role TEXT NOT NULL,
+                reasoning_effort TEXT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL,
+                exit_code INTEGER,
+                provider_session_id TEXT,
+                ralph_loop_id TEXT,
+                git_sha_before TEXT,
+                git_sha_after TEXT
+            )
+            """
+        )
+        legacy_conn.execute(
+            "INSERT INTO executions "
+            "(execution_id, task_id, worker_id, provider, backend, model, role, started_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("legacy-exec", "legacy-task", "alice", "anthropic", "claude_code", "sonnet",
+             "developer", UTC_NOW.isoformat(), "succeeded"),
+        )
+        legacy_conn.commit()
+        legacy_conn.close()
+
+        migrated_store = ExecutionStore(db_path, clock=lambda: UTC_NOW)
+        record = migrated_store.get("legacy-exec")
+        assert record.permission_mode is None  # never fabricated as standard/unrestricted
+        assert record.status is ExecutionStatus.SUCCEEDED  # everything else decodes fine too
+
+    def test_migration_is_idempotent(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "executions.sqlite3"
+        ExecutionStore(db_path, clock=lambda: UTC_NOW).close()
+        # Reopening an already-migrated database must never fail or
+        # attempt to add the column a second time.
+        store_again = ExecutionStore(db_path, clock=lambda: UTC_NOW)
+        _create_running(store_again, permission_mode="standard")
+        assert store_again.get("exec-001").permission_mode == "standard"
+        store_again.close()
+        # A third open, same result.
+        store_third = ExecutionStore(db_path, clock=lambda: UTC_NOW)
+        assert store_third.get("exec-001").permission_mode == "standard"
