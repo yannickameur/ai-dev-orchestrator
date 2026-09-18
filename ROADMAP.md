@@ -2,7 +2,9 @@
 
 Ce fichier est la **source de vérité fonctionnelle courante** du projet :
 ce que le produit est, ce qui est implémenté aujourd'hui, comment ça
-marche, et ce qui reste proposé (jamais approuvé) pour la suite.
+marche, ce qui est approuvé pour la suite (voir §13, « Cycle produit
+approuvé » et « Ordre approuvé ») et ce qui reste proposé — pas encore
+approuvé — en attente d'un vote explicite (§13, table des propositions).
 
 L'historique d'implémentation détaillé (Slices, décisions produit datées,
 diagnostics forensiques) vit dans l'historique Git (`git log`) et dans
@@ -39,10 +41,13 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - **v0.1.1** — **PUBLIÉE**, première release publique open source.
 - **MVP 0.1** : `DONE` (contrat d'acceptation : `MVP_SPEC.yaml` v4).
 - **Phase 1** : `DONE`.
-- Suite de tests offline : **983 PASS** (voir §11 et docs/status.md pour
-  le détail).
-- Aucun développement actif en cours ; un prochain cycle est approuvé
-  (pas encore démarré) — voir §13, « Cycle produit approuvé ».
+- Suite de tests offline : **1048 PASS** (983 avant + 65 pour P12 — voir
+  §11 et docs/status.md pour le détail).
+- **P12 (format de configuration de projet public + mode de permission
+  d'exécution des workers) : `DONE`** — fondation implémentée, voir §10 et
+  `docs/PROJECT_CONFIG.md`. **P1 (CLI publique) : `APPROUVÉ` — prochain
+  WorkItem**, pas encore démarré. Aucun développement actif en cours en
+  dehors de ce cycle — voir §13, « Cycle produit approuvé ».
 
 ## 3. Ce qui existe aujourd'hui
 
@@ -72,6 +77,14 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - Reporting d'activité/réalisation (`ActivityReport`/`RealizationReport`).
 - Capacités optionnelles de planning/approbation/application de roadmap
   (voir §10 — construites, jamais enchaînées automatiquement).
+- `ProjectConfig` (P12) — format de configuration public `aido.yaml`
+  schema v1 : identité de projet, référence (jamais copie) au pool de
+  workers, mode de permission d'exécution project-controlled, politique
+  Git, MVP/WorkItems, commandes QA déterministes. `ExecutionPermissionMode`
+  (`standard`/`unrestricted`), traduit en flags CLI réels et vérifiés
+  exclusivement à la frontière `RalphExecutionEngine` (voir §10 et
+  `docs/PROJECT_CONFIG.md`) — Vibe n'est plus jamais unconditionnellement
+  `--auto-approve`.
 
 Seules les capacités qui existent réellement dans le dépôt au commit
 `47ab4da` (et après) sont listées ici.
@@ -304,6 +317,22 @@ explicitement par un appelant :
   résolution de profil d'exécution ; aucun appelant actuel de WorkItem
   Flow ne les câble (WorkItem Flow utilise `WorkerSelector.select()`
   directement), mais le mécanisme reste disponible.
+- `ProjectConfig.load(...)` (`src/orchestrator/project_config.py`, P12)
+  — charge/valide un `aido.yaml` public en un objet typé complet (projet,
+  référence registre de workers, `ExecutionConfig`, `GitConfig`, MVP,
+  WorkItems, commandes QA). Rien ne l'appelle encore automatiquement —
+  aucun `[project.scripts]`/CLI n'existe (c'est le rôle de P1, prochain
+  WorkItem) ; un appelant qui veut réellement l'utiliser aujourd'hui doit
+  construire lui-même les stores/`MVPManager`/`RalphExecutionEngine`
+  à partir des valeurs qu'il retourne, exactement comme
+  `scripts/run_external_project_pilot.py` le fait déjà à la main.
+- `ExecutionPermissionMode` (`src/orchestrator/execution_policy.py`, P12)
+  — `standard`/`unrestricted`, consommé par `RalphExecutionEngine` en
+  paramètre de construction optionnel (`permission_mode=...`) ; omis, il
+  n'ajoute aucun flag (comportement identique à avant P12) — un appelant
+  doit le passer explicitement pour bénéficier de la politique
+  project-controlled. Traduction vérifiée par backend dans
+  `docs/PROJECT_CONFIG.md`.
 
 ## 11. Validations réelles
 
@@ -340,10 +369,14 @@ Jalons majeurs seulement — pas de journal Slice par Slice :
 - Validation multi-provider réelle (Mistral/Vibe).
 - `GOVERNED_FULL` retiré avant la première release publique (2026-09-18).
 - v0.1.1 publiée en open source (2026-09-18).
+- Cycle productisation/onboarding approuvé (P1 + P12) ; P12 — format de
+  configuration public `aido.yaml` + mode de permission d'exécution des
+  workers project-controlled — implémenté (2026-09-19).
 
 Chronologie détaillée : historique Git (`git log`) et docs techniques
 (`docs/status.md`, `docs/QA_GOVERNANCE.md`, `docs/GIT_GOVERNANCE.md`,
-`docs/ADAPTIVE_EXECUTION.md`, `docs/VIBE_SPIKE.md`).
+`docs/ADAPTIVE_EXECUTION.md`, `docs/VIBE_SPIKE.md`,
+`docs/PROJECT_CONFIG.md`).
 
 ## 13. Propositions à voter
 
@@ -357,7 +390,7 @@ changement de statut roadmap, pas un déclenchement d'exécution.
 
 ### Cycle produit approuvé (prochain)
 
-**NEXT APPROVED CYCLE : Productisation / onboarding — P1 + P12.**
+**APPROVED CYCLE : Productisation / onboarding — P1 + P12.**
 
 Résultat visé : un nouvel utilisateur doit pouvoir configurer et lancer un
 projet gouverné sans écrire de harnais Python sur mesure.
@@ -365,69 +398,78 @@ projet gouverné sans écrire de harnais Python sur mesure.
 **Exigence transverse d'acceptation pour ce cycle** : le mode de permission
 d'exécution des workers doit être explicite et contrôlé par le projet,
 jamais hérité silencieusement de la configuration de la machine du
-mainteneur (détail ci-dessous).
+mainteneur — **implémenté**, voir ci-dessous.
 
-- **P1 — CLI / productisation.** KISS/YAGNI : la plus petite CLI qui
-  supprime le besoin actuel de harnais Python, couvrant conceptuellement
-  au minimum — initialiser/configurer un projet, valider sa configuration,
-  lancer/poursuivre l'orchestrateur, inspecter son statut. Noms de
-  commandes et périmètre exact non figés ici ; à concevoir pendant le
-  cycle d'implémentation.
-- **P12 — Format de configuration de projet public.** L'étude
-  d'implémentation doit au minimum déterminer la représentation de :
-  identité du projet ; dépôt/workspace ; roadmap/MVP/WorkItems du projet
-  ou leur source ; emplacement de l'état runtime persistant ; commandes/
-  preuves QA requises par WorkItem Flow ; mode de permission d'exécution
-  des workers (voir ci-dessous) ; référence au pool de workers existant
-  plutôt que duplication (`config/workers.yaml` reste la seule source de
-  vérité du pool — jamais redéfini par projet) ; aucun secret/identifiant.
+- **P12 — Format de configuration de projet public : `DONE`.**
+  `orchestrator.project_config.ProjectConfig` (`aido.yaml` schema v1)
+  représente : identité du projet ; dépôt/workspace ; référence (jamais
+  copie) au pool de workers existant (`config/workers.yaml` reste seul
+  source de vérité) ; mode de permission d'exécution des workers ; base
+  branch Git ; MVP/WorkItems ; commandes QA déterministes
+  (`ValidationCommand` réutilisé, jamais dupliqué) ; aucun secret/
+  identifiant. Voir §3, §10 et `docs/PROJECT_CONFIG.md` pour le détail
+  complet. Exemple public tracké : `examples/aido.yaml`.
+- **P1 — CLI / productisation : `APPROUVÉ` — prochain WorkItem, pas
+  démarré.** KISS/YAGNI : la plus petite CLI qui consomme
+  `ProjectConfig` (P12) pour supprimer le besoin actuel de harnais
+  Python, couvrant conceptuellement au minimum — initialiser/configurer
+  un projet, valider sa configuration, lancer/poursuivre l'orchestrateur,
+  inspecter son statut. Noms de commandes et périmètre exact non figés
+  ici ; à concevoir pendant le cycle d'implémentation. Ce PR n'ajoute
+  aucun `[project.scripts]`/point d'entrée — c'est explicitement le
+  travail de P1.
 
-#### Exigence transverse : mode de permission d'exécution des workers
+#### Mode de permission d'exécution des workers — implémenté
 
-Constat factuel actuel : Claude Code et Codex tournent aujourd'hui sans
-surveillance sur la machine du mainteneur parce que leur configuration
-CLI/environnement locale est déjà permissive ("YOLO"/bypass), en dehors
-d'AI Dev Orchestrator. Un contributeur clonant le dépôt peut donc
-rencontrer des invites interactives ou des exécutions bloquées. AIDO ne
-porte aujourd'hui aucune politique de permission explicite par projet —
-voir aussi `CONTRIBUTING.md`, « Real worker execution and permissions ».
+Constat factuel qui motivait cette exigence : Claude Code et Codex
+tournent sans surveillance sur la machine du mainteneur parce que leur
+configuration CLI/environnement locale est déjà permissive ("YOLO"/
+bypass), en dehors d'AI Dev Orchestrator — un contributeur clonant le
+dépôt pouvait donc rencontrer des invites interactives ou des exécutions
+bloquées, sans qu'AIDO ne porte de politique de permission explicite par
+projet. Voir aussi `CONTRIBUTING.md`, « Real worker execution and
+permissions ».
 
-Contrat conceptuel cible (noms de champs non figés) :
+Contrat implémenté (`orchestrator.execution_policy.ExecutionPermissionMode`,
+`aido.yaml`'s `execution.permission_mode`) :
 
 ```
 execution permissions:
-  STANDARD       # comportement de permission/sandbox/approbation normal du provider
-  UNRESTRICTED   # exécution non surveillée explicite ("YOLO"/bypass) là où le provider le supporte
+  standard       # AIDO ne demande jamais l'exécution non surveillée/bypass ;
+                  # demande explicitement le mécanisme sûr/normal du provider quand il existe
+  unrestricted   # AIDO demande explicitement l'exécution non surveillée vérifiée
+                  # ("YOLO"/bypass) là où le backend le supporte honnêtement
 ```
 
-Invariants requis pour l'implémentation de P1/P12 :
+Invariants respectés par l'implémentation (`RalphExecutionEngine`,
+`vibe_ralph_bridge.py`) :
 
-- `UNRESTRICTED` est un opt-in explicite — jamais un défaut silencieux.
-- AIDO ne doit jamais inférer `UNRESTRICTED` simplement parce que la
-  machine du développeur est déjà configurée ainsi globalement.
-- Le mode effectif doit être observable/auditable pour une exécution
-  donnée.
+- `unrestricted` est un opt-in explicite — jamais un défaut silencieux ;
+  un moteur non configuré (`permission_mode=None`) n'ajoute aucun flag de
+  permission du tout (comportement identique à avant P12), jamais
+  `unrestricted` par défaut.
+- AIDO n'infère jamais `unrestricted` de la configuration globale de la
+  machine du développeur.
+- Le mode effectif est observable/auditable par exécution :
+  `ExecutionRecord.permission_mode` (P12), migration SQLite idempotente,
+  lignes historiques décodées honnêtement comme `None`, jamais fabriquées.
 - Aucun identifiant/secret n'est jamais stocké dans la configuration de
   projet — l'authentification provider reste possédée par le CLI/
-  l'environnement du provider ; la configuration de projet exprime une
-  politique, jamais un secret.
-- `MVPManager` ne doit contenir aucun branchement de permission
-  spécifique à un provider.
-- `WorkerSelector` ne doit rien connaître des flags de permission CLI.
-- La traduction vers le comportement réel du backend/CLI se fait à la
-  frontière execution/backend — jamais plus haut dans la pile.
-- Réutiliser les mécanismes Ralph/CLI natifs existants avant d'ajouter
-  une machinerie spécifique à un provider.
-- Une combinaison non supportée doit échouer clairement, jamais se
-  dégrader silencieusement.
-
-Les flags CLI exacts (Claude/Codex/Vibe) ne sont volontairement pas figés
-ici — ils doivent être vérifiés contre les CLI réellement installées au
-moment du spike d'implémentation.
+  l'environnement du provider.
+- `MVPManager` ne contient aucun branchement de permission spécifique à
+  un provider ; `WorkerSelector` ne connaît rien des flags de permission
+  CLI — toute la traduction vit à la frontière `RalphExecutionEngine`/
+  `vibe_ralph_bridge.py`, vérifiée contre les CLI réellement installées
+  (`claude --help`/`codex --help`/`vibe --help`), jamais inventée. Détail
+  complet, y compris la table de mapping vérifiée par backend :
+  `docs/PROJECT_CONFIG.md`.
+- Une combinaison non supportée échoue avant tout lancement de
+  subprocess (`UnsupportedPermissionModeError`), jamais une dégradation
+  silencieuse.
 
 ### Ordre approuvé
 
-1. P1 + P12 (ce cycle).
+1. P12 (`DONE`) puis P1 (prochain WorkItem, pas démarré) — ce cycle.
 2. P4 — étude build-vs-reuse Mammouth AI, sous REUSE FIRST : étudier
    d'abord, déterminer ce qui est réellement réutilisable, puis décider
    si une intégration provider/worker est justifiée par la preuve.
@@ -440,7 +482,7 @@ moment du spike d'implémentation.
 
 | ID | Proposition | Valeur / question à trancher | Statut |
 |----|-------------|------------------------------|--------|
-| P1 | CLI / productisation | Le projet doit-il exposer une CLI publique pour qu'un utilisateur n'ait plus besoin d'un harnais Python ? | **APPROUVÉ — PROCHAIN CYCLE** |
+| P1 | CLI / productisation | Le projet doit-il exposer une CLI publique pour qu'un utilisateur n'ait plus besoin d'un harnais Python ? | **APPROUVÉ — PROCHAIN WORKITEM** |
 | P2 | Ollama / provider local | Un provider gratuit/local est-il assez utile pour justifier un adaptateur ? | À VOTER |
 | P3 | Providers supplémentaires à coût marginal nul | Quels autres providers gratuits/par abonnement devraient rejoindre le pool ? | **APPROUVÉ — APRÈS P1/P12** |
 | P4 | Étude build-vs-reuse Mammouth AI | Offre-t-il des capacités multi-provider utiles à réutiliser plutôt qu'à construire ? | **APPROUVÉ — PREMIÈRE ÉTUDE APRÈS P1/P12** |
@@ -451,12 +493,13 @@ moment du spike d'implémentation.
 | P9 | QA avancée/externe | Candidats historiquement étudiés : BrowserStack, Momentic, TestSprite, Diffblue — adopter seulement quand un vrai projet/stack établit le besoin ? | À VOTER |
 | P10 | Isolation d'exécution QA en lecture seule | Worktree/copie isolée vs. solution amont Ralph pour les commits de housekeeping ? | À VOTER |
 | P11 | Productiser le cycle optionnel release/planning | `PlanningCoordinator` → `ApprovalCoordinator` → `RoadmapApplicationService` existent déjà (§10) — en faire un flux produit supporté de bout en bout ? | À VOTER |
-| P12 | Format de configuration de projet public | Aucun format déclaratif stable n'existe actuellement pour onboarder un projet (harnais Python custom) — faut-il en supporter un ? | **APPROUVÉ — PROCHAIN CYCLE** |
+| P12 | Format de configuration de projet public | Aucun format déclaratif stable n'existait pour onboarder un projet (harnais Python custom) | **`DONE` — voir §3/§10, `docs/PROJECT_CONFIG.md`** |
 
 Les propositions encore `À VOTER` restent non planifiées ; aucun ordre entre
 elles n'est impliqué. La prochaine étape pour celles-ci, si l'utilisateur le
 décide, est un vote explicite proposition par proposition — pas une
-sélection automatique par cette session ni une future session. Pour P1/P12/
-P3/P4, la prochaine étape est un cycle d'implémentation — qui reste hors
-du périmètre de cette modification de documentation (aucun WorkItem créé
-ici).
+sélection automatique par cette session ni une future session. P12 est
+`DONE`. Pour P1, la prochaine étape est son propre cycle d'implémentation
+(consommer `ProjectConfig`, ajouter la CLI). Pour P3/P4, la prochaine
+étape reste l'étude P4, après P1 — aucune de ces étapes n'est démarrée par
+ce changement de documentation.

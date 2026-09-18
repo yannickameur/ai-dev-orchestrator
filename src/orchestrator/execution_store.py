@@ -45,6 +45,17 @@ Design invariants:
   one of ``SUCCEEDED``/``FAILED``/``INTERRUPTED``/``RECOVERY_REQUIRED``;
   every other status is terminal and can never be transitioned out of,
   preventing a terminal execution from being silently reopened.
+- ``permission_mode`` (P12, ROADMAP.md §13) is an identity field like
+  ``worker_id``/``role`` — set once at ``create()``, exactly reflecting
+  the requesting ``RalphExecutionEngine``'s own configured
+  ``ExecutionPermissionMode`` (or ``None`` if that engine was not
+  configured with one), never changed by a transition. Stored as a plain
+  nullable string, not an enum — this module has no dependency on
+  ``orchestrator.execution_policy``. A database created before this field
+  existed is migrated in place, idempotently, by adding the column if
+  missing (``_ensure_permission_mode_column``); its pre-existing rows
+  decode with ``permission_mode=None`` — never fabricated as
+  ``"standard"``/``"unrestricted"`` after the fact.
 """
 
 from __future__ import annotations
@@ -103,7 +114,7 @@ _ALLOWED_TRANSITIONS: dict[ExecutionStatus, frozenset[ExecutionStatus]] = {
 
 _OPTIONAL_STR_FIELDS = (
     "reasoning_effort", "provider_session_id", "ralph_loop_id",
-    "git_sha_before", "git_sha_after",
+    "git_sha_before", "git_sha_after", "permission_mode",
 )
 
 
@@ -127,6 +138,7 @@ class ExecutionRecord:
     ralph_loop_id: str | None = None
     git_sha_before: str | None = None
     git_sha_after: str | None = None
+    permission_mode: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("execution_id", "task_id", "worker_id", "provider", "backend", "model", "role"):
@@ -191,6 +203,7 @@ _COLUMNS = (
     "execution_id", "task_id", "worker_id", "provider", "backend", "model", "role",
     "reasoning_effort", "started_at", "finished_at", "status", "exit_code",
     "provider_session_id", "ralph_loop_id", "git_sha_before", "git_sha_after",
+    "permission_mode",
 )
 
 _CREATE_TABLE_SQL = f"""
@@ -210,7 +223,8 @@ CREATE TABLE IF NOT EXISTS executions (
     provider_session_id TEXT,
     ralph_loop_id TEXT,
     git_sha_before TEXT,
-    git_sha_after TEXT
+    git_sha_after TEXT,
+    permission_mode TEXT
 )
 """
 
@@ -235,11 +249,13 @@ def _encode_insert(record: ExecutionRecord) -> tuple:
         None if record.finished_at is None else record.finished_at.isoformat(),
         record.status.value, record.exit_code, record.provider_session_id,
         record.ralph_loop_id, record.git_sha_before, record.git_sha_after,
+        record.permission_mode,
     )
 
 
 def _decode_row(row: sqlite3.Row) -> ExecutionRecord:
     execution_id = row["execution_id"]
+    row_keys = row.keys()
     try:
         return ExecutionRecord(
             execution_id=execution_id,
@@ -258,6 +274,11 @@ def _decode_row(row: sqlite3.Row) -> ExecutionRecord:
             ralph_loop_id=row["ralph_loop_id"],
             git_sha_before=row["git_sha_before"],
             git_sha_after=row["git_sha_after"],
+            # Absent on a row read via a pre-migration column set (should
+            # not happen after __init__'s migration, but decoded honestly
+            # as unknown/None rather than raising, matching a historical
+            # row that never recorded a permission mode).
+            permission_mode=row["permission_mode"] if "permission_mode" in row_keys else None,
         )
     except (ValueError, TypeError) as exc:
         raise CorruptExecutionRecordError(execution_id, str(exc)) from exc
@@ -272,6 +293,17 @@ class ExecutionStore:
         self._conn.row_factory = sqlite3.Row
         with self._conn:
             self._conn.execute(_CREATE_TABLE_SQL)
+            self._ensure_permission_mode_column()
+
+    def _ensure_permission_mode_column(self) -> None:
+        """Idempotent migration for a v0.1.1-era database created before
+        ``permission_mode`` existed — ``CREATE TABLE IF NOT EXISTS`` above
+        never adds a column to an already-existing table, so this adds it
+        explicitly the first time it is missing. A no-op on every
+        subsequent open."""
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(executions)")}
+        if "permission_mode" not in existing:
+            self._conn.execute("ALTER TABLE executions ADD COLUMN permission_mode TEXT")
 
     def close(self) -> None:
         self._conn.close()
@@ -291,8 +323,15 @@ class ExecutionStore:
         ralph_loop_id: str | None = None,
         git_sha_before: str | None = None,
         started_at: datetime | None = None,
+        permission_mode: str | None = None,
     ) -> ExecutionRecord:
-        """Create a new execution, recorded as RUNNING from the start."""
+        """Create a new execution, recorded as RUNNING from the start.
+
+        ``permission_mode`` is a plain, optional string snapshot of the
+        caller's ``ExecutionPermissionMode.value`` (P12) — this module
+        never imports ``orchestrator.execution_policy`` itself, it only
+        stores/returns exactly what it is given, honestly.
+        """
         record = ExecutionRecord(
             execution_id=execution_id,
             task_id=task_id,
@@ -307,6 +346,7 @@ class ExecutionStore:
             provider_session_id=provider_session_id,
             ralph_loop_id=ralph_loop_id,
             git_sha_before=git_sha_before,
+            permission_mode=permission_mode,
         )
         try:
             with self._conn:

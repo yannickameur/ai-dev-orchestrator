@@ -1,0 +1,55 @@
+# Public example — AI Dev Orchestrator project configuration (schema v1).
+# See docs/PROJECT_CONFIG.md for the full schema reference.
+#
+# This file is safe to read/copy as-is: no machine-specific absolute
+# paths, no credentials, and `execution.permission_mode: standard` (never
+# `unrestricted` as a default/example recommendation — see
+# docs/PROJECT_CONFIG.md's security warning before ever changing this).
+#
+# The common real usage pattern is to co-locate a copy of this file,
+# renamed to `aido.yaml`, at the root of the project you want AIDO to
+# govern — hence `workspace: .` below (relative paths resolve relative to
+# wherever this file itself lives, never your current shell directory).
+
+schema_version: 1
+
+project:
+  id: example-project
+  name: Example Project
+  workspace: .
+  # state_dir omitted on purpose — defaults deterministically to
+  # ~/.local/state/ai-dev-orchestrator/projects/example-project/
+
+workers:
+  # A reference to an existing WorkerRegistry file — never a copy of it.
+  # This example points at this repository's own real worker pool; a
+  # real external project would point at its own copy of
+  # config/workers.yaml (or share this repository's, if convenient).
+  registry: ../config/workers.yaml
+
+execution:
+  permission_mode: standard
+
+git:
+  base_branch: main
+
+mvp:
+  id: mvp-1
+  objective: "Describe the first governed slice of real product work here."
+  acceptance_criteria:
+    - "State, concretely, what 'done' means for this MVP."
+
+work_items:
+  - id: wi-1
+    title: "Describe the first WorkItem here"
+    required_capabilities: [development]
+    dependencies: []
+    acceptance_criteria:
+      - "State, concretely, what 'done' means for this WorkItem."
+
+qa:
+  - id: qa-tests
+    kind: unit_test
+    argv: ["pytest", "-q"]
+    timeout_seconds: 300
+    required: true
