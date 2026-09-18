@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+from orchestrator.execution_policy import ExecutionPermissionMode
 from orchestrator.execution_store import ExecutionStatus, ExecutionStore
 from orchestrator.ralph_execution_engine import (
     ExecutionRequest,
@@ -34,7 +35,10 @@ from orchestrator.ralph_execution_engine import (
     RalphLaunchError,
     ReservedEventTopicError,
     UnsupportedBackendError,
+    UnsupportedPermissionModeError,
     UnsupportedProfileOptionError,
+    _claude_code_permission_args,
+    _codex_permission_args,
     parse_ralph_events,
 )
 from orchestrator.worker_selector import Worker
@@ -704,3 +708,126 @@ class TestNoForbiddenBehavior:
         source = inspect.getsource(module)
         for forbidden in ("ClaudeCodeAdapter", "CodexAdapter", '"claude"\n', "subprocess_exec(\"claude\"", "subprocess_exec(\"codex\""):
             assert forbidden not in source
+
+
+class TestExecutionPermissionMode:
+    """P12 — project-controlled worker execution permission mode.
+
+    All verified argv assertions below are exact, not substring-fuzzy, so
+    a STANDARD test can never accidentally pass because an UNRESTRICTED
+    flag also happens to appear somewhere in the file.
+    """
+
+    def _captured_hats_config(self, tmp_path: Path, *, worker: Worker, permission_mode) -> str:
+        captured = {}
+
+        def _on_call(args, cwd, timeout):
+            hats_path = Path(args[args.index("-H") + 1])
+            captured["hats"] = hats_path.read_text()
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        engine = RalphExecutionEngine(
+            store, subprocess_runner=runner, clock=lambda: UTC_NOW, permission_mode=permission_mode,
+        )
+        asyncio.run(engine.execute(_request(tmp_path, worker=worker)))
+        return captured["hats"]
+
+    def _captured_vibe_config(self, tmp_path: Path, *, permission_mode) -> str:
+        captured = {}
+
+        def _on_call(args, cwd, timeout):
+            config_path = Path(args[args.index("-c") + 1])
+            captured["config"] = config_path.read_text()
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        engine = RalphExecutionEngine(
+            store, subprocess_runner=runner, clock=lambda: UTC_NOW, permission_mode=permission_mode,
+        )
+        asyncio.run(engine.execute(_request(tmp_path, worker=_milo())))
+        return captured["config"]
+
+    # --- claude_code -----------------------------------------------------
+
+    def test_claude_code_standard_uses_verified_manual_deny_mechanism(self, tmp_path: Path) -> None:
+        hats = self._captured_hats_config(tmp_path, worker=_alice(), permission_mode=ExecutionPermissionMode.STANDARD)
+        assert '"--permission-mode", "manual"' in hats
+        assert '"--permission-prompts", "none"' in hats
+        assert "--dangerously-skip-permissions" not in hats
+
+    def test_claude_code_unrestricted_uses_verified_bypass_mechanism(self, tmp_path: Path) -> None:
+        hats = self._captured_hats_config(tmp_path, worker=_alice(), permission_mode=ExecutionPermissionMode.UNRESTRICTED)
+        assert '"--dangerously-skip-permissions"' in hats
+        assert "--permission-mode" not in hats
+        assert "--permission-prompts" not in hats
+
+    # --- codex -------------------------------------------------------------
+
+    def test_codex_standard_uses_verified_sandboxed_no_escalation_mechanism(self, tmp_path: Path) -> None:
+        hats = self._captured_hats_config(tmp_path, worker=_victor(), permission_mode=ExecutionPermissionMode.STANDARD)
+        assert '"--sandbox", "workspace-write"' in hats
+        assert '"--ask-for-approval", "never"' in hats
+        assert "--dangerously-bypass-approvals-and-sandbox" not in hats
+
+    def test_codex_unrestricted_uses_verified_bypass_mechanism(self, tmp_path: Path) -> None:
+        hats = self._captured_hats_config(tmp_path, worker=_victor(), permission_mode=ExecutionPermissionMode.UNRESTRICTED)
+        assert '"--dangerously-bypass-approvals-and-sandbox"' in hats
+        assert "--sandbox" not in hats
+        assert "--ask-for-approval" not in hats
+
+    # --- vibe (generic mode crosses to the bridge as plain argv) -----------
+
+    def test_vibe_standard_passes_generic_mode_to_bridge(self, tmp_path: Path) -> None:
+        config = self._captured_vibe_config(tmp_path, permission_mode=ExecutionPermissionMode.STANDARD)
+        assert '"--permission-mode", "standard"' in config
+
+    def test_vibe_unrestricted_passes_generic_mode_to_bridge(self, tmp_path: Path) -> None:
+        config = self._captured_vibe_config(tmp_path, permission_mode=ExecutionPermissionMode.UNRESTRICTED)
+        assert '"--permission-mode", "unrestricted"' in config
+
+    # --- omitted mode (engine unconfigured) == unchanged legacy behavior --
+
+    def test_omitted_permission_mode_adds_no_flags_for_claude_code(self, tmp_path: Path) -> None:
+        hats = self._captured_hats_config(tmp_path, worker=_alice(), permission_mode=None)
+        assert "--permission-mode" not in hats
+        assert "--dangerously-skip-permissions" not in hats
+
+    def test_omitted_permission_mode_adds_no_flags_for_codex(self, tmp_path: Path) -> None:
+        hats = self._captured_hats_config(tmp_path, worker=_victor(), permission_mode=None)
+        assert "--sandbox" not in hats
+        assert "--dangerously-bypass-approvals-and-sandbox" not in hats
+
+    def test_omitted_permission_mode_adds_no_bridge_flag_for_vibe(self, tmp_path: Path) -> None:
+        config = self._captured_vibe_config(tmp_path, permission_mode=None)
+        assert "--permission-mode" not in config
+
+    # --- fail-closed: an unmapped mode never silently passes --------------
+
+    def test_claude_code_translator_fails_closed_for_unmapped_mode(self) -> None:
+        with pytest.raises(UnsupportedPermissionModeError):
+            _claude_code_permission_args("not-a-real-mode")  # type: ignore[arg-type]
+
+    def test_codex_translator_fails_closed_for_unmapped_mode(self) -> None:
+        with pytest.raises(UnsupportedPermissionModeError):
+            _codex_permission_args("not-a-real-mode")  # type: ignore[arg-type]
+
+    # --- audit: the engine's own configured mode is persisted -------------
+
+    def test_execution_record_persists_the_engines_configured_permission_mode(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")])
+        engine = RalphExecutionEngine(
+            store, subprocess_runner=runner, clock=lambda: UTC_NOW,
+            permission_mode=ExecutionPermissionMode.UNRESTRICTED,
+        )
+        result = asyncio.run(engine.execute(_request(tmp_path)))
+        assert result.record.permission_mode == "unrestricted"
+        assert store.get(result.record.execution_id).permission_mode == "unrestricted"
+
+    def test_execution_record_permission_mode_is_none_when_engine_unconfigured(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")])
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+        result = asyncio.run(engine.execute(_request(tmp_path)))
+        assert result.record.permission_mode is None

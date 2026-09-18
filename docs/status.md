@@ -18,20 +18,21 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   workers, 3 providers — `alice`/`bob` (anthropic/claude_code),
   `victor`/`oscar` (openai/codex), `milo`/`juno` (mistral/vibe,
   `development` uniquement).
-- **Tests offline** : 983 PASS (snapshot courant — voir §11 de
-  `ROADMAP.md` pour la méthode de comptage ; ce nombre n'est pas un
-  invariant permanent).
+- **Tests offline** : 1048 PASS (983 avant + 65 pour P12 — snapshot
+  courant, voir §11 de `ROADMAP.md` pour la méthode de comptage ; ce
+  nombre n'est pas un invariant permanent).
 - **Roman Numerals** (pilote externe) : `PASS`.
 - **Mistral / Vibe** : ✅ `VALIDATED`.
 - **Morpion Web 3D** (pilote externe) : `DONE`. SHA final :
   `593c615e66e6a2cb585fb465ded0185da46a3319`.
+- **P12** (format de configuration de projet public `aido.yaml` + mode de
+  permission d'exécution des workers project-controlled) : `DONE` — voir
+  `docs/PROJECT_CONFIG.md`.
 - **Développement actif** : aucun.
-- **Prochain cycle approuvé** : productisation/onboarding (P1 — CLI, P12 —
-  format de configuration de projet public), avec pour exigence
-  transverse un mode de permission d'exécution des workers explicite et
-  contrôlé par le projet. P3 (providers/workers supplémentaires) et P4
-  (étude build-vs-reuse Mammouth AI, en premier, sous REUSE FIRST) sont
-  approuvés pour après ce cycle. Aucun WorkItem d'implémentation créé à
+- **Prochain WorkItem approuvé** : P1 — CLI publique, consommant
+  `ProjectConfig` (P12). P3 (providers/workers supplémentaires) et P4
+  (étude build-vs-reuse Mammouth AI, en premier, sous REUSE FIRST) restent
+  approuvés pour après P1. Aucun WorkItem d'implémentation de P1 créé à
   ce jour — voir `ROADMAP.md` §13, « Cycle produit approuvé » / « Ordre
   approuvé ». Toutes les autres propositions restent `À VOTER`.
 
@@ -65,7 +66,15 @@ Chronologie détaillée entièrement récupérable via `git log` et
 - Cycle produit « productisation/onboarding » (P1 CLI + P12 format de
   configuration de projet, avec exigence de mode de permission
   d'exécution des workers explicite et contrôlé par le projet) approuvé
-  par l'utilisateur comme prochain cycle ; P3/P4 approuvés pour après ce
-  cycle (2026-09-18) — voir `ROADMAP.md` §13.
+  par l'utilisateur ; P3/P4 approuvés pour après ce cycle (2026-09-18) —
+  voir `ROADMAP.md` §13.
+- P12 implémenté : `orchestrator.project_config.ProjectConfig`
+  (`aido.yaml` schema v1) et `orchestrator.execution_policy.ExecutionPermissionMode`
+  (`standard`/`unrestricted`, traduit en flags CLI vérifiés à la
+  frontière `RalphExecutionEngine` ; Vibe n'est plus jamais
+  unconditionnellement `--auto-approve`) ; audit d'exécution persistant
+  avec migration SQLite rétrocompatible (2026-09-19) — voir
+  `docs/PROJECT_CONFIG.md`. P1 (CLI) reste le prochain WorkItem, pas
+  démarré.
 
 Ce fichier reste court et factuel — pas de duplication de `ROADMAP.md`.

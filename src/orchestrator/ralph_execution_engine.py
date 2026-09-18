@@ -52,6 +52,23 @@ Design invariants:
   (how *this* backend expects ``--model``/effort flags), not a governance
   decision, and stays independent of WorkerSelector's provider-agnostic
   selection logic.
+- Execution permission policy (``ExecutionPermissionMode``, P12) is owned
+  by this engine instance, not per-request: one ``RalphExecutionEngine``
+  is constructed with one explicit, optional ``permission_mode`` that
+  applies to every execution it runs. Provider-specific flag knowledge
+  for translating that generic mode into real CLI arguments belongs
+  exclusively here (``_claude_code_permission_args``/
+  ``_codex_permission_args``, and for Vibe a bridge-argv passthrough
+  consumed by ``vibe_ralph_bridge.py``) — verified against the actually
+  installed CLIs (`claude`/`codex`/`vibe --help`), never invented. If
+  ``permission_mode`` is omitted (``None``), no permission-related args
+  are added at all — behavior is identical to before this feature
+  (whatever the backend's own ambient CLI configuration already does);
+  this preserves compatibility for every existing caller that has not
+  yet adopted an explicit project permission policy. An explicitly
+  requested mode this engine cannot honestly represent for a given
+  backend raises ``UnsupportedPermissionModeError`` before any
+  subprocess is launched — never a silent downgrade/upgrade/ignore.
 """
 
 from __future__ import annotations
@@ -67,6 +84,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Sequence
 
+from orchestrator.execution_policy import ExecutionPermissionMode
 from orchestrator.execution_store import ExecutionRecord, ExecutionStore
 from orchestrator.worker_selector import Worker
 
@@ -148,6 +166,21 @@ class UnsupportedProfileOptionError(RalphExecutionEngineError):
         self.backend = backend
 
 
+class UnsupportedPermissionModeError(RalphExecutionEngineError):
+    """Raised when a backend has no honest, verified translation for a
+    requested ``ExecutionPermissionMode`` — raised before any subprocess
+    is launched. Never silently ignored/downgraded/upgraded."""
+
+    def __init__(self, backend: str, mode: ExecutionPermissionMode) -> None:
+        mode_repr = mode.value if isinstance(mode, ExecutionPermissionMode) else mode
+        super().__init__(
+            f"{backend!r} backend has no verified translation for execution "
+            f"permission mode {mode_repr!r}"
+        )
+        self.backend = backend
+        self.mode = mode
+
+
 class RalphLaunchError(RalphExecutionEngineError):
     """Raised when the ralph subprocess could not be started at all."""
 
@@ -160,11 +193,51 @@ class RalphEventParseError(RalphExecutionEngineError):
     """Raised when a Ralph events JSONL line is invalid or missing required fields."""
 
 
-def _build_backend_args(backend: str, model: str, reasoning_effort: str | None) -> list[str]:
+def _claude_code_permission_args(mode: ExecutionPermissionMode) -> list[str]:
+    # VERIFIED via `claude --help` (Claude Code 2.1.277):
+    # - STANDARD: `--permission-mode manual` (explicit approval-required
+    #   mode, never bypass) combined with `--permission-prompts none`
+    #   ("nobody: anything that would prompt is denied automatically; the
+    #   permission mode still decides everything else") so an unattended
+    #   run fails a would-be-prompted action deterministically instead of
+    #   hanging forever waiting for an approval nothing can give.
+    # - UNRESTRICTED: `--dangerously-skip-permissions` ("Bypass all
+    #   permission checks") — the single dedicated bypass flag.
+    if mode is ExecutionPermissionMode.STANDARD:
+        return ["--permission-mode", "manual", "--permission-prompts", "none"]
+    if mode is ExecutionPermissionMode.UNRESTRICTED:
+        return ["--dangerously-skip-permissions"]
+    raise UnsupportedPermissionModeError("claude_code", mode)
+
+
+def _codex_permission_args(mode: ExecutionPermissionMode) -> list[str]:
+    # VERIFIED via `codex --help` (codex-cli 0.155.0). Codex has no
+    # "deny automatically" equivalent to Claude's `--permission-prompts
+    # none` — its own real, deterministic non-hanging mechanism is
+    # `--ask-for-approval never` (no interactive escalation; a denied
+    # action is "immediately returned to the model" rather than paused)
+    # combined with `--sandbox workspace-write` (still restrictive —
+    # never `danger-full-access`) for STANDARD.
+    # UNRESTRICTED: `--dangerously-bypass-approvals-and-sandbox` — the
+    # single dedicated bypass flag ("Skip all confirmation prompts and
+    # execute commands without sandboxing").
+    if mode is ExecutionPermissionMode.STANDARD:
+        return ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
+    if mode is ExecutionPermissionMode.UNRESTRICTED:
+        return ["--dangerously-bypass-approvals-and-sandbox"]
+    raise UnsupportedPermissionModeError("codex", mode)
+
+
+def _build_backend_args(
+    backend: str, model: str, reasoning_effort: str | None,
+    permission_mode: ExecutionPermissionMode | None = None,
+) -> list[str]:
     if backend == "codex":
         args = ["--model", model]
         if reasoning_effort:
             args += ["-c", f'model_reasoning_effort="{reasoning_effort}"']
+        if permission_mode is not None:
+            args += _codex_permission_args(permission_mode)
         return args
     if backend == "claude_code":
         # `claude --effort <low|medium|high|xhigh|max>` is a real, native
@@ -179,6 +252,8 @@ def _build_backend_args(backend: str, model: str, reasoning_effort: str | None) 
         args = ["--model", model]
         if reasoning_effort:
             args += ["--effort", reasoning_effort]
+        if permission_mode is not None:
+            args += _claude_code_permission_args(permission_mode)
         return args
     if backend == "vibe":
         # Vibe has no `--model`/reasoning-effort CLI flag at all (VERIFIED
@@ -190,7 +265,16 @@ def _build_backend_args(backend: str, model: str, reasoning_effort: str | None) 
         # silently dropping a configured value.
         if reasoning_effort:
             raise UnsupportedProfileOptionError(backend, "reasoning_effort", reasoning_effort)
-        return ["--model", model]
+        args = ["--model", model]
+        if permission_mode is not None:
+            # The real Vibe flags (`--agent ask` vs `--auto-approve`) are
+            # verified and chosen inside vibe_ralph_bridge.py, not here —
+            # this backend runs through Ralph's solo "custom" mechanism as
+            # a bridge script, never `vibe` directly (see
+            # `_SOLO_MODE_BACKENDS`). Only the generic mode crosses this
+            # boundary as plain bridge argv, exactly like `--model` above.
+            args += ["--permission-mode", permission_mode.value]
+        return args
     raise UnsupportedBackendError(backend)
 
 
@@ -470,11 +554,11 @@ def _render_hats_config(
 
 
 def _write_runtime_config(
-    runtime_dir: Path, request: ExecutionRequest
+    runtime_dir: Path, request: ExecutionRequest, permission_mode: ExecutionPermissionMode | None,
 ) -> tuple[Path, Path | None, Path]:
     backend = request.worker.backend
     backend_type = _ralph_backend_type(backend)
-    backend_args = _build_backend_args(backend, request.model, request.reasoning_effort)
+    backend_args = _build_backend_args(backend, request.model, request.reasoning_effort, permission_mode)
     solo_mode = backend in _SOLO_MODE_BACKENDS
 
     prompt_path = runtime_dir / "PROMPT.md"
@@ -548,11 +632,13 @@ class RalphExecutionEngine:
         ralph_binary: str = DEFAULT_RALPH_BINARY,
         clock: Clock | None = None,
         subprocess_runner: SubprocessRunner | None = None,
+        permission_mode: ExecutionPermissionMode | None = None,
     ) -> None:
         self._execution_store = execution_store
         self._ralph_binary = ralph_binary
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._run_subprocess = subprocess_runner or _default_subprocess_runner
+        self._permission_mode = permission_mode
 
     async def execute(self, request: ExecutionRequest) -> ExecutionResult:
         git_sha_before = _git_head_sha(request.workspace)
@@ -568,6 +654,7 @@ class RalphExecutionEngine:
             role=request.role,
             git_sha_before=git_sha_before,
             started_at=self._clock(),
+            permission_mode=self._permission_mode.value if self._permission_mode is not None else None,
         )
 
         runtime_dir = Path(tempfile.mkdtemp(prefix=f"ralph-exec-{request.execution_id}-"))
@@ -636,7 +723,9 @@ class RalphExecutionEngine:
         )
 
     def _build_ralph_args(self, runtime_dir: Path, request: ExecutionRequest) -> list[str]:
-        config_path, hats_path, prompt_path = _write_runtime_config(runtime_dir, request)
+        config_path, hats_path, prompt_path = _write_runtime_config(
+            runtime_dir, request, self._permission_mode
+        )
         args = [self._ralph_binary, "run", "-a", "-q", "-c", str(config_path)]
         if hats_path is not None:
             args += ["-H", str(hats_path)]

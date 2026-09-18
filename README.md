@@ -157,24 +157,32 @@ pytest
 ```
 
 **Honnêteté produit** : il n'existe pas encore de commande CLI unique
-pour lancer un projet gouverné — il faut aujourd'hui écrire un petit
-harnais Python qui construit les stores réels (`ProjectStateStore`,
-`WaitStore`, `ExecutionStore`, `GitWorkItemStore`, ...), déclare le
-`Project`/`MVP`/`WorkItems`, puis appelle
+pour lancer un projet gouverné (P1, prochain WorkItem approuvé) — il faut
+aujourd'hui écrire un petit harnais Python qui construit les stores réels
+(`ProjectStateStore`, `WaitStore`, `ExecutionStore`, `GitWorkItemStore`,
+...), déclare le `Project`/`MVP`/`WorkItems`, puis appelle
 `MVPManager.run_next_work_item(...)` en boucle. `scripts/run_external_project_pilot.py`
 en est un exemple réel et fonctionnel (jamais lancé via `pytest` — voir
-son propre docstring) ; `config/workers.yaml` déclare le pool de workers
-qu'il utilise.
+son propre docstring). Le format de configuration public
+(`aido.yaml`, P12) est maintenant implémenté — voir
+[`docs/PROJECT_CONFIG.md`](docs/PROJECT_CONFIG.md) et
+[`examples/aido.yaml`](examples/aido.yaml) — mais rien ne le consomme
+encore automatiquement tant que P1 n'existe pas ; `config/workers.yaml`
+reste la seule source de vérité du pool de workers, jamais dupliquée par
+projet.
 
 **Permissions d'exécution réelle** : les tests offline ci-dessus ne
 nécessitent aucun accès provider. Une exécution réelle de worker exige en
 revanche des CLI providers déjà authentifiées et capables d'une exécution
-non interactive ; v0.1.1 dépend encore entièrement de la configuration de
-permission locale de chaque CLI (aucune politique par projet gérée par
-AIDO aujourd'hui). Un mode de permission de projet explicite est approuvé
-pour le prochain cycle produit (voir `ROADMAP.md`, §13) ; détail et mise
-en garde de sécurité dans `CONTRIBUTING.md`, « Real worker execution and
-permissions ».
+non interactive. Le mode de permission d'exécution des workers
+(`standard`/`unrestricted`) est désormais un contrat explicite et
+project-controlled — `aido.yaml`'s `execution.permission_mode`, traduit en
+flags CLI réels et vérifiés à la frontière d'exécution
+(`RalphExecutionEngine`) — plutôt que dépendre implicitement de la
+configuration locale de chaque CLI comme avant P12 ; voir
+[`docs/PROJECT_CONFIG.md`](docs/PROJECT_CONFIG.md) pour le contrat complet
+et `CONTRIBUTING.md`, « Real worker execution and permissions », pour la
+mise en garde de sécurité et ce que P1 doit encore câbler.
 
 Pour un cas réel complet, narré et honnête (y compris une régression
 découverte et corrigée), voir l'exemple ci-dessous.
@@ -260,6 +268,7 @@ Voir [`CONTRIBUTING.md`](CONTRIBUTING.md).
 - [ROADMAP.md](ROADMAP.md) — vision, architecture, WorkItem Flow, propositions à voter — source de vérité fonctionnelle
 - [docs/status.md](docs/status.md) — état factuel courant, court
 - [MVP_SPEC.yaml](MVP_SPEC.yaml) — critères d'acceptation mesurables du MVP 0.1
+- [docs/PROJECT_CONFIG.md](docs/PROJECT_CONFIG.md) — format de configuration public `aido.yaml` (P12) et mode de permission d'exécution des workers
 - [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md) — étude des projets comparables
 - [docs/SPIKE_RALPH.md](docs/SPIKE_RALPH.md) — résultats du spike Phase 0.5
 - [docs/VIBE_SPIKE.md](docs/VIBE_SPIKE.md) — étude de faisabilité Mistral Vibe

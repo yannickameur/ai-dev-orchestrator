@@ -89,37 +89,45 @@ or permission configuration at all — it never touches a real Claude/
 Codex/Vibe CLI.
 
 Running a *real* worker (e.g. via `scripts/run_external_project_pilot.py`
-or your own harness) is different, and this is a current, real limitation
-you should know about before trying it:
+or your own harness) is different, and there are real, current
+limitations you should know about before trying it:
 
 - The provider CLI you use (Claude Code, Codex, Mistral Vibe) must
   already be installed and authenticated on your machine — AIDO never
   manages provider credentials.
-- As of v0.1.1, AIDO does not yet configure a provider's permission/
-  bypass policy per project. It has no opinion on this at all today.
-- A real, unattended orchestration run therefore currently depends
-  entirely on *your own* local provider-CLI permission configuration.
-  If the CLI is set up to ask for interactive approvals, an unattended
-  run can block or fail waiting on a prompt nothing will answer.
+- **P12 landed**: a project can now declare an explicit, project-controlled
+  worker execution permission mode — `execution.permission_mode:
+  standard|unrestricted` in `aido.yaml` (`orchestrator.execution_policy.ExecutionPermissionMode`,
+  `orchestrator.project_config`) — translated into real, verified CLI
+  arguments exclusively at the execution/backend boundary
+  (`orchestrator.ralph_execution_engine`). See
+  [`docs/PROJECT_CONFIG.md`](docs/PROJECT_CONFIG.md) for the full
+  contract and the verified per-backend flag mapping (Claude Code, Codex,
+  Vibe). `unrestricted` is always explicit opt-in — never a silent
+  default, never inferred from the host machine's own configuration.
+- **P1 (the public CLI) has not landed yet.** Nothing today automatically
+  reads your `aido.yaml` and wires its `execution.permission_mode` into a
+  real orchestration run — a caller (a harness you write yourself, or a
+  future `scripts/`-level bridge) must still construct a
+  `RalphExecutionEngine(..., permission_mode=...)` explicitly. Until then,
+  an `ExecutionPermissionMode`-unconfigured engine (e.g. today's
+  `scripts/run_external_project_pilot.py`, not yet updated to read
+  `aido.yaml`) adds no permission-related arguments at all — behavior is
+  identical to before P12, i.e. it depends entirely on *your own* local
+  provider-CLI permission configuration. If the CLI is set up to ask for
+  interactive approvals, an unattended run can still block or fail
+  waiting on a prompt nothing will answer.
 - On the maintainer's own development machine, Claude Code and Codex are
   configured to run in a permissive/unattended ("YOLO"/bypass-permission)
   mode. **Do not assume this is configured for you by AIDO** — it is
-  purely local, provider-CLI-level configuration, outside this project.
-- A permissive/bypass mode is security-sensitive: depending on the
-  provider, it can let a worker process run shell commands and touch the
+  purely local, provider-CLI-level configuration, outside this project,
+  unless you explicitly opt a project into `unrestricted` via `aido.yaml`.
+- `unrestricted` mode is security-sensitive: depending on the provider,
+  it can let a worker process run shell commands and touch the
   filesystem broadly, as your current OS user, without per-action
-  approval. Only enable such a mode in a workspace you trust and that is
+  approval. Only enable it in a workspace you trust and that is
   appropriately isolated (a disposable clone/VM/container is safer than
   your primary machine).
-- Making this policy explicit and project-controlled, instead of
-  silently inherited from whatever the operator's machine happens to be
-  configured as, is exactly why P1 (CLI) and P12 (project configuration
-  format) — approved as the next product cycle — include a
-  project-declared worker execution permission mode as a cross-cutting
-  requirement. See `ROADMAP.md`, §13, for the current target contract;
-  the exact provider CLI flags involved are intentionally not fixed yet
-  and must be verified against each CLI's own current documentation/
-  `--help` output during that implementation work, not guessed.
 
 ## Architecture principles
 
