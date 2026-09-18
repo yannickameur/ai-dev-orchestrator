@@ -1,17 +1,23 @@
 # QA Governance (Slice 22 + Slice 23 + Slice 24)
 
-Source of truth for the behavior implemented in
-`src/orchestrator/qa.py`, `src/orchestrator/qa_knowledge.py`,
-`src/orchestrator/qa_protection.py` (Slice 22 — provider-independent
-contracts/persistence/knowledge base),
-`src/orchestrator/internal_qa_engine.py` (Slice 23 — the first real
-engine, Python/pytest only), and QA's wiring into `MVPManager`/
-`GitGovernanceService.compute_merge_eligibility`/`ReleaseManager` (Slice
-24 — see §"Slice 24 — QA integrated into the delivery workflow" below).
-This document is descriptive, not aspirational — everything below is
-implemented and tested (`tests/test_qa.py`, `tests/test_qa_knowledge.py`,
-`tests/test_qa_protection.py`, `tests/test_internal_qa_engine.py`,
-`tests/test_mvp_manager_qa_integration.py`).
+**Current, still-implemented core:** `src/orchestrator/qa.py`,
+`src/orchestrator/qa_knowledge.py`, `src/orchestrator/qa_protection.py`
+(Slice 22 — provider-independent contracts/persistence/knowledge base)
+and `src/orchestrator/internal_qa_engine.py`'s own `InternalQAEngine`
+core (Slice 23, Python/pytest only) remain implemented and tested today
+(`tests/test_qa.py`, `tests/test_qa_knowledge.py`,
+`tests/test_qa_protection.py`, `tests/test_internal_qa_engine.py`) —
+these are current evidence. WorkItem Flow uses exactly these primitives
+directly (see the Scope note below).
+
+**Historical design / implementation record:** the Slice 24 sections
+below (QA's wiring into `MVPManager`/
+`GitGovernanceService.compute_merge_eligibility`/`ReleaseManager` via a
+separate QA Test Authoring phase and Final QA Verification step) describe
+the now-removed `GOVERNED_FULL` pipeline, not current behavior — see the
+Scope note below. The test file they used to cite,
+`tests/test_mvp_manager_qa_integration.py`, no longer exists and is not
+current evidence of anything; it is preserved only as historical prose.
 
 Plays the same role for Slice 22/23/24 that `docs/GIT_GOVERNANCE.md` plays
 for Slice 20.

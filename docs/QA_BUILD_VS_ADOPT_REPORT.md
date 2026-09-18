@@ -48,7 +48,7 @@ Lecture intégrale de [README](../README.md), [ROADMAP](../ROADMAP.md), [status]
 | Release gate / ActivityReport / RealizationReport | CODE_CONFIRMED pour les projections et checks inspectés ; ActivityReport documenté | Projeter les événements QA dans le reporting existant |
 | QA impact, protection sémantique, final QA, knowledge base | NOT_FOUND comme runtime QA actuel | C'est précisément le différenciateur restant |
 
-Références de code : [validation.py](../src/orchestrator/validation.py), [review.py](../src/orchestrator/review.py), [mvp_manager.py](../src/orchestrator/mvp_manager.py), [git_governance.py](../src/orchestrator/git_governance.py), [realization_report.py](../src/orchestrator/realization_report.py), [release_manager.py](../src/orchestrator/release_manager.py), [worker_selector.py](../src/orchestrator/worker_selector.py), [adaptive_execution.py](../src/orchestrator/adaptive_execution.py).
+Références de code : [validation.py](../src/orchestrator/validation.py), `review.py` (historique, retiré avec `GOVERNED_FULL` avant la première release publique), [mvp_manager.py](../src/orchestrator/mvp_manager.py), [git_governance.py](../src/orchestrator/git_governance.py), [realization_report.py](../src/orchestrator/realization_report.py), [release_manager.py](../src/orchestrator/release_manager.py), [worker_selector.py](../src/orchestrator/worker_selector.py), [adaptive_execution.py](../src/orchestrator/adaptive_execution.py).
 
 ### Limites que l'architecture doit traiter, sans correction dans cette slice
 
