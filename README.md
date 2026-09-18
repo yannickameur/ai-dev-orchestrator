@@ -166,6 +166,16 @@ en est un exemple réel et fonctionnel (jamais lancé via `pytest` — voir
 son propre docstring) ; `config/workers.yaml` déclare le pool de workers
 qu'il utilise.
 
+**Permissions d'exécution réelle** : les tests offline ci-dessus ne
+nécessitent aucun accès provider. Une exécution réelle de worker exige en
+revanche des CLI providers déjà authentifiées et capables d'une exécution
+non interactive ; v0.1.1 dépend encore entièrement de la configuration de
+permission locale de chaque CLI (aucune politique par projet gérée par
+AIDO aujourd'hui). Un mode de permission de projet explicite est approuvé
+pour le prochain cycle produit (voir `ROADMAP.md`, §13) ; détail et mise
+en garde de sécurité dans `CONTRIBUTING.md`, « Real worker execution and
+permissions ».
+
 Pour un cas réel complet, narré et honnête (y compris une régression
 découverte et corrigée), voir l'exemple ci-dessous.
 

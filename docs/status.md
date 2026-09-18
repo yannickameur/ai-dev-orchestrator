@@ -7,7 +7,8 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
 
 ## État actuel
 
-- **Release candidate** : v0.1.1 (préparation première release publique).
+- **Release** : v0.1.1 — **PUBLIÉE** (première release publique open
+  source).
 - **MVP 0.1** : `DONE`. Contrat d'acceptation : `MVP_SPEC.yaml` v4.
 - **Phase 1** : `DONE`.
 - **Workflow** : WorkItem Flow — le seul workflow d'exécution de WorkItem
@@ -25,9 +26,14 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
 - **Morpion Web 3D** (pilote externe) : `DONE`. SHA final :
   `593c615e66e6a2cb585fb465ded0185da46a3319`.
 - **Développement actif** : aucun.
-- **Prochaines étapes** : aucune approuvée — voir `ROADMAP.md` §13
-  « Propositions à voter » (rien n'y est planifié tant que
-  l'utilisateur n'a pas voté).
+- **Prochain cycle approuvé** : productisation/onboarding (P1 — CLI, P12 —
+  format de configuration de projet public), avec pour exigence
+  transverse un mode de permission d'exécution des workers explicite et
+  contrôlé par le projet. P3 (providers/workers supplémentaires) et P4
+  (étude build-vs-reuse Mammouth AI, en premier, sous REUSE FIRST) sont
+  approuvés pour après ce cycle. Aucun WorkItem d'implémentation créé à
+  ce jour — voir `ROADMAP.md` §13, « Cycle produit approuvé » / « Ordre
+  approuvé ». Toutes les autres propositions restent `À VOTER`.
 
 ## Historique synthétique
 
@@ -54,5 +60,12 @@ Chronologie détaillée entièrement récupérable via `git log` et
   inutile, aucun besoin produit actuel (KISS/YAGNI).
 - Normalisation terminologique WorkItem Flow + réécriture de
   `ROADMAP.md` (2026-09-18).
+- v0.1.1 publiée en open source, dépôt GitHub public, `main` protégée
+  par ruleset CI (2026-09-18).
+- Cycle produit « productisation/onboarding » (P1 CLI + P12 format de
+  configuration de projet, avec exigence de mode de permission
+  d'exécution des workers explicite et contrôlé par le projet) approuvé
+  par l'utilisateur comme prochain cycle ; P3/P4 approuvés pour après ce
+  cycle (2026-09-18) — voir `ROADMAP.md` §13.
 
 Ce fichier reste court et factuel — pas de duplication de `ROADMAP.md`.

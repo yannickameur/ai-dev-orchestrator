@@ -36,12 +36,13 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 
 ## 2. Version actuelle
 
-- **v0.1.1** — candidate à la première release publique/open-source.
+- **v0.1.1** — **PUBLIÉE**, première release publique open source.
 - **MVP 0.1** : `DONE` (contrat d'acceptation : `MVP_SPEC.yaml` v4).
 - **Phase 1** : `DONE`.
 - Suite de tests offline : **983 PASS** (voir §11 et docs/status.md pour
   le détail).
-- Aucune slice/aucun développement actif en cours.
+- Aucun développement actif en cours ; un prochain cycle est approuvé
+  (pas encore démarré) — voir §13, « Cycle produit approuvé ».
 
 ## 3. Ce qui existe aujourd'hui
 
@@ -338,7 +339,7 @@ Jalons majeurs seulement — pas de journal Slice par Slice :
 - Introduction de WorkItem Flow (alors nommé `LEAN_FEATURE_FLOW`).
 - Validation multi-provider réelle (Mistral/Vibe).
 - `GOVERNED_FULL` retiré avant la première release publique (2026-09-18).
-- Préparation de la release open-source v0.1.1.
+- v0.1.1 publiée en open source (2026-09-18).
 
 Chronologie détaillée : historique Git (`git log`) et docs techniques
 (`docs/status.md`, `docs/QA_GOVERNANCE.md`, `docs/GIT_GOVERNANCE.md`,
@@ -346,17 +347,103 @@ Chronologie détaillée : historique Git (`git log`) et docs techniques
 
 ## 13. Propositions à voter
 
-**RIEN dans cette section n'est du travail approuvé.** Chaque ligne a le
-statut `À VOTER` — aucun ordre n'implique une priorité, aucun MVP 0.2
-n'est ouvert, aucun WorkItem n'est créé pour une proposition tant qu'elle
-n'a pas été explicitement votée par l'utilisateur.
+La plupart des lignes ci-dessous restent `À VOTER` — aucun ordre n'implique
+une priorité pour elles, et aucun WorkItem n'est créé pour une proposition
+`À VOTER` tant qu'elle n'a pas été explicitement votée par l'utilisateur.
+P1, P12, P3 et P4 font exception : ce sont des décisions utilisateur déjà
+explicitement approuvées (2026-09-18), documentées ci-dessous. Cette
+approbation ne crée encore aucun WorkItem d'implémentation — c'est un
+changement de statut roadmap, pas un déclenchement d'exécution.
+
+### Cycle produit approuvé (prochain)
+
+**NEXT APPROVED CYCLE : Productisation / onboarding — P1 + P12.**
+
+Résultat visé : un nouvel utilisateur doit pouvoir configurer et lancer un
+projet gouverné sans écrire de harnais Python sur mesure.
+
+**Exigence transverse d'acceptation pour ce cycle** : le mode de permission
+d'exécution des workers doit être explicite et contrôlé par le projet,
+jamais hérité silencieusement de la configuration de la machine du
+mainteneur (détail ci-dessous).
+
+- **P1 — CLI / productisation.** KISS/YAGNI : la plus petite CLI qui
+  supprime le besoin actuel de harnais Python, couvrant conceptuellement
+  au minimum — initialiser/configurer un projet, valider sa configuration,
+  lancer/poursuivre l'orchestrateur, inspecter son statut. Noms de
+  commandes et périmètre exact non figés ici ; à concevoir pendant le
+  cycle d'implémentation.
+- **P12 — Format de configuration de projet public.** L'étude
+  d'implémentation doit au minimum déterminer la représentation de :
+  identité du projet ; dépôt/workspace ; roadmap/MVP/WorkItems du projet
+  ou leur source ; emplacement de l'état runtime persistant ; commandes/
+  preuves QA requises par WorkItem Flow ; mode de permission d'exécution
+  des workers (voir ci-dessous) ; référence au pool de workers existant
+  plutôt que duplication (`config/workers.yaml` reste la seule source de
+  vérité du pool — jamais redéfini par projet) ; aucun secret/identifiant.
+
+#### Exigence transverse : mode de permission d'exécution des workers
+
+Constat factuel actuel : Claude Code et Codex tournent aujourd'hui sans
+surveillance sur la machine du mainteneur parce que leur configuration
+CLI/environnement locale est déjà permissive ("YOLO"/bypass), en dehors
+d'AI Dev Orchestrator. Un contributeur clonant le dépôt peut donc
+rencontrer des invites interactives ou des exécutions bloquées. AIDO ne
+porte aujourd'hui aucune politique de permission explicite par projet —
+voir aussi `CONTRIBUTING.md`, « Real worker execution and permissions ».
+
+Contrat conceptuel cible (noms de champs non figés) :
+
+```
+execution permissions:
+  STANDARD       # comportement de permission/sandbox/approbation normal du provider
+  UNRESTRICTED   # exécution non surveillée explicite ("YOLO"/bypass) là où le provider le supporte
+```
+
+Invariants requis pour l'implémentation de P1/P12 :
+
+- `UNRESTRICTED` est un opt-in explicite — jamais un défaut silencieux.
+- AIDO ne doit jamais inférer `UNRESTRICTED` simplement parce que la
+  machine du développeur est déjà configurée ainsi globalement.
+- Le mode effectif doit être observable/auditable pour une exécution
+  donnée.
+- Aucun identifiant/secret n'est jamais stocké dans la configuration de
+  projet — l'authentification provider reste possédée par le CLI/
+  l'environnement du provider ; la configuration de projet exprime une
+  politique, jamais un secret.
+- `MVPManager` ne doit contenir aucun branchement de permission
+  spécifique à un provider.
+- `WorkerSelector` ne doit rien connaître des flags de permission CLI.
+- La traduction vers le comportement réel du backend/CLI se fait à la
+  frontière execution/backend — jamais plus haut dans la pile.
+- Réutiliser les mécanismes Ralph/CLI natifs existants avant d'ajouter
+  une machinerie spécifique à un provider.
+- Une combinaison non supportée doit échouer clairement, jamais se
+  dégrader silencieusement.
+
+Les flags CLI exacts (Claude/Codex/Vibe) ne sont volontairement pas figés
+ici — ils doivent être vérifiés contre les CLI réellement installées au
+moment du spike d'implémentation.
+
+### Ordre approuvé
+
+1. P1 + P12 (ce cycle).
+2. P4 — étude build-vs-reuse Mammouth AI, sous REUSE FIRST : étudier
+   d'abord, déterminer ce qui est réellement réutilisable, puis décider
+   si une intégration provider/worker est justifiée par la preuve.
+   L'approbation de P4 n'est PAS une approbation d'intégrer Mammouth AI —
+   seulement d'en faire l'étude.
+3. Intégrations provider/worker supplémentaires sous P3, justifiées par
+   l'étude P4 et/ou d'autres preuves — pas avant l'étape 2.
+
+### Table des propositions
 
 | ID | Proposition | Valeur / question à trancher | Statut |
 |----|-------------|------------------------------|--------|
-| P1 | CLI / productisation | Le projet doit-il exposer une CLI publique pour qu'un utilisateur n'ait plus besoin d'un harnais Python ? | À VOTER |
+| P1 | CLI / productisation | Le projet doit-il exposer une CLI publique pour qu'un utilisateur n'ait plus besoin d'un harnais Python ? | **APPROUVÉ — PROCHAIN CYCLE** |
 | P2 | Ollama / provider local | Un provider gratuit/local est-il assez utile pour justifier un adaptateur ? | À VOTER |
-| P3 | Providers supplémentaires à coût marginal nul | Quels autres providers gratuits/par abonnement devraient rejoindre le pool ? | À VOTER |
-| P4 | Étude build-vs-reuse Mammouth AI | Offre-t-il des capacités multi-provider utiles à réutiliser plutôt qu'à construire ? | À VOTER |
+| P3 | Providers supplémentaires à coût marginal nul | Quels autres providers gratuits/par abonnement devraient rejoindre le pool ? | **APPROUVÉ — APRÈS P1/P12** |
+| P4 | Étude build-vs-reuse Mammouth AI | Offre-t-il des capacités multi-provider utiles à réutiliser plutôt qu'à construire ? | **APPROUVÉ — PREMIÈRE ÉTUDE APRÈS P1/P12** |
 | P5 | Projets de validation externes progressifs | Continuer à valider sur des projets réels plus complexes ? | À VOTER |
 | P6 | Workflow GitHub distant complet | Étendre la gouvernance Git locale actuelle à un vrai push/PR/statut CI distant ? | À VOTER |
 | P7 | Orchestration multi-projets | Une instance d'orchestrateur gérant plusieurs projets isolés ? | À VOTER |
@@ -364,8 +451,12 @@ n'a pas été explicitement votée par l'utilisateur.
 | P9 | QA avancée/externe | Candidats historiquement étudiés : BrowserStack, Momentic, TestSprite, Diffblue — adopter seulement quand un vrai projet/stack établit le besoin ? | À VOTER |
 | P10 | Isolation d'exécution QA en lecture seule | Worktree/copie isolée vs. solution amont Ralph pour les commits de housekeeping ? | À VOTER |
 | P11 | Productiser le cycle optionnel release/planning | `PlanningCoordinator` → `ApprovalCoordinator` → `RoadmapApplicationService` existent déjà (§10) — en faire un flux produit supporté de bout en bout ? | À VOTER |
-| P12 | Format de configuration de projet public | Aucun format déclaratif stable n'existe actuellement pour onboarder un projet (harnais Python custom) — faut-il en supporter un ? | À VOTER |
+| P12 | Format de configuration de projet public | Aucun format déclaratif stable n'existe actuellement pour onboarder un projet (harnais Python custom) — faut-il en supporter un ? | **APPROUVÉ — PROCHAIN CYCLE** |
 
-Rien ci-dessus n'est planifié. La prochaine étape, si l'utilisateur le
+Les propositions encore `À VOTER` restent non planifiées ; aucun ordre entre
+elles n'est impliqué. La prochaine étape pour celles-ci, si l'utilisateur le
 décide, est un vote explicite proposition par proposition — pas une
-sélection automatique par cette session ni une future session.
+sélection automatique par cette session ni une future session. Pour P1/P12/
+P3/P4, la prochaine étape est un cycle d'implémentation — qui reste hors
+du périmètre de cette modification de documentation (aucun WorkItem créé
+ici).
