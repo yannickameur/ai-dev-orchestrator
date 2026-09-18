@@ -156,33 +156,49 @@ Tests offline (aucun appel provider réel, aucun quota consommé) :
 pytest
 ```
 
-**Honnêteté produit** : il n'existe pas encore de commande CLI unique
-pour lancer un projet gouverné (P1, prochain WorkItem approuvé) — il faut
-aujourd'hui écrire un petit harnais Python qui construit les stores réels
-(`ProjectStateStore`, `WaitStore`, `ExecutionStore`, `GitWorkItemStore`,
-...), déclare le `Project`/`MVP`/`WorkItems`, puis appelle
-`MVPManager.run_next_work_item(...)` en boucle. `scripts/run_external_project_pilot.py`
-en est un exemple réel et fonctionnel (jamais lancé via `pytest` — voir
-son propre docstring). Le format de configuration public
-(`aido.yaml`, P12) est maintenant implémenté — voir
-[`docs/PROJECT_CONFIG.md`](docs/PROJECT_CONFIG.md) et
-[`examples/aido.yaml`](examples/aido.yaml) — mais rien ne le consomme
-encore automatiquement tant que P1 n'existe pas ; `config/workers.yaml`
-reste la seule source de vérité du pool de workers, jamais dupliquée par
-projet.
+### Utiliser la CLI `aido` (P1)
+
+Une fois le package installé (ci-dessus), la commande `aido` est
+disponible. Elle consomme le format de configuration public `aido.yaml`
+(P12 — voir [`docs/PROJECT_CONFIG.md`](docs/PROJECT_CONFIG.md)) et
+remplace le besoin d'un harnais Python pour l'usage normal.
+
+```bash
+# Depuis la racine du projet cible (un dépôt Git existant) :
+aido init --workers-registry /chemin/vers/config/workers.yaml
+# -> édite le aido.yaml généré : objectif du MVP, WorkItems, critères
+#    d'acceptation — AIDO ne les invente jamais à votre place.
+
+aido validate          # charge/valide aido.yaml, imprime les faits, aucun effet de bord
+aido run                # bootstrap idempotent + fait avancer WorkItem Flow
+aido status             # lit l'état persistant — aucun appel provider
+```
+
+`aido run` est à la fois le démarrage **et** la reprise : le relancer
+plus tard, contre le même `aido.yaml`, rouvre le même état persistant
+(`project.state_dir`) et reprend via les mécanismes `WAITING`/
+`RECOVERY_REQUIRED` existants — il n'existe pas de commande `aido resume`
+séparée.
+
+`scripts/run_external_project_pilot.py` reste un exemple réel antérieur à
+P1 (jamais lancé via `pytest` — voir son propre docstring), gardé comme
+preuve d'implémentation, pas comme surface produit.
 
 **Permissions d'exécution réelle** : les tests offline ci-dessus ne
 nécessitent aucun accès provider. Une exécution réelle de worker exige en
 revanche des CLI providers déjà authentifiées et capables d'une exécution
 non interactive. Le mode de permission d'exécution des workers
-(`standard`/`unrestricted`) est désormais un contrat explicite et
-project-controlled — `aido.yaml`'s `execution.permission_mode`, traduit en
-flags CLI réels et vérifiés à la frontière d'exécution
-(`RalphExecutionEngine`) — plutôt que dépendre implicitement de la
-configuration locale de chaque CLI comme avant P12 ; voir
+(`standard`/`unrestricted`) est un contrat explicite et project-controlled
+— `aido.yaml`'s `execution.permission_mode`, traduit en flags CLI réels et
+vérifiés à la frontière d'exécution (`RalphExecutionEngine`) — plutôt que
+de dépendre implicitement de la configuration locale de chaque CLI. Pour
+`unrestricted`, `aido run` imprime un avertissement visible avant toute
+exécution réelle, sans jamais demander de confirmation interactive
+(l'exécution non surveillée est un besoin produit). Voir
 [`docs/PROJECT_CONFIG.md`](docs/PROJECT_CONFIG.md) pour le contrat complet
 et `CONTRIBUTING.md`, « Real worker execution and permissions », pour la
-mise en garde de sécurité et ce que P1 doit encore câbler.
+mise en garde de sécurité — vous avez toujours besoin des CLI providers
+installées et authentifiées vous-même, AIDO ne les gère jamais.
 
 Pour un cas réel complet, narré et honnête (y compris une régression
 découverte et corrigée), voir l'exemple ci-dessous.

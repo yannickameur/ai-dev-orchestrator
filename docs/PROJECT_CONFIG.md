@@ -8,10 +8,19 @@ wired through a custom Python harness; (B) worker execution permission
 mode depended entirely on machine-local CLI configuration rather than an
 explicit, project-declared policy.
 
-**Not the CLI.** This document describes the configuration format and its
-loader (`ProjectConfig.load(path)`), a typed, reusable API. It does not
-add an end-user command — that is P1 (the next approved WorkItem), which
-will consume this format rather than inventing its own.
+This document describes the configuration format and its loader
+(`ProjectConfig.load(path)`), a typed, reusable API. The public `aido`
+CLI (P1, `src/orchestrator/cli.py`) is the real consumer:
+
+- `aido init` writes a starting `aido.yaml`.
+- `aido validate` loads/validates one and prints its facts — no side effects.
+- `aido run` loads it, composes the real runtime
+  (`orchestrator.project_runtime.ProjectRuntime`), bootstraps
+  Project/MVP/WorkItems idempotently, and drives WorkItem Flow.
+- `aido status` loads it and reads the persisted state it points at —
+  no provider calls, no mutation.
+
+See the main [`README.md`](../README.md) for CLI usage examples.
 
 ## Schema v1
 

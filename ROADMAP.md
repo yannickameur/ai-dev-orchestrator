@@ -41,13 +41,14 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - **v0.1.1** — **PUBLIÉE**, première release publique open source.
 - **MVP 0.1** : `DONE` (contrat d'acceptation : `MVP_SPEC.yaml` v4).
 - **Phase 1** : `DONE`.
-- Suite de tests offline : **1048 PASS** (983 avant + 65 pour P12 — voir
+- Suite de tests offline : **1097 PASS** (1048 avant + 49 pour P1 — voir
   §11 et docs/status.md pour le détail).
 - **P12 (format de configuration de projet public + mode de permission
-  d'exécution des workers) : `DONE`** — fondation implémentée, voir §10 et
-  `docs/PROJECT_CONFIG.md`. **P1 (CLI publique) : `APPROUVÉ` — prochain
-  WorkItem**, pas encore démarré. Aucun développement actif en cours en
-  dehors de ce cycle — voir §13, « Cycle produit approuvé ».
+  d'exécution des workers) : `DONE`** — voir §10 et `docs/PROJECT_CONFIG.md`.
+  **P1 (CLI publique `aido`) : `DONE`** — `aido init/validate/run/status`,
+  voir §10. Cycle productisation/onboarding terminé. Aucun développement
+  actif en cours — voir §13, « Cycle produit approuvé », pour la suite
+  proposée (P4 étude, puis P3).
 
 ## 3. Ce qui existe aujourd'hui
 
@@ -82,9 +83,11 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   workers, mode de permission d'exécution project-controlled, politique
   Git, MVP/WorkItems, commandes QA déterministes. `ExecutionPermissionMode`
   (`standard`/`unrestricted`), traduit en flags CLI réels et vérifiés
-  exclusivement à la frontière `RalphExecutionEngine` (voir §10 et
-  `docs/PROJECT_CONFIG.md`) — Vibe n'est plus jamais unconditionnellement
-  `--auto-approve`.
+  exclusivement à la frontière `RalphExecutionEngine` (`docs/PROJECT_CONFIG.md`)
+  — Vibe n'est plus jamais unconditionnellement `--auto-approve`.
+- CLI publique `aido` (P1) — `aido init/validate/run/status`, plus besoin
+  de harnais Python pour l'usage normal. `run` est aussi la reprise (pas
+  de commande `resume` séparée). Voir §10 pour le détail complet.
 
 Seules les capacités qui existent réellement dans le dépôt au commit
 `47ab4da` (et après) sont listées ici.
@@ -320,19 +323,37 @@ explicitement par un appelant :
 - `ProjectConfig.load(...)` (`src/orchestrator/project_config.py`, P12)
   — charge/valide un `aido.yaml` public en un objet typé complet (projet,
   référence registre de workers, `ExecutionConfig`, `GitConfig`, MVP,
-  WorkItems, commandes QA). Rien ne l'appelle encore automatiquement —
-  aucun `[project.scripts]`/CLI n'existe (c'est le rôle de P1, prochain
-  WorkItem) ; un appelant qui veut réellement l'utiliser aujourd'hui doit
-  construire lui-même les stores/`MVPManager`/`RalphExecutionEngine`
-  à partir des valeurs qu'il retourne, exactement comme
-  `scripts/run_external_project_pilot.py` le fait déjà à la main.
+  WorkItems, commandes QA). Consommé réellement par la CLI `aido` (P1,
+  ci-dessous) ; `scripts/run_external_project_pilot.py` reste un exemple
+  antérieur à P1, jamais migré vers `ProjectConfig`.
 - `ExecutionPermissionMode` (`src/orchestrator/execution_policy.py`, P12)
   — `standard`/`unrestricted`, consommé par `RalphExecutionEngine` en
   paramètre de construction optionnel (`permission_mode=...`) ; omis, il
   n'ajoute aucun flag (comportement identique à avant P12) — un appelant
   doit le passer explicitement pour bénéficier de la politique
-  project-controlled. Traduction vérifiée par backend dans
+  project-controlled. `aido run` le passe toujours explicitement. Traduction vérifiée par backend dans
   `docs/PROJECT_CONFIG.md`.
+- `ProjectRuntime` (`src/orchestrator/project_runtime.py`, P1) — couche
+  de composition (jamais un second orchestrateur) : `ProjectConfig` ->
+  stores réels (`ProjectStateStore`/`HandoffStore`/`ExecutionStore`/
+  `WaitStore`/`ValidationStore`/`QARunStore`/`GitWorkItemStore`) ->
+  `WorkerSelector`/`QuotaManager`/`RalphExecutionEngine`/
+  `GitGovernanceService`/`InternalQAEngine` réels -> `MVPManager` réel.
+  Centralise le câblage auparavant manuel de
+  `scripts/run_external_project_pilot.py`. `ProjectRuntime.bootstrap()`
+  est l'initialisation `aido.yaml` -> `ProjectStateStore` idempotente ;
+  un conflit matériel entre l'état persisté et la config actuelle échoue
+  fermé (`ConfigRuntimeConflictError`), jamais une mutation silencieuse
+  d'un WorkItem/MVP/Project historique.
+- **CLI publique `aido`** (`src/orchestrator/cli.py`, P1, point d'entrée
+  `[project.scripts]`) — `aido init/validate/run/status`. C'est
+  maintenant le point d'entrée produit normal (plus besoin de harnais
+  Python) ; seul `aido run` provoque un appel provider réel ou une
+  exécution Ralph — `init`/`validate`/`status` en sont exclus par
+  construction. `aido run` est aussi l'opération de reprise : aucune
+  commande `aido resume` séparée n'existe — relancer `aido run` contre le
+  même `aido.yaml` rouvre le même `state_dir` persistant et reprend via
+  les mécanismes `WAITING`/`RECOVERY_REQUIRED` existants.
 
 ## 11. Validations réelles
 
@@ -372,6 +393,8 @@ Jalons majeurs seulement — pas de journal Slice par Slice :
 - Cycle productisation/onboarding approuvé (P1 + P12) ; P12 — format de
   configuration public `aido.yaml` + mode de permission d'exécution des
   workers project-controlled — implémenté (2026-09-19).
+- P1 — CLI publique `aido` (`init`/`validate`/`run`/`status`) —
+  implémenté, cycle productisation/onboarding `DONE` (2026-09-19).
 
 Chronologie détaillée : historique Git (`git log`) et docs techniques
 (`docs/status.md`, `docs/QA_GOVERNANCE.md`, `docs/GIT_GOVERNANCE.md`,
@@ -388,15 +411,16 @@ explicitement approuvées (2026-09-18), documentées ci-dessous. Cette
 approbation ne crée encore aucun WorkItem d'implémentation — c'est un
 changement de statut roadmap, pas un déclenchement d'exécution.
 
-### Cycle produit approuvé (prochain)
+### Cycle produit approuvé — `DONE`
 
-**APPROVED CYCLE : Productisation / onboarding — P1 + P12.**
+**Productisation / onboarding — P1 + P12 : `DONE`.**
 
-Résultat visé : un nouvel utilisateur doit pouvoir configurer et lancer un
-projet gouverné sans écrire de harnais Python sur mesure.
+Résultat visé, atteint : un nouvel utilisateur peut configurer et lancer
+un projet gouverné sans écrire de harnais Python sur mesure
+(`aido init` → `aido validate` → `aido run` → `aido status`).
 
-**Exigence transverse d'acceptation pour ce cycle** : le mode de permission
-d'exécution des workers doit être explicite et contrôlé par le projet,
+**Exigence transverse d'acceptation de ce cycle** : le mode de permission
+d'exécution des workers devait être explicite et contrôlé par le projet,
 jamais hérité silencieusement de la configuration de la machine du
 mainteneur — **implémenté**, voir ci-dessous.
 
@@ -409,15 +433,18 @@ mainteneur — **implémenté**, voir ci-dessous.
   (`ValidationCommand` réutilisé, jamais dupliqué) ; aucun secret/
   identifiant. Voir §3, §10 et `docs/PROJECT_CONFIG.md` pour le détail
   complet. Exemple public tracké : `examples/aido.yaml`.
-- **P1 — CLI / productisation : `APPROUVÉ` — prochain WorkItem, pas
-  démarré.** KISS/YAGNI : la plus petite CLI qui consomme
-  `ProjectConfig` (P12) pour supprimer le besoin actuel de harnais
-  Python, couvrant conceptuellement au minimum — initialiser/configurer
-  un projet, valider sa configuration, lancer/poursuivre l'orchestrateur,
-  inspecter son statut. Noms de commandes et périmètre exact non figés
-  ici ; à concevoir pendant le cycle d'implémentation. Ce PR n'ajoute
-  aucun `[project.scripts]`/point d'entrée — c'est explicitement le
-  travail de P1.
+- **P1 — CLI publique `aido` : `DONE`.** KISS/YAGNI : exactement 4
+  commandes (`init`/`validate`/`run`/`status`), aucune commande `resume`
+  séparée — `aido run` reprend l'état persisté existant. Consomme
+  `ProjectConfig`/`ExecutionPermissionMode` (P12) via une nouvelle couche
+  de composition, `orchestrator.project_runtime.ProjectRuntime` (§10),
+  jamais un second orchestrateur. Point d'entrée réel
+  (`[project.scripts]`, `aido = "orchestrator.cli:main"`). Validé de bout
+  en bout, entièrement hors ligne (adaptateurs providers et subprocess
+  Ralph faux, jamais de vrai Claude/Codex/Vibe/Ralph), y compris un
+  scénario complet DEV A → DEV B → QA déterministe → merge gouverné →
+  `COMPLETED`, une reprise multi-process après `WAITING`, et la preuve
+  qu'aucun appel provider ne se produit pour `init`/`validate`/`status`.
 
 #### Mode de permission d'exécution des workers — implémenté
 
@@ -469,12 +496,12 @@ Invariants respectés par l'implémentation (`RalphExecutionEngine`,
 
 ### Ordre approuvé
 
-1. P12 (`DONE`) puis P1 (prochain WorkItem, pas démarré) — ce cycle.
-2. P4 — étude build-vs-reuse Mammouth AI, sous REUSE FIRST : étudier
-   d'abord, déterminer ce qui est réellement réutilisable, puis décider
-   si une intégration provider/worker est justifiée par la preuve.
-   L'approbation de P4 n'est PAS une approbation d'intégrer Mammouth AI —
-   seulement d'en faire l'étude.
+1. P12 (`DONE`) puis P1 (`DONE`) — ce cycle, terminé.
+2. P4 — **prochaine étude**, sous REUSE FIRST : étudier d'abord Mammouth
+   AI, déterminer ce qui est réellement réutilisable, puis décider si une
+   intégration provider/worker est justifiée par la preuve. L'approbation
+   de P4 n'est PAS une approbation d'intégrer Mammouth AI — seulement
+   d'en faire l'étude. Pas encore démarrée.
 3. Intégrations provider/worker supplémentaires sous P3, justifiées par
    l'étude P4 et/ou d'autres preuves — pas avant l'étape 2.
 
@@ -482,10 +509,10 @@ Invariants respectés par l'implémentation (`RalphExecutionEngine`,
 
 | ID | Proposition | Valeur / question à trancher | Statut |
 |----|-------------|------------------------------|--------|
-| P1 | CLI / productisation | Le projet doit-il exposer une CLI publique pour qu'un utilisateur n'ait plus besoin d'un harnais Python ? | **APPROUVÉ — PROCHAIN WORKITEM** |
+| P1 | CLI / productisation | Le projet doit-il exposer une CLI publique pour qu'un utilisateur n'ait plus besoin d'un harnais Python ? | **`DONE` — voir §3/§10, `README.md`** |
 | P2 | Ollama / provider local | Un provider gratuit/local est-il assez utile pour justifier un adaptateur ? | À VOTER |
-| P3 | Providers supplémentaires à coût marginal nul | Quels autres providers gratuits/par abonnement devraient rejoindre le pool ? | **APPROUVÉ — APRÈS P1/P12** |
-| P4 | Étude build-vs-reuse Mammouth AI | Offre-t-il des capacités multi-provider utiles à réutiliser plutôt qu'à construire ? | **APPROUVÉ — PREMIÈRE ÉTUDE APRÈS P1/P12** |
+| P3 | Providers supplémentaires à coût marginal nul | Quels autres providers gratuits/par abonnement devraient rejoindre le pool ? | **APPROUVÉ — APRÈS P4** |
+| P4 | Étude build-vs-reuse Mammouth AI | Offre-t-il des capacités multi-provider utiles à réutiliser plutôt qu'à construire ? | **APPROUVÉ — PROCHAINE ÉTUDE** |
 | P5 | Projets de validation externes progressifs | Continuer à valider sur des projets réels plus complexes ? | À VOTER |
 | P6 | Workflow GitHub distant complet | Étendre la gouvernance Git locale actuelle à un vrai push/PR/statut CI distant ? | À VOTER |
 | P7 | Orchestration multi-projets | Une instance d'orchestrateur gérant plusieurs projets isolés ? | À VOTER |
@@ -498,8 +525,7 @@ Invariants respectés par l'implémentation (`RalphExecutionEngine`,
 Les propositions encore `À VOTER` restent non planifiées ; aucun ordre entre
 elles n'est impliqué. La prochaine étape pour celles-ci, si l'utilisateur le
 décide, est un vote explicite proposition par proposition — pas une
-sélection automatique par cette session ni une future session. P12 est
-`DONE`. Pour P1, la prochaine étape est son propre cycle d'implémentation
-(consommer `ProjectConfig`, ajouter la CLI). Pour P3/P4, la prochaine
-étape reste l'étude P4, après P1 — aucune de ces étapes n'est démarrée par
-ce changement de documentation.
+sélection automatique par cette session ni une future session. P12 et P1
+sont `DONE`. Pour P4, la prochaine étape est l'étude elle-même — pas
+encore démarrée par ce changement de documentation. Pour P3, la prochaine
+étape reste après P4.

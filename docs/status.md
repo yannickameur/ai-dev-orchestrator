@@ -18,7 +18,7 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   workers, 3 providers — `alice`/`bob` (anthropic/claude_code),
   `victor`/`oscar` (openai/codex), `milo`/`juno` (mistral/vibe,
   `development` uniquement).
-- **Tests offline** : 1048 PASS (983 avant + 65 pour P12 — snapshot
+- **Tests offline** : 1097 PASS (1048 avant + 49 pour P1 — snapshot
   courant, voir §11 de `ROADMAP.md` pour la méthode de comptage ; ce
   nombre n'est pas un invariant permanent).
 - **Roman Numerals** (pilote externe) : `PASS`.
@@ -28,13 +28,15 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
 - **P12** (format de configuration de projet public `aido.yaml` + mode de
   permission d'exécution des workers project-controlled) : `DONE` — voir
   `docs/PROJECT_CONFIG.md`.
+- **P1** (CLI publique `aido init/validate/run/status`) : `DONE` — plus
+  besoin de harnais Python pour l'usage normal ; `aido run` est aussi la
+  reprise. Cycle productisation/onboarding terminé.
 - **Développement actif** : aucun.
-- **Prochain WorkItem approuvé** : P1 — CLI publique, consommant
-  `ProjectConfig` (P12). P3 (providers/workers supplémentaires) et P4
-  (étude build-vs-reuse Mammouth AI, en premier, sous REUSE FIRST) restent
-  approuvés pour après P1. Aucun WorkItem d'implémentation de P1 créé à
-  ce jour — voir `ROADMAP.md` §13, « Cycle produit approuvé » / « Ordre
-  approuvé ». Toutes les autres propositions restent `À VOTER`.
+- **Prochaine étape approuvée** : P4 — étude build-vs-reuse Mammouth AI
+  (première étape, sous REUSE FIRST ; pas encore une approbation
+  d'intégration). P3 (providers/workers supplémentaires) reste approuvé
+  pour après P4. Aucun WorkItem d'implémentation de P4 créé à ce jour —
+  voir `ROADMAP.md` §13. Toutes les autres propositions restent `À VOTER`.
 
 ## Historique synthétique
 
@@ -74,7 +76,15 @@ Chronologie détaillée entièrement récupérable via `git log` et
   frontière `RalphExecutionEngine` ; Vibe n'est plus jamais
   unconditionnellement `--auto-approve`) ; audit d'exécution persistant
   avec migration SQLite rétrocompatible (2026-09-19) — voir
-  `docs/PROJECT_CONFIG.md`. P1 (CLI) reste le prochain WorkItem, pas
-  démarré.
+  `docs/PROJECT_CONFIG.md`.
+- P1 implémenté : CLI publique `aido` (`init`/`validate`/`run`/`status`),
+  nouvelle couche de composition `orchestrator.project_runtime.ProjectRuntime`
+  (`ProjectConfig` -> stores/services réels -> `MVPManager` réel, jamais
+  un second orchestrateur), point d'entrée `[project.scripts]`. Validé
+  entièrement hors ligne, y compris un WorkItem Flow complet (DEV A →
+  DEV B → QA déterministe → merge gouverné → `COMPLETED`) et une reprise
+  multi-process après `WAITING`, via des adaptateurs providers et un
+  subprocess Ralph faux — jamais de vrai Claude/Codex/Vibe/Ralph
+  (2026-09-19). Cycle productisation/onboarding (P1 + P12) `DONE`.
 
 Ce fichier reste court et factuel — pas de duplication de `ROADMAP.md`.

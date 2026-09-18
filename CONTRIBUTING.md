@@ -86,42 +86,48 @@ contribution workflow, described above.
 
 The offline test suite (`pytest`, what CI runs) needs no provider access
 or permission configuration at all — it never touches a real Claude/
-Codex/Vibe CLI.
+Codex/Vibe/Ralph subprocess. `tests/test_cli.py`/`tests/test_project_runtime.py`
+exercise the full public `aido` composition path (including a real,
+scripted 2-execution WorkItem Flow through `aido run`) entirely offline,
+with fake provider adapters and a fake Ralph subprocess runner injected
+via `ProjectRuntime.open(..., provider_adapters=..., subprocess_runner=...)`
+— the smallest test seams that layer offers, never used by real `aido`
+invocations.
 
-Running a *real* worker (e.g. via `scripts/run_external_project_pilot.py`
+Running `aido run` for real (or `scripts/run_external_project_pilot.py`,
 or your own harness) is different, and there are real, current
-limitations you should know about before trying it:
+limitations/costs you should know about before trying it:
 
 - The provider CLI you use (Claude Code, Codex, Mistral Vibe) must
   already be installed and authenticated on your machine — AIDO never
   manages provider credentials.
-- **P12 landed**: a project can now declare an explicit, project-controlled
-  worker execution permission mode — `execution.permission_mode:
-  standard|unrestricted` in `aido.yaml` (`orchestrator.execution_policy.ExecutionPermissionMode`,
-  `orchestrator.project_config`) — translated into real, verified CLI
-  arguments exclusively at the execution/backend boundary
-  (`orchestrator.ralph_execution_engine`). See
+- A real `aido run` **consumes real provider quota** — it is the only
+  `aido` command that ever causes a real provider probe or worker
+  execution (`init`/`validate`/`status` never do, and this is tested).
+  Do not run it against a real project inside CI or as part of routine
+  contribution testing.
+- **P12 + P1 are both implemented**: a project declares an explicit,
+  project-controlled worker execution permission mode —
+  `execution.permission_mode: standard|unrestricted` in `aido.yaml`
+  (`orchestrator.execution_policy.ExecutionPermissionMode`,
+  `orchestrator.project_config`) — and `aido run`
+  (`orchestrator.project_runtime.ProjectRuntime`) always constructs
+  `RalphExecutionEngine` with that mode explicitly; translation into
+  real, verified CLI arguments happens exclusively at the execution/
+  backend boundary (`orchestrator.ralph_execution_engine`). See
   [`docs/PROJECT_CONFIG.md`](docs/PROJECT_CONFIG.md) for the full
   contract and the verified per-backend flag mapping (Claude Code, Codex,
   Vibe). `unrestricted` is always explicit opt-in — never a silent
-  default, never inferred from the host machine's own configuration.
-- **P1 (the public CLI) has not landed yet.** Nothing today automatically
-  reads your `aido.yaml` and wires its `execution.permission_mode` into a
-  real orchestration run — a caller (a harness you write yourself, or a
-  future `scripts/`-level bridge) must still construct a
-  `RalphExecutionEngine(..., permission_mode=...)` explicitly. Until then,
-  an `ExecutionPermissionMode`-unconfigured engine (e.g. today's
-  `scripts/run_external_project_pilot.py`, not yet updated to read
-  `aido.yaml`) adds no permission-related arguments at all — behavior is
-  identical to before P12, i.e. it depends entirely on *your own* local
-  provider-CLI permission configuration. If the CLI is set up to ask for
-  interactive approvals, an unattended run can still block or fail
-  waiting on a prompt nothing will answer.
+  default, never inferred from the host machine's own configuration;
+  `aido run` prints a visible warning before executing anything when a
+  project requests it, without ever prompting for confirmation
+  (unattended execution is a product requirement).
 - On the maintainer's own development machine, Claude Code and Codex are
-  configured to run in a permissive/unattended ("YOLO"/bypass-permission)
-  mode. **Do not assume this is configured for you by AIDO** — it is
-  purely local, provider-CLI-level configuration, outside this project,
-  unless you explicitly opt a project into `unrestricted` via `aido.yaml`.
+  additionally configured to run in a permissive/unattended ("YOLO"/
+  bypass-permission) mode at the CLI-config level. **Do not assume this
+  is configured for you by AIDO** — it is purely local, provider-CLI-level
+  configuration, outside this project, unless you explicitly opt a
+  project into `unrestricted` via `aido.yaml`.
 - `unrestricted` mode is security-sensitive: depending on the provider,
   it can let a worker process run shell commands and touch the
   filesystem broadly, as your current OS user, without per-action
