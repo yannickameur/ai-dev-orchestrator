@@ -34,6 +34,7 @@ from orchestrator.ralph_execution_engine import (
     RalphLaunchError,
     ReservedEventTopicError,
     UnsupportedBackendError,
+    UnsupportedProfileOptionError,
     parse_ralph_events,
 )
 from orchestrator.worker_selector import Worker
@@ -56,6 +57,15 @@ def _victor(**overrides) -> Worker:
         worker_id="codex_dev_01", display_name="Victor", provider="openai",
         backend="codex", model="gpt-5.6-terra", reasoning_effort="high",
         capabilities=frozenset({"developer"}),
+    )
+    fields.update(overrides)
+    return Worker.with_single_profile(**fields)
+
+
+def _milo(**overrides) -> Worker:
+    fields = dict(
+        worker_id="mistral_dev_01", display_name="Milo", provider="mistral",
+        backend="vibe", model="vibe-default", capabilities=frozenset({"developer"}),
     )
     fields.update(overrides)
     return Worker.with_single_profile(**fields)
@@ -334,6 +344,148 @@ class TestWorkerSnapshotAndTranslation:
         asyncio.run(engine.execute(_request(tmp_path)))
 
         assert captured["cwd"] == tmp_path
+
+
+class TestVibeBackendMapping:
+    """Vibe (post-MVP 0.1, see docs/VIBE_SPIKE.md) is the first backend
+    that cannot use Ralph's hats mechanism at all (VERIFIED by the spike:
+    Ralph's hats reject any non-native backend type). These tests prove
+    the solo-mode path this engine falls back to for it, and that every
+    other (native) backend's existing path is completely untouched."""
+
+    def test_vibe_backend_omits_hats_flag_entirely(self, tmp_path: Path) -> None:
+        captured = {}
+
+        def _on_call(args, cwd, timeout):
+            captured["args"] = list(args)
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        asyncio.run(engine.execute(_request(tmp_path, worker=_milo())))
+
+        assert "-H" not in captured["args"]
+
+    def test_native_backend_still_receives_hats_flag(self, tmp_path: Path) -> None:
+        """Regression guard: the vibe/solo-mode branch must never affect
+        the existing native-backend (claude/codex) path."""
+        captured = {}
+
+        def _on_call(args, cwd, timeout):
+            captured["args"] = list(args)
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        asyncio.run(engine.execute(_request(tmp_path, worker=_alice())))
+
+        assert "-H" in captured["args"]
+
+    def test_vibe_config_uses_custom_backend_with_bridge_command(self, tmp_path: Path) -> None:
+        captured = {}
+
+        def _on_call(args, cwd, timeout):
+            config_path = Path(args[args.index("-c") + 1])
+            captured["config"] = config_path.read_text()
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        asyncio.run(engine.execute(_request(tmp_path, worker=_milo())))
+
+        assert 'backend: "custom"' in captured["config"]
+        assert "vibe_ralph_bridge.py" in captured["config"]
+        assert '"--model", "vibe-default"' in captured["config"]
+
+    def test_vibe_prompt_and_cwd_still_delivered_like_every_other_backend(self, tmp_path: Path) -> None:
+        captured = {}
+
+        def _on_call(args, cwd, timeout):
+            captured["cwd"] = cwd
+            # Read now: the runtime dir (holding PROMPT.md) is removed as
+            # soon as the (simulated) subprocess call returns.
+            captured["prompt_text"] = Path(args[args.index("-P") + 1]).read_text()
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        asyncio.run(
+            engine.execute(_request(tmp_path, worker=_milo(), instructions="Do the vibe thing."))
+        )
+
+        assert captured["cwd"] == tmp_path
+        assert captured["prompt_text"] == "Do the vibe thing."
+
+    def test_vibe_result_is_normalized_through_the_same_execution_result(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")])
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        result = asyncio.run(engine.execute(_request(tmp_path, worker=_milo())))
+
+        assert result.record.worker_id == "mistral_dev_01"
+        assert result.record.provider == "mistral"
+        assert result.record.backend == "vibe"
+        assert result.record.model == "vibe-default"
+        assert result.record.status is ExecutionStatus.SUCCEEDED
+
+    def test_vibe_reasoning_effort_is_rejected_not_silently_dropped(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")])
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+        worker = _milo(reasoning_effort="high")
+
+        with pytest.raises(UnsupportedProfileOptionError):
+            asyncio.run(engine.execute(_request(tmp_path, worker=worker, execution_id="exec-vibe-re")))
+
+        assert store.get("exec-vibe-re").status is ExecutionStatus.FAILED
+
+    def test_vibe_timeout_is_handled_identically_to_native_backends(self, tmp_path: Path) -> None:
+        from orchestrator.ralph_execution_engine import RalphTimeoutError
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(raise_exc=RalphTimeoutError("timed out"))
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        result = asyncio.run(engine.execute(_request(tmp_path, worker=_milo(), execution_id="exec-vibe-to")))
+
+        assert result.record.status is ExecutionStatus.INTERRUPTED
+
+    def test_vibe_git_sha_is_captured_only_after_process_completion(self, tmp_path: Path) -> None:
+        """No special-casing for vibe: git facts are still only read
+        before-launch and after-the-whole-subprocess-returns, exactly like
+        every other backend (mirrors TestGitShaCapture, worker=_milo())."""
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+        (tmp_path / "seed.txt").write_text("seed\n")
+        subprocess.run(["git", "add", "seed.txt"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=tmp_path, check=True)
+        sha_before_expected = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+        def _on_call(args, cwd, timeout):
+            (Path(cwd) / "work.txt").write_text("done\n")
+            subprocess.run(["git", "add", "work.txt"], cwd=cwd, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "vibe work"], cwd=cwd, check=True)
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        result = asyncio.run(engine.execute(_request(tmp_path, worker=_milo())))
+        sha_after_expected = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+        assert result.record.git_sha_before == sha_before_expected
+        assert result.record.git_sha_after == sha_after_expected
+        assert result.record.git_sha_before != result.record.git_sha_after
 
 
 class TestBusinessVerdict:

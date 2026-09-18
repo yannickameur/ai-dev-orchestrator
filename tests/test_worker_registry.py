@@ -376,22 +376,26 @@ class TestNoSecretsInConfig:
 class TestShippedExampleConfig:
     def test_config_workers_yaml_loads(self) -> None:
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
-        assert {w.worker_id for w in registry.all_workers()} == {"alice", "bob", "victor", "oscar"}
+        assert {w.worker_id for w in registry.all_workers()} == {
+            "alice", "bob", "victor", "oscar", "milo", "juno",
+        }
 
     def test_config_workers_yaml_workers_are_enabled(self) -> None:
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
-        assert len(registry.enabled_workers()) == 4
+        assert len(registry.enabled_workers()) == 6
 
     def test_config_workers_yaml_worker_pool_is_at_least_two_per_provider(self) -> None:
         """Worker pool fallback (2026-09-17): >= 2 independent workers per
         participating provider, so DEV B selection never has to wait for
         the *other* provider to reset when the author's own provider is
-        still available — see ROADMAP.md, "Worker pool"."""
+        still available — see ROADMAP.md, "Worker pool". Mistral (milo/
+        juno, added post-MVP 0.1, see docs/VIBE_SPIKE.md) follows the same
+        rule."""
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
         by_provider: dict[str, list] = {}
         for worker in registry.enabled_workers():
             by_provider.setdefault(worker.provider, []).append(worker)
-        assert set(by_provider) == {"anthropic", "openai"}
+        assert set(by_provider) == {"anthropic", "openai", "mistral"}
         for provider, workers in by_provider.items():
             assert len(workers) >= 2, f"provider {provider!r} has fewer than 2 enabled workers"
 
@@ -468,7 +472,15 @@ class TestShippedExampleConfigReviewCapability:
         from orchestrator.mvp_manager import REVIEW_CAPABILITY
 
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
+        # Mistral (milo/juno, post-MVP 0.1, see docs/VIBE_SPIKE.md) is
+        # deliberately development-only — no execution evidence supports
+        # granting it code_review, by design, not the naming-mismatch bug
+        # this test guards against. Anthropic/OpenAI remain full-capability.
+        development_only_worker_ids = {"milo", "juno"}
         for worker in registry.all_workers():
+            if worker.worker_id in development_only_worker_ids:
+                assert REVIEW_CAPABILITY not in worker.capabilities
+                continue
             assert REVIEW_CAPABILITY in worker.capabilities, (
                 f"{worker.worker_id!r} does not declare {REVIEW_CAPABILITY!r} — "
                 "review selection would find zero eligible workers for it"
