@@ -51,7 +51,7 @@ Design invariants:
   worktree (once used to run an independent-review execution outside the
   governed target workspace) existed here historically, under the
   now-removed ``GOVERNED_FULL`` pipeline — see ROADMAP.md's dated removal
-  entry; LEAN_FEATURE_FLOW's DEV B corrective review runs directly in the
+  entry; WorkItem Flow's DEV B corrective review runs directly in the
   governed workspace, like DEV A.
 """
 

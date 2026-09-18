@@ -297,7 +297,7 @@ README table, a future session would need, at minimum:
 3. Explicit confirmation (real execution) of whether/how a Vibe worker
    commits, with `GitGovernanceService`'s SHA-capture verified against it.
 4. `config/workers.yaml` updated with two real Mistral worker identities.
-5. A real Lean Feature Flow acceptance pilot (same shape as the Roman
+5. A real WorkItem Flow acceptance pilot (same shape as the Roman
    Numerals/Morpion pilots) with at least one WorkItem actually routed to
    a Mistral worker (ideally as a same-provider DEV A/DEV B pair, proving
    the "two identities" design for real).

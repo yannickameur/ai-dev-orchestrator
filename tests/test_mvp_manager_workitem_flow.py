@@ -1,4 +1,4 @@
-"""Tests for LEAN_FEATURE_FLOW — the only WorkItem execution pipeline
+"""Tests for WorkItem Flow — the only WorkItem execution pipeline
 MVPManager implements: DEV A -> DEV B corrective review -> a single,
 deterministic QA phase -> merge -> tag. No complexity estimation, no
 isolated QA Test Authoring/promotion, no separate read-only Review, no
@@ -217,8 +217,8 @@ def _dirty_untracked_action(filename: str, content: str):
     return _do
 
 
-class LeanFakeEngine:
-    """Every real execution in LEAN_FEATURE_FLOW's nominal path has
+class WorkItemFlowFakeEngine:
+    """Every real execution in WorkItem Flow's nominal path has
     ``role == "developer"`` (DEV A, DEV B, and a post-QA-FAIL fix are all
     plain development executions, by design — see
     ``orchestrator.mvp_manager``'s own module docstring) — asserted here
@@ -236,7 +236,7 @@ class LeanFakeEngine:
 
     async def execute(self, request) -> ExecutionResult:
         self.requests.append(request)
-        assert request.role == "developer", f"LEAN_FEATURE_FLOW must never execute role={request.role!r}"
+        assert request.role == "developer", f"WorkItem Flow must never execute role={request.role!r}"
         sha_before = _run_git(request.workspace, "rev-parse", "HEAD").stdout.strip()
         if self._dev_call_count < len(self._dev_actions):
             action = self._dev_actions[self._dev_call_count]
@@ -292,11 +292,8 @@ def _manager(
 ) -> MVPManager:
     return MVPManager(
         project_store, handoff_store, selector, engine,
-        git_governance_service=git_governance_service, qa_engine=qa_engine, qa_policy=qa_policy or QAPolicy(required_invariant_ids=("lean-qa-check",)),
+        git_governance_service=git_governance_service, qa_engine=qa_engine, qa_policy=qa_policy or QAPolicy(required_invariant_ids=("workitem-qa-check",)),
         qa_run_store=qa_run_store, wait_store=wait_store,
-        # workflow_mode deliberately OMITTED in most tests here — proving
-        # LEAN_FEATURE_FLOW is genuinely the default, not something this
-        # test file has to opt into.
         clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
     )
 
@@ -310,7 +307,7 @@ def _new_stack(
     project_store.create_work_item(work_item_id="wi-1", mvp_id="mvp-1", title="A")
     git_service, git_store = _git_service(tmp_path, policy=git_policy)
     qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
-    engine = LeanFakeEngine(dev_actions=dev_actions)
+    engine = WorkItemFlowFakeEngine(dev_actions=dev_actions)
     selector = (
         _real_worker_selector(workers) if unavailable_provider is None
         else _real_worker_selector_with_unavailable(workers, unavailable_provider=unavailable_provider)
@@ -331,7 +328,7 @@ def _new_stack(
 # --- A/C/D/F/G/H/I/J/W: the nominal happy path ------------------------------
 
 
-class TestLeanNominalFlow:
+class TestWorkItemNominalFlow:
     def test_multiple_ready_candidates_pick_ascending_work_item_id_first(self, tmp_path: Path) -> None:
         """``run_next_work_item`` picks among READY/NEEDS_REWORK candidates
         by ascending ``work_item_id`` (module docstring) — asserted
@@ -355,7 +352,7 @@ class TestLeanNominalFlow:
 
         assert result.work_item.work_item_id == "wi-1"
 
-    def test_default_workflow_is_lean_and_completes_dev_a_dev_b_qa_merge_tag(self, tmp_path: Path) -> None:
+    def test_workitem_flow_completes_dev_a_dev_b_qa_merge_tag(self, tmp_path: Path) -> None:
         alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
         stack = _new_stack(
             tmp_path, workers=[alice, victor],
@@ -418,7 +415,7 @@ class TestLeanNominalFlow:
     def test_default_git_governance_policy_blocks_merge_despite_real_qa_pass(self, tmp_path: Path) -> None:
         """Regression test for a real defect found integrating Morpion Web
         3D's WI-11 (docs/reports/morpion-computer-turn-regression-2026-09-18.md
-        §28): a caller that wires a lean ``MVPManager`` (no
+        §28): a caller that wires WorkItem Flow's ``MVPManager`` (no
         ``quality_gate_runner``, no ``review_store`` — DEV B's corrective
         review and the QA phase's own commands stand in for both) but
         constructs ``GitGovernanceService`` with a plain
@@ -447,7 +444,7 @@ class TestLeanNominalFlow:
         assert len(stack["qa_engine"].requests) == 1
 
         # But the merge never happened: eligibility failed closed on the
-        # unmet (and, in lean mode, unmeetable) gate/review requirements.
+        # unmet (and, under WorkItem Flow, unmeetable) gate/review requirements.
         record = stack["git_store"].get("wi-1")
         assert record.status is GitWorkItemStatus.IN_PROGRESS
         assert record.merged_sha is None
@@ -456,7 +453,7 @@ class TestLeanNominalFlow:
 # --- K/L/M/N: bounded QA fix-and-retry, then HUMAN_REVIEW_REQUIRED ----------
 
 
-class TestLeanQAFailBoundedRetry:
+class TestWorkItemQAFailBoundedRetry:
     def test_three_qa_fails_exhaust_attempts_then_human_review_required(self, tmp_path: Path) -> None:
         alice, victor, wendy = (
             _worker("alice"), _worker("victor", provider="openai", backend="codex"),
@@ -476,7 +473,7 @@ class TestLeanQAFailBoundedRetry:
                 _commit_action("feature.py", "x = 3\n", "fix attempt 2"),
             ],
             qa_script=[_fail_for, _fail_for, _fail_for],
-            qa_policy=QAPolicy(max_qa_cycles=3, required_invariant_ids=("lean-qa-check",)),
+            qa_policy=QAPolicy(max_qa_cycles=3, required_invariant_ids=("workitem-qa-check",)),
         )
         manager = stack["manager"]
 
@@ -524,7 +521,7 @@ class TestLeanQAFailBoundedRetry:
         project_store.create_work_item(work_item_id="wi-2", mvp_id="mvp-1", title="B")
         git_service, git_store = _git_service(tmp_path)
         qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
-        engine = LeanFakeEngine(dev_actions=[
+        engine = WorkItemFlowFakeEngine(dev_actions=[
             _commit_action("wi1.py", "x = 1\n", "DEV A wi-1"), None,
             _commit_action("wi1.py", "x = 2\n", "fix 1"),
             _commit_action("wi1.py", "x = 3\n", "fix 2"),
@@ -535,7 +532,7 @@ class TestLeanQAFailBoundedRetry:
         manager = _manager(
             project_store, handoff_store, selector, engine,
             git_governance_service=git_service, qa_engine=qa_engine, qa_run_store=qa_run_store,
-            qa_policy=QAPolicy(max_qa_cycles=3, required_invariant_ids=("lean-qa-check",)),
+            qa_policy=QAPolicy(max_qa_cycles=3, required_invariant_ids=("workitem-qa-check",)),
         )
 
         asyncio.run(manager.run_next_work_item("mvp-1"))  # wi-1: fail 1
@@ -553,7 +550,7 @@ class TestLeanQAFailBoundedRetry:
 # --- S/U: QA never PASSes on a workspace/SHA it cannot trust ----------------
 
 
-class TestLeanQAIntegrityGuards:
+class TestWorkItemQAIntegrityGuards:
     def test_dirty_workspace_before_qa_never_passes(self, tmp_path: Path) -> None:
         """S: a real, non-noise uncommitted file before QA blocks the
         WorkItem outright — QA is never even invoked on untrustworthy
@@ -594,7 +591,7 @@ class TestLeanQAIntegrityGuards:
 # --- V: DEV B quota wait / resume -------------------------------------------
 
 
-class TestLeanDevBQuotaWait:
+class TestWorkItemDevBQuotaWait:
     def test_no_eligible_dev_b_waits_then_resumes_on_reset(self, tmp_path: Path) -> None:
         alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
         repo = _git_repo(tmp_path)
@@ -602,7 +599,7 @@ class TestLeanDevBQuotaWait:
         project_store.create_work_item(work_item_id="wi-1", mvp_id="mvp-1", title="A")
         git_service, git_store = _git_service(tmp_path)
         qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
-        engine = LeanFakeEngine(dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A"), None])
+        engine = WorkItemFlowFakeEngine(dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A"), None])
         clock_box = {"now": UTC_NOW}
         wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: clock_box["now"])
         reset_at = UTC_NOW + timedelta(hours=2)
@@ -618,7 +615,7 @@ class TestLeanDevBQuotaWait:
         qa_engine = DynamicQAEngine()
         manager = MVPManager(
             project_store, handoff_store, selector, engine,
-            git_governance_service=git_service, qa_engine=qa_engine, qa_policy=QAPolicy(required_invariant_ids=("lean-qa-check",)),
+            git_governance_service=git_service, qa_engine=qa_engine, qa_policy=QAPolicy(required_invariant_ids=("workitem-qa-check",)),
             qa_run_store=qa_run_store, wait_store=wait_store,
             clock=lambda: clock_box["now"], id_factory=_counting_id_factory(),
         )
@@ -661,7 +658,7 @@ class TestLeanDevBQuotaWait:
 # not duplicated here.
 
 
-class TestLeanWorkerPoolSameProviderFallback:
+class TestWorkItemWorkerPoolSameProviderFallback:
     def test_dev_b_falls_back_to_same_provider_when_the_other_provider_is_exhausted_anthropic_only(
         self, tmp_path: Path,
     ) -> None:

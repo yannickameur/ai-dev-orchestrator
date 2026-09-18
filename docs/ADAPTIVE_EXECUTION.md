@@ -19,8 +19,9 @@ la note de statut courante ci-dessous.
   tiers, complexity pre-flight, sélection adaptative development/rework/
   review/planning) — voir statuts individuels dans `ROADMAP.md`.
 - La machinerie adaptative reste disponible et n'est pas retirée.
-- `LEAN_FEATURE_FLOW` est désormais le workflow `DEFAULT` ; son chemin
-  nominal n'invoque **aucune** estimation de complexité/sélection adaptative.
+- WorkItem Flow (anciennement nommé `LEAN_FEATURE_FLOW`) est le seul
+  workflow d'exécution de WorkItem ; son chemin nominal n'invoque
+  **aucune** estimation de complexité/sélection adaptative.
 - Cette machinerie est conservée telle quelle mais **non enrichie** sans
   besoin réel démontré (KISS/YAGNI).
 - `GOVERNED_FULL` (qui utilisait pleinement cette machinerie pour le

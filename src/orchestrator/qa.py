@@ -107,10 +107,16 @@ class QAPhase(str, Enum):
     kind* of QA run this is, not whether it finished or what it decided.
 
     ``TEST_AUTHORING``: may add/modify tests, fixtures, or knowledge files
-    per policy; never production code. May change HEAD.
+    per policy; never production code. May change HEAD. LEGACY_COMPATIBILITY:
+    this phase was only ever driven by the now-removed ``GOVERNED_FULL``
+    pipeline's isolated QA Test Authoring step (see ROADMAP.md's dated
+    removal entry); WorkItem Flow's QA call only ever uses
+    ``FINAL_VERIFICATION``. Kept as a generic, still-meaningful `QAEngine`
+    contract value, not because any current code path reaches it.
     ``FINAL_VERIFICATION``: must be read-only — see
     ``run_final_verification_gate``/``evaluate_qa_verdict``'s
-    read-only-violation/read-only-unprovable handling.
+    read-only-violation/read-only-unprovable handling. This is the only
+    phase WorkItem Flow ever uses.
     """
 
     TEST_AUTHORING = "test_authoring"

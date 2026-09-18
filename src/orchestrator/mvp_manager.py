@@ -1,8 +1,7 @@
 """MVPManager — orchestrates high-level WorkItems for the current MVP.
 
-This is the composition root for the supported product workflow,
-``LEAN_FEATURE_FLOW`` — the only WorkItem execution pipeline this module
-implements:
+This is the composition root for the supported product workflow — WorkItem
+Flow, the only WorkItem execution pipeline this module implements:
 
     ROADMAP (functional intent, read by a human/future agent)
       -> MVP / WorkItem (this module's input, via ProjectStateStore)
@@ -117,17 +116,17 @@ facts (latest handoff, git SHA — re-read every time, never cached in a
 `WaitRecord`/recovery handoff) and resolves a concrete
 `Worker`/`ExecutionProfile` (`orchestrator.adaptive_execution`) instead of
 a plain `WorkerSelector.select(...)` + `Worker.profile()` default. No
-`LEAN_FEATURE_FLOW` caller in this codebase currently wires this
-capability (the Lean default is a plain `WorkerSelector.select()`), but
-the mechanism itself is orthogonal to workflow choice and stays available.
-No silent downgrade below a recommended quality tier, no fallback to a
-default profile on any pre-flight/selection failure (those exceptions
-propagate unchanged).
+caller in this codebase currently wires this capability (WorkItem Flow's
+own default is a plain `WorkerSelector.select()`), but the mechanism
+itself is orthogonal to workflow choice and stays available. No silent
+downgrade below a recommended quality tier, no fallback to a default
+profile on any pre-flight/selection failure (those exceptions propagate
+unchanged).
 
 Historical note: an earlier, heavier pipeline (`WorkflowMode.GOVERNED_FULL`
 — a separate read-only Reviewer phase, isolated QA Test Authoring, and a
 separate Final QA phase) existed in this module and was removed before the
-first public release, superseded by `LEAN_FEATURE_FLOW`'s DEV A -> DEV B
+first public release, superseded by this WorkItem Flow's DEV A -> DEV B
 corrective review -> deterministic QA. See ROADMAP.md's dated removal
 entry for the full rationale; nothing in this module implements it anymore.
 
@@ -422,7 +421,7 @@ class MVPManager:
             raise
 
         resume_context = self._build_resume_context(work_item.work_item_id) if not is_rework else None
-        return await self._execute_work_item_lean(
+        return await self._execute_work_item(
             mvp_id=mvp_id, mvp=mvp, work_item=work_item, dev_worker=dev_worker,
             is_rework=is_rework, resume_context=resume_context,
             dev_model=dev_model, dev_reasoning_effort=dev_reasoning_effort,
@@ -474,10 +473,10 @@ class MVPManager:
         """Facts available right now for a development/rework pre-flight.
 
         Includes the latest handoff/git SHA if one already exists (REWORK
-        under Lean is driven by QA findings, attached to the next
-        development execution's own instructions — see
-        ``_execute_work_item_lean`` — never a separate review-findings
-        channel here). The Slice 16 fingerprint decides on its own whether
+        is driven by QA findings, attached to the next development
+        execution's own instructions — see ``_execute_work_item`` — never
+        a separate review-findings channel here). The Slice 16 fingerprint
+        decides on its own whether
         an existing recommendation is still reusable — this method never
         second-guesses that by forcing ``force_refresh``, whether called
         fresh or from a resume path.
@@ -491,22 +490,22 @@ class MVPManager:
             latest_handoff=latest_handoff, review_findings=(), git_sha=git_sha,
         )
 
-    # --- LEAN_FEATURE_FLOW (2026-09-16 product decision, the only
-    # supported workflow — see ROADMAP.md's dated removal entry for the
-    # earlier, heavier GOVERNED_FULL pipeline this superseded) ----------
+    # --- WorkItem Flow (product decision 2026-09-16, the only supported
+    # workflow — see ROADMAP.md's dated removal entry for the earlier,
+    # heavier GOVERNED_FULL pipeline this superseded) --------------------
     #
     # DEV A -> DEV B corrective review -> single QA phase -> merge -> tag.
     # No complexity estimation, no isolated QA Test Authoring/promotion, no
     # separate read-only Review, no separate Final QA phase.
 
-    async def _run_lean_development(
+    async def _run_development(
         self, *, project: Project, work_item: WorkItem, worker: Worker,
         model: str | None, reasoning_effort: str | None, instructions: str,
     ) -> ExecutionResult:
         """One real, write-capable execution directly in the governed
         target workspace (no isolation — DEV A/DEV B/a post-QA-FAIL fix
-        are all real development, by design). Shared by every lean
-        development step; only ``worker``/``instructions`` differ."""
+        are all real development, by design). Shared by every development
+        step of WorkItem Flow; only ``worker``/``instructions`` differ."""
         request = ExecutionRequest(
             execution_id=self._id_factory(), task_id=work_item.work_item_id, worker=worker,
             role=DEFAULT_WORK_ITEM_ROLE, workspace=project.workspace, instructions=instructions,
@@ -521,16 +520,15 @@ class MVPManager:
             )
         return result
 
-    async def _execute_work_item_lean(
+    async def _execute_work_item(
         self, *, mvp_id: str, mvp: MVP, work_item: WorkItem, dev_worker: Worker, is_rework: bool,
         resume_context: str | None, dev_model: str | None = None, dev_reasoning_effort: str | None = None,
     ) -> WorkItemRunResult:
-        """LEAN_FEATURE_FLOW entry point — mirrors ``_execute_work_item``'s
-        signature exactly (same caller contract) so ``run_next_work_item``/
-        ``_try_resume_due_wait`` can dispatch to either with no other
-        change. On rework (a previous QA FAIL that still has attempts
-        left): ``DEV FIX -> QA`` directly, never a second DEV B review. On
-        a fresh attempt: ``DEV A -> DEV B corrective review -> QA``.
+        """WorkItem Flow's entry point — called by ``run_next_work_item``,
+        ``_try_resume_due_wait``, and ``_try_resume_recovery_required``.
+        On rework (a previous QA FAIL that still has attempts left):
+        ``DEV FIX -> QA`` directly, never a second DEV B review. On a
+        fresh attempt: ``DEV A -> DEV B corrective review -> QA``.
         """
         self._project_state_store.mark_mvp_running(mvp_id)
         work_item = self._project_state_store.mark_work_item_running(work_item.work_item_id)
@@ -554,7 +552,7 @@ class MVPManager:
             fix_context = resume_context
             if latest_handoff is not None and latest_handoff.open_issues:
                 fix_context = f"QA findings from the previous attempt: {latest_handoff.open_issues}"
-            dev_result = await self._run_lean_development(
+            dev_result = await self._run_development(
                 project=project, work_item=work_item, worker=dev_worker,
                 model=dev_model, reasoning_effort=dev_reasoning_effort,
                 instructions=_build_dev_instructions(work_item, resume_context=fix_context),
@@ -565,13 +563,13 @@ class MVPManager:
                     work_item=work_item, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
                 )
             head_sha = dev_result.record.git_sha_after
-            return await self._run_lean_qa_and_finalize(
+            return await self._run_qa_and_finalize(
                 project=project, mvp_id=mvp_id, work_item=work_item,
                 head_sha=head_sha, base_sha=base_sha or head_sha,
             )
 
         # --- fresh attempt: DEV A ---
-        dev_a_result = await self._run_lean_development(
+        dev_a_result = await self._run_development(
             project=project, work_item=work_item, worker=dev_worker,
             model=dev_model, reasoning_effort=dev_reasoning_effort,
             instructions=_build_dev_instructions(work_item, resume_context=resume_context),
@@ -612,12 +610,12 @@ class MVPManager:
                 work_item=blocked, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
             )
 
-        return await self._run_lean_dev_b_onward(
+        return await self._run_dev_b_onward(
             project=project, mvp_id=mvp_id, work_item=work_item, dev_a_worker_id=dev_worker.worker_id,
             dev_b_worker=dev_b_worker, head_after_a=head_after_a, base_sha=base_sha or head_after_a,
         )
 
-    async def _run_lean_dev_b_onward(
+    async def _run_dev_b_onward(
         self, *, project: Project, mvp_id: str, work_item: WorkItem, dev_a_worker_id: str,
         dev_b_worker: Worker, head_after_a: str, base_sha: str,
     ) -> WorkItemRunResult:
@@ -627,7 +625,7 @@ class MVPManager:
         to QA. Shared by the fresh-attempt path and the DEV_B_REVIEW wait
         resume, so both go through the exact same continuation."""
         profile = dev_b_worker.profile()
-        dev_b_result = await self._run_lean_development(
+        dev_b_result = await self._run_development(
             project=project, work_item=work_item, worker=dev_b_worker,
             model=profile.model, reasoning_effort=profile.reasoning_effort,
             instructions=_build_dev_b_instructions(work_item, dev_a_worker_id=dev_a_worker_id),
@@ -646,11 +644,11 @@ class MVPManager:
             next_action=f"DEV B corrective review complete (changed_code={changed_by_b}) — proceeding to QA",
             git_sha_after=head_after_b, created_at=self._clock(),
         )
-        return await self._run_lean_qa_and_finalize(
+        return await self._run_qa_and_finalize(
             project=project, mvp_id=mvp_id, work_item=work_item, head_sha=head_after_b, base_sha=base_sha,
         )
 
-    async def _resume_lean_dev_b_wait(
+    async def _resume_dev_b_wait(
         self, *, project: Project, mvp_id: str, work_item: WorkItem, due: WaitRecord,
     ) -> WorkItemRunResult:
         """Resumes a DEV_B_REVIEW wait — DEV A already succeeded before
@@ -685,12 +683,12 @@ class MVPManager:
         if self._git_governance_service is not None:
             record = self._reconcile_governed_head(work_item.work_item_id, project.workspace)
             base_sha = record.base_sha
-        return await self._run_lean_dev_b_onward(
+        return await self._run_dev_b_onward(
             project=project, mvp_id=mvp_id, work_item=work_item, dev_a_worker_id=handoff.worker_id,
             dev_b_worker=dev_b_worker, head_after_a=handoff.git_sha_after, base_sha=base_sha,
         )
 
-    async def _run_lean_qa_and_finalize(
+    async def _run_qa_and_finalize(
         self, *, project: Project, mvp_id: str, work_item: WorkItem, head_sha: str, base_sha: str,
     ) -> WorkItemRunResult:
         """The single QA phase: read-only, deterministic
@@ -730,7 +728,7 @@ class MVPManager:
                 project=project, work_item=work_item, gate_result=None,
                 qa_passed=True, qa_git_sha=head_sha,
             )
-            merged_sha = self._maybe_tag_lean_merge(project=project, work_item=work_item)
+            merged_sha = self._maybe_tag_merge(project=project, work_item=work_item)
             handoff = self._handoff_store.create(
                 handoff_id=self._id_factory(), project_id=project.project_id, mvp_id=mvp_id,
                 work_item_id=work_item.work_item_id, objective=work_item.title,
@@ -764,7 +762,7 @@ class MVPManager:
         rework = self._project_state_store.mark_work_item_needs_rework(work_item.work_item_id)
         return WorkItemRunResult(work_item=rework, handoff=handoff)
 
-    def _maybe_tag_lean_merge(self, *, project: Project, work_item: WorkItem) -> str | None:
+    def _maybe_tag_merge(self, *, project: Project, work_item: WorkItem) -> str | None:
         """Tags the exact merged SHA immediately after a real merge — never
         before. Returns the merged SHA (for the handoff message) or
         ``None`` when nothing was actually merged yet (``auto_merge=False``,
@@ -1020,7 +1018,7 @@ class MVPManager:
         project = self._project_state_store.get_project(mvp.project_id)
 
         if due.phase is WaitPhase.DEV_B_REVIEW:
-            return await self._resume_lean_dev_b_wait(project=project, mvp_id=mvp_id, work_item=work_item, due=due)
+            return await self._resume_dev_b_wait(project=project, mvp_id=mvp_id, work_item=work_item, due=due)
 
         is_rework = due.phase is WaitPhase.REWORK
         try:
@@ -1040,7 +1038,7 @@ class MVPManager:
             else self._project_state_store.mark_work_item_ready(work_item.work_item_id)
         )
         resume_context = self._build_resume_context(work_item.work_item_id)
-        return await self._execute_work_item_lean(
+        return await self._execute_work_item(
             mvp_id=mvp_id, mvp=mvp, work_item=work_item, dev_worker=dev_worker,
             is_rework=is_rework, resume_context=resume_context,
             dev_model=dev_model, dev_reasoning_effort=dev_reasoning_effort,
@@ -1053,7 +1051,7 @@ class MVPManager:
         already established that this WorkItem's execution is genuinely
         orphaned/interrupted, so it is immediately re-orchestrable. Both DEV
         A and DEV B executions carry the same ``DEFAULT_WORK_ITEM_ROLE`` —
-        ``_run_lean_development`` (shared by both) always resumes as a
+        ``_run_development`` (shared by both) always resumes as a
         fresh development attempt; there is no separate phase to
         distinguish here.
         """
@@ -1074,7 +1072,7 @@ class MVPManager:
             mvp=mvp, work_item=work_item, is_rework=False,
         )
         resume_context = self._build_resume_context(work_item.work_item_id)
-        return await self._execute_work_item_lean(
+        return await self._execute_work_item(
             mvp_id=mvp_id, mvp=mvp, work_item=work_item, dev_worker=dev_worker,
             is_rework=False, resume_context=resume_context,
             dev_model=dev_model, dev_reasoning_effort=dev_reasoning_effort,
@@ -1207,15 +1205,15 @@ class MVPManager:
 
         ``qa_passed=None`` means QA is not enabled for this MVPManager at
         all — ``qa_required`` is then never passed as True. When QA *is*
-        enabled, this method's caller only ever calls it after Lean's own
-        QA phase already returned PASS (a QA FAIL/INCONCLUSIVE never
-        reaches this method at all — the WorkItem is REWORK/BLOCKED
+        enabled, this method's caller only ever calls it after WorkItem
+        Flow's own QA phase already returned PASS (a QA FAIL/INCONCLUSIVE
+        never reaches this method at all — the WorkItem is REWORK/BLOCKED
         instead), so ``qa_passed`` is only ever ``True`` or ``None`` in
         practice; the restart-replay fallback below still re-derives it
         honestly from ``qa_run_store`` regardless. Review is never checked
-        here (LEAN_FEATURE_FLOW has no separate reviewer phase —
+        here (WorkItem Flow has no separate reviewer phase —
         ``GitGovernancePolicy.require_review`` must be configured
-        ``False`` by any caller of this codebase's lean pipeline).
+        ``False`` by any caller of this codebase's WorkItem-Flow pipeline).
         """
         if self._git_governance_service is None:
             return

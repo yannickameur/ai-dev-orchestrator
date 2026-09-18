@@ -31,7 +31,7 @@ A separate, independent-reviewer "reviews-approved" release check existed
 here historically (Slice 10, under the old ``GOVERNED_FULL`` pipeline) and
 was removed when ``GOVERNED_FULL`` was removed before the first public
 release — see ROADMAP.md's dated removal entry. The current model's
-equivalent of independent review is Lean's own DEV B corrective review,
+equivalent of independent review is WorkItem Flow's own DEV B corrective review,
 which is not a separate release-gate check: it happens before a WorkItem
 can even reach ``COMPLETED``.
 
@@ -375,7 +375,7 @@ class ReleaseManager:
         failure_count = sum(1 for e in executions if e.status == "failed")
         interruption_count = sum(1 for e in executions if e.status == "interrupted")
         # Historically counted review rejections (GOVERNED_FULL, removed
-        # before the first public release). Lean's own rework signal is
+        # before the first public release). WorkItem Flow's own rework signal is
         # WorkItemStatus.NEEDS_REWORK (driven by QA FAIL, not by review),
         # which this report does not currently have a transition history
         # to count from — left at 0 rather than fabricated.

@@ -21,13 +21,14 @@ Verification wiring into `MVPManager` described below (§"Slice 24") was
 specific to `WorkflowMode.GOVERNED_FULL`, which was **removed** before
 the first public release (see `ROADMAP.md`'s dated removal entry) —
 `InternalQATestAuthor` and the rest of that orchestration no longer exist
-in `src/orchestrator/internal_qa_engine.py`. `LEAN_FEATURE_FLOW` — the
-only workflow this project implements now — reuses only the underlying
-provider-independent primitives this document defines (`QAEngine`,
-`evaluate_qa_verdict`, `QAPhase.FINAL_VERIFICATION`, `InternalQAEngine`'s
-own core) directly — a single, deterministic, read-only QA call with no
-separate QA Test Authoring phase and no worker selection for QA at all.
-See `ROADMAP.md` for the Lean QA integration. The rest of this document
+in `src/orchestrator/internal_qa_engine.py`. WorkItem Flow (formerly
+named `LEAN_FEATURE_FLOW`) — the only workflow this project implements
+now — reuses only the underlying provider-independent primitives this
+document defines (`QAEngine`, `evaluate_qa_verdict`,
+`QAPhase.FINAL_VERIFICATION`, `InternalQAEngine`'s own core) directly —
+a single, deterministic, read-only QA call with no separate QA Test
+Authoring phase and no worker selection for QA at all. See `ROADMAP.md`
+for the WorkItem Flow QA integration. The rest of this document
 below is kept as historical design record for the removed pipeline.
 
 ## Why this exists

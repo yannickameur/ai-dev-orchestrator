@@ -30,13 +30,13 @@ de ce projet).
 
 **MVP 0.1 : `DONE`** (contrat d'acceptation dans
 [`MVP_SPEC.yaml`](MVP_SPEC.yaml)). Gouvernance Git/PR/merge, QA gouvernée,
-et le workflow par défaut ci-dessous sont implémentés, testés, et validés
-par une exécution réelle de bout en bout sur un projet externe (voir
-« Exemple réel » plus bas).
+et le workflow ci-dessous sont implémentés, testés, et validés par une
+exécution réelle de bout en bout sur un projet externe (voir « Exemple
+réel » plus bas).
 
 ## Comment ça marche
 
-### Workflow par défaut : `LEAN_FEATURE_FLOW`
+### WorkItem Flow
 
 Chaque WorkItem passe par un chemin nominal court — exactement **2
 exécutions LLM** sur le chemin heureux (DEV A, DEV B). La QA n'est pas un
@@ -68,11 +68,11 @@ HUMAN_REVIEW_REQUIRED     (BLOCKED + TODO ajouté à la roadmap du projet
 
 Pas d'estimation de complexité obligatoire, pas de phase QA Test Authoring
 séparée, pas de Final QA séparée — volontairement KISS/YAGNI. C'est le
-**seul** workflow d'exécution de WorkItem que ce projet implémente :
-l'ancien pipeline plus lourd (`GOVERNED_FULL` — Reviewer indépendant en
+**seul** workflow d'exécution de WorkItem que ce projet implémente : un
+ancien pipeline plus lourd (`GOVERNED_FULL` — Reviewer indépendant en
 lecture seule, QA Test Authoring isolée, Final QA séparée) a été retiré
-avant la première release publique. Voir `ROADMAP.md`, section « Chemin
-nominal actuel » et son entrée datée de retrait, pour le détail complet.
+avant la première release publique. Voir `ROADMAP.md`, section « WorkItem
+Flow », pour le détail complet.
 
 ### Sélection des workers et fallback provider
 
@@ -95,7 +95,7 @@ déclare au moins 2 workers indépendants par provider participant.
 ```
 Project (workspace, roadmap, MVP courant)
   ↓
-MVPManager (WorkItems, dépendances, handoff durable, LEAN_FEATURE_FLOW)
+MVPManager (WorkItems, dépendances, handoff durable, WorkItem Flow)
   ↓
 WorkerSelector (capability > governance > provider availability > priority)
   ↓
