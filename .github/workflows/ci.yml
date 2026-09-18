@@ -1,0 +1,38 @@
+name: CI
+
+# Offline only: this workflow never authenticates to Anthropic/OpenAI/
+# Mistral, never invokes claude/codex/vibe, and never uses any real
+# provider quota. It runs exactly `pytest` against this repository's
+# own offline test suite (tests/), which is fake/in-memory throughout —
+# see CONTRIBUTING.md. Scripts under scripts/ that launch real provider
+# workers are deliberately excluded from this suite (their own
+# docstrings say "NEVER run this via pytest") and are not run here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package (with dev extras)
+        run: pip install -e ".[dev]"
+
+      - name: Run offline test suite
+        run: pytest
