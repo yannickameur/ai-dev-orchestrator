@@ -207,6 +207,17 @@ framework de persistance). Une copie de travail purement jetable
 sous `/tmp` sans problème. Voir l'exemple Morpion ci-dessus pour le cas
 réel qui a établi cette leçon.
 
+## Soutenir le projet
+
+AI Dev Orchestrator est développé en open source. Les contributions via
+[GitHub Sponsors](https://github.com/sponsors/yannickameur) servent en priorité à
+financer les abonnements et usages d'outils IA nécessaires aux tests réels du
+projet, ainsi que le temps consacré au développement, à la maintenance et à la
+documentation.
+
+Le sponsoring soutient le projet sans donner de contrôle particulier sur sa
+roadmap ou ses décisions techniques.
+
 ## Development
 
 Voir [`CONTRIBUTING.md`](CONTRIBUTING.md) : configuration de
