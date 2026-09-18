@@ -4,12 +4,29 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.*
 *.db
 *.sqlite
 *.sqlite3
 .coverage
+.coverage.*
 htmlcov/
 dist/
 build/
 *.egg-info/
 .DS_Store
+node_modules/
+
+# Local auth/credential files — never expected to be tracked, but
+# ignored defensively (public repo).
+*.pem
+*.key
+credentials.json
+.netrc
+
+# Note: .ralph/ is intentionally NOT blanket-ignored here — some Ralph
+# artifacts in this repo are deliberately versioned (see git history,
+# "Keep Ralph runtime artifacts out of product history": the exclusion
+# for Ralph's own noisy runtime bookkeeping is installed per governed
+# TARGET repository via GitGovernanceService.ensure_runtime_exclusion,
+# not globally here).

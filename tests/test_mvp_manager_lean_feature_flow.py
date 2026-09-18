@@ -302,12 +302,12 @@ def _manager(
 
 def _new_stack(
     tmp_path: Path, *, workers: list[Worker], dev_actions=None, qa_script=None, qa_policy=None,
-    wait_store=None, unavailable_provider: str | None = None,
+    wait_store=None, unavailable_provider: str | None = None, git_policy: GitGovernancePolicy | None = None,
 ):
     repo = _git_repo(tmp_path)
     project_store, handoff_store = _stores(tmp_path, repo)
     project_store.create_work_item(work_item_id="wi-1", mvp_id="mvp-1", title="A")
-    git_service, git_store = _git_service(tmp_path)
+    git_service, git_store = _git_service(tmp_path, policy=git_policy)
     qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
     engine = LeanFakeEngine(dev_actions=dev_actions)
     selector = (
@@ -394,6 +394,43 @@ class TestLeanNominalFlow:
         result = asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
         assert result.work_item.status is WorkItemStatus.COMPLETED
         assert len(stack["qa_engine"].requests) == 1
+
+    def test_default_git_governance_policy_blocks_merge_despite_real_qa_pass(self, tmp_path: Path) -> None:
+        """Regression test for a real defect found integrating Morpion Web
+        3D's WI-11 (docs/reports/morpion-computer-turn-regression-2026-09-18.md
+        §28): a caller that wires a lean ``MVPManager`` (no
+        ``quality_gate_runner``, no ``review_store`` — DEV B's corrective
+        review and the QA phase's own commands stand in for both) but
+        constructs ``GitGovernanceService`` with a plain
+        ``GitGovernancePolicy(auto_merge=True)`` — leaving
+        ``require_review``/``require_required_gates`` at their real
+        default of ``True`` — gets a WorkItem stuck ``COMPLETED`` with a
+        real QA `PASS` but its git record never reaches `MERGED`,
+        because eligibility can never see a gate/review verdict that was
+        never produced. This is exactly the trap
+        ``scripts/run_external_project_pilot.py`` and
+        ``scripts/run_morpion_wi11.py`` fell into before being fixed to
+        pass ``require_review=False, require_required_gates=False``
+        explicitly (see this file's own ``_git_service`` default, which
+        already gets it right — this test guards the *wrong* default from
+        silently becoming the *documented* one)."""
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+        stack = _new_stack(
+            tmp_path, workers=[alice, victor],
+            dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A implementation"), None],
+            git_policy=GitGovernancePolicy(auto_merge=True),
+        )
+        result = asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+
+        # QA genuinely ran and passed — this is not a QA failure.
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert len(stack["qa_engine"].requests) == 1
+
+        # But the merge never happened: eligibility failed closed on the
+        # unmet (and, in lean mode, unmeetable) gate/review requirements.
+        record = stack["git_store"].get("wi-1")
+        assert record.status is GitWorkItemStatus.IN_PROGRESS
+        assert record.merged_sha is None
 
 
 # --- K/L/M/N: bounded QA fix-and-retry, then HUMAN_REVIEW_REQUIRED ----------

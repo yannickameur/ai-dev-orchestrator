@@ -464,6 +464,44 @@ l'état courant.
   complet, y compris le tableau de routage par WorkItem et la discussion
   des 7 conditions de `VALIDATED` : `docs/VIBE_SPIKE.md` §20,
   `docs/reports/morpion-vibe-continuation-2026-09-18.md`.
+- **Régression Morpion Web 3D « tour de l'ordinateur bloqué » (2026-09-18) :
+  trouvée manuellement, corrigée et mergée — `DONE`.** L'acceptance QA
+  précédente (voir l'entrée ci-dessus) avait déclaré `pass` alors que le
+  jeu réel était bloqué : cause exacte, `main.js` (câblage DOM/`setTimeout`)
+  n'avait aucune couverture exécutable, ni unitaire ni navigateur — gap
+  de test spécifique au projet, pas une faille des primitives QA de
+  l'orchestrateur (`docs/reports/morpion-computer-turn-regression-2026-09-18.md`
+  §26). Séquence réelle, chaque étape préservée sans réécriture :
+  wi-9 (1ère tentative) a produit un correctif candidat réel (`12f9079`)
+  mais a terminé `FAILED` avant QA (DEV B a épuisé la limite
+  d'itérations Ralph sans verdict) — jamais mergé, branche préservée.
+  wi-10 (2e tentative) est resté durablement `WAITING` sur quota, puis
+  son état SQLite a été perdu après un redémarrage machine car le
+  répertoire du pilote vivait sous `/tmp` — `LOST_RUNTIME_STATE_AFTER_REBOOT`,
+  jamais reconstruit artificiellement. wi-11 (3e tentative, session
+  suivante) a utilisé pour la première fois une racine d'état
+  **persistante hors `/tmp`** (`~/.local/state/ai-dev-orchestrator/projects/morpion-web-3d/`,
+  simple argument de chemin aux constructeurs de stores existants, aucun
+  changement d'architecture produit), a validé le correctif candidat de
+  wi-9 (root cause confirmée, RED sur `edbc576`/GREEN sur `12f9079`
+  ré-exécutés indépendamment) puis l'a fait rejouer sous gouvernance
+  normale par DEV A = `alice` (anthropic) — la gouvernance Git réelle
+  (`GitGovernanceService.prepare_work_item`) ne permettant pas d'adopter
+  directement un SHA candidat, seule la voie de réapplication gouvernée
+  était possible, jamais un cherry-pick manuel. DEV B = `bob`
+  (anthropic, sélection naturelle, aucun provider forcé) a validé sans
+  modification. QA déterministe réelle avec 3 commandes obligatoires
+  (pytest, tests Node, régression navigateur Playwright) : `PASS`. Mergé
+  et tagué `feature/WI-11/done`. `main` corrigé :
+  `edbc576` → `593c615e66e6a2cb585fb465ded0185da46a3319`. Vérification
+  navigateur post-fix (Facile/Moyen/Difficile, nouvelle-partie pendant
+  le délai IA, pas de double coup, pas de coup après fin de partie) :
+  toutes `PASS`. wi-9 reste `FAILED` (préservé) ; wi-10 reste
+  `LOST_RUNTIME_STATE_AFTER_REBOOT` (préservé) — aucun fait historique
+  réécrit. Détail complet, y compris une anomalie de policy Git
+  (`require_required_gates`/`require_review`) trouvée et corrigée dans
+  le script pilote jetable (jamais dans le code produit de
+  l'orchestrateur) : `docs/reports/morpion-computer-turn-regression-2026-09-18.md` §27-28.
 - **Next : POST-MVP 0.1 EXPERIMENT / DISCOVERY.** Pas encore un MVP 0.2 —
   décision à prendre avec l'utilisateur. Axe (1) — pilote Lean frais
   (Roman Numerals) — **fait, `PASS`**. Axe (2) — Mistral/Vibe — **fait,
@@ -471,7 +509,9 @@ l'état courant.
   démarrés**, non ordonnés entre eux : (3) étude build-vs-reuse Mammouth
   AI ; (4) étude de l'écosystème des workers/providers gratuits/coût
   marginal nul ; (5) échelle de difficulté progressive des projets de
-  validation. Morpion Web 3D est maintenant `DONE` (WI-0..WI-8).
+  validation. Morpion Web 3D est maintenant `DONE` (WI-0..WI-8, puis
+  WI-9 `FAILED`/WI-10 `LOST_RUNTIME_STATE_AFTER_REBOOT`/WI-11
+  `DONE`/`MERGED` — voir l'entrée datée ci-dessus pour le détail).
   CLI/productisation reste une option future, non requise
   pour démarrer ces axes. Toutes les Slices 21-24 du cycle QA sont
   maintenant `DONE` (Slice 24 : `ACCEPTANCE_DONE`) — cette session ne
