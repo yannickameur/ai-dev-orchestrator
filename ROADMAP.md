@@ -193,11 +193,12 @@ prouvé (voir « KISS/YAGNI » ci-dessous).
 
 **`GOVERNED_FULL`** (l'ancien pipeline : estimation adaptative avant
 chaque phase, QA Test Authoring isolée, Review isolée en lecture seule,
-Final QA séparée) : **`DEPRECATED` / `REMOVAL_CANDIDATE`**. Reste
-sélectionnable explicitement (`workflow_mode=WorkflowMode.GOVERNED_FULL`),
-sa suite de tests reste verte, seules des régressions critiques y seront
-corrigées ; aucune nouvelle capacité n'y est ajoutée. Suppression évaluée
-plus tard, après suffisamment de recul sur `LEAN_FEATURE_FLOW`.
+Final QA séparée) : **`REMOVED`** (2026-09-18, avant la première release
+publique — voir l'entrée datée dédiée plus bas pour le détail complet).
+`LEAN_FEATURE_FLOW` est désormais le seul workflow d'exécution de
+WorkItem que `MVPManager` implémente ; `WorkflowMode` lui-même a été
+supprimé (un seul mode restant, KISS/YAGNI — pas de branche morte pour
+une seule valeur).
 
 ## Responsabilités (ne pas confondre)
 
@@ -2584,6 +2585,139 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
   corrigée dans le script pilote jetable, jamais dans le code produit de
   l'orchestrateur. Détail complet :
   `docs/reports/morpion-computer-turn-regression-2026-09-18.md` §27-28.
+- **2026-09-18 — GOVERNED_FULL REMOVED avant la première release
+  publique.** Décision utilisateur explicite, appliquée intégralement
+  dans cette même session. Raison : superseded par `LEAN_FEATURE_FLOW`
+  (DEV A → DEV B corrective review → QA déterministe → merge → tag) ;
+  étapes dupliquées de l'ancien pipeline (Reviewer indépendant en lecture
+  seule, QA Test Authoring isolée + promotion gouvernée, Final QA
+  Verification séparée) ; complexité inutile ; aucun besoin produit
+  actuel ne le justifiait ; KISS/YAGNI. `WorkflowMode` (l'enum lui-même)
+  a été supprimé — un seul mode restant, KISS/YAGNI, pas de branche morte
+  conservée pour une seule valeur historique.
+
+  Périmètre exact de la suppression (production, `src/orchestrator/`) :
+  - `src/orchestrator/mvp_manager.py` : `WorkflowMode`, `_execute_work_item`,
+    `_continue_after_development`, `_run_qa_authoring`,
+    `_run_final_qa_verification`, `_run_review`, `_run_review_from_handoff`,
+    `_resume_review_wait`, `_resume_qa_authoring_wait`,
+    `_select_reviewer_worker`, `_build_review_estimation_request`,
+    `_build_review_instructions`, `_summarize_review`, `_summarize_gate`,
+    `_summarize_findings`, `_determine_review_verdict`, et les constantes
+    `REVIEWER_ROLE`/`REVIEW_CAPABILITY`/`REVIEW_*_TOPIC` — retirés en
+    entier. `__init__` perd `quality_gate_runner`/`review_store`/
+    `review_policy`/`workflow_mode`. `_try_resume_recovery_required` perd
+    ses branches `was_review_phase`/`was_qa_phase` ; son embranchement
+    générique — qui appelait `_execute_work_item` **sans jamais vérifier
+    `workflow_mode`**, un vrai défaut latent découvert à cette occasion —
+    appelle désormais `_execute_work_item_lean` explicitement.
+    `_maybe_finalize_git` ne consulte plus `review_result`/`review_store`.
+  - `src/orchestrator/review.py` : module supprimé en entier
+    (`ReviewRecord`/`ReviewStore`/`ReviewPolicy`/`ReviewStatus`/
+    `ReviewFinding`/`parse_findings`). `ReviewFinding` seul, encore
+    réellement utilisé par `complexity_estimation.py` (capacité adaptative
+    indépendante, hors périmètre de cette suppression), a été réintégré
+    directement dans ce module — sa vraie propriétaire désormais.
+  - `src/orchestrator/git_governance.py` : `_IsolatedGitWorktree`,
+    `IsolatedReviewWorkspace`, `IsolatedQAWorkspace`, `assert_review_target`
+    retirés (plus aucun appelant) ; `LocalGitWorkspace.worktree_add`/
+    `worktree_remove` retirés (plus aucun appelant une fois les workspaces
+    isolées parties).
+  - `src/orchestrator/internal_qa_engine.py` : sous-système QA Test
+    Authoring retiré en entier — `InternalQATestAuthor`,
+    `_build_qa_authoring_instructions`, `QAAuthoringOutcome`,
+    `QAAuthoringReport`, `parse_qa_authoring_event`,
+    `classify_authoring_changes`, `verify_authoring_git_facts`,
+    `_looks_like_a_test_filename`, `AuthoringViolationError`,
+    `InvalidQAAuthoringEventError`, `QA_TESTING_CAPABILITY`/
+    `QA_TESTING_ROLE`. Le cœur `InternalQAEngine` (QA déterministe réelle,
+    seule capacité que `LEAN_FEATURE_FLOW` utilise) est intégralement
+    conservé et inchangé.
+  - `src/orchestrator/recovery.py` : perd son paramètre `review_store` et
+    la branche de reconciliation par rôle `REVIEWER_ROLE`/statut
+    `REVIEWING` — ne reconcilie plus que `RUNNING`/rôle `developer` (DEV A
+    et DEV B partagent déjà le même rôle `"developer"`, donc aucune perte
+    de couverture réelle).
+  - `src/orchestrator/release_manager.py` : perd `review_store`/
+    `review_required`/le check `reviews-approved`/`_has_approved_review` —
+    un release ne peut plus jamais exiger un `ReviewRecord` inexistant.
+    `rework_count` reste honnêtement à `0` (il ne provenait que des rejets
+    de review de l'ancien pipeline ; Lean n'a pas encore d'historique de
+    transition `NEEDS_REWORK` à compter — lacune documentée, non comblée
+    dans cette session, hors périmètre).
+  - `src/orchestrator/activity_report.py` : intentionnellement **non
+    modifié** — `ReviewSummary`/`ActivitySummary.review_count` sont des
+    structures de reporting autonomes (aucun import de `orchestrator.review`),
+    déjà correctement optionnelles ; elles restent simplement toujours
+    vides désormais.
+  - `src/orchestrator/project_state.py` : `WorkItemStatus.REVIEWING` et
+    `QAPhase.TEST_AUTHORING` (`qa.py`) restent dans leurs enums
+    **volontairement**, uniquement pour décoder un état SQLite persistant
+    existant depuis une exécution `GOVERNED_FULL` réelle antérieure (preuve
+    concrète trouvée : `~/projects/pilot-evidence/mars-rover-run5-governed-full-workspace/`)
+    — plus jamais atteints par un chemin de code actuel.
+    `mark_work_item_reviewing()` conservé comme primitive de state-machine
+    pure (aucun appelant production) pour permettre cette reconstruction/
+    ce test de decode si nécessaire.
+  - `config/workers.yaml` : capacité `code_review` retirée des 4 workers
+    qui la déclaraient (`alice`/`bob`/`victor`/`oscar`) — plus aucun
+    chemin supporté ne la matche (DEV B utilise la capacité `development`
+    déjà utilisée par Lean).
+
+  Scripts (`scripts/`) : `run_external_project_pilot.py` perd son flag
+  `--workflow-mode`/toute sa branche `governed_full` (deux-tiers du
+  fichier) ; `self_dogfood_full_pipeline_real.py` perd son import
+  `orchestrator.review` et son câblage `review_store`/`review_policy`
+  (déjà mort en pratique — ce script ne passait jamais
+  `workflow_mode=GOVERNED_FULL`, donc `MVPManager` tournait déjà
+  silencieusement en Lean, ignorant tout ce câblage). **Les deux
+  scripts partageaient le même défaut de policy Git déjà trouvé et
+  corrigé lors de Morpion Web 3D WI-11** (`GitGovernancePolicy` sans
+  `require_review=False, require_required_gates=False`, bloquant tout
+  merge malgré un QA PASS réel) — corrigé dans les deux au passage.
+  `smoke_cross_worker_real.py`/`smoke_internal_qa_real.py`/
+  `self_dogfood_dev_qa_real.py` : aucune référence à retirer, inchangés.
+
+  Tests : fichiers supprimés en entier —
+  `tests/test_mvp_manager.py` (2456 lignes, 100% câblé sur
+  `workflow_mode=WorkflowMode.GOVERNED_FULL` via son propre helper
+  `_manager()`), `tests/test_mvp_manager_qa_integration.py` (même
+  constat), `tests/test_review.py`,
+  `tests/test_mvp_manager_git_governance.py` (couverture entièrement
+  redondante avec `tests/test_git_governance.py::TestPreparation::
+  test_reused_on_rework_never_creates_second_branch`, qui teste la même
+  idempotence de réutilisation de branche au niveau de la primitive
+  `GitGovernanceService` elle-même, indépendamment de tout
+  `workflow_mode`). Classes retirées dans des fichiers par ailleurs
+  conservés : `TestGovernedFullStillAvailable`
+  (`test_mvp_manager_lean_feature_flow.py`), `TestReviewPhaseRecovery`
+  (`test_recovery.py`), `TestReviewCheck`
+  (`test_release_manager.py`, remplacée par
+  `test_report_never_fabricates_reviews`), `TestReviewWorkflowTransitions`
+  (`test_project_state.py`), `TestShippedExampleConfigReviewCapability`
+  (`test_worker_registry.py`), `TestReviewTarget`/
+  `TestIsolatedReviewWorkspace` (`test_git_governance.py`). Le test
+  d'intégration réel `tests/integration/test_cross_worker_resume_e2e.py`
+  (Slice 17, cross-worker cold-resume + sélection adaptative) a été migré
+  de `quality_gate_runner`/complétion par simple gate vers le cycle Lean
+  complet réel (DEV A résumé → DEV B → QA), avec un 3ᵉ worker ajouté pour
+  que DEV B ait un développeur réellement indépendant — sa valeur propre
+  (reprise à froid inter-process, sélection adaptative, jamais le même
+  worker) reste intégralement couverte, jamais dégradée. Lacune de
+  couverture comblée : l'ordre déterministe par `work_item_id` ascendant
+  de `run_next_work_item` (testé auparavant uniquement via le fichier
+  supprimé) a désormais son propre test dans
+  `test_mvp_manager_lean_feature_flow.py`.
+
+  Suite offline : **1189 → 983 PASS** (−206, +1 nouveau test) — chaque
+  test supprimé validait exclusivement le pipeline retiré ; aucune
+  régression de couverture du chemin Lean actuel.
+
+  `MVP_SPEC.yaml` **inchangé** — aucun AC n'exige un comportement
+  `GOVERNED_FULL` spécifique (AC-16 le mentionne seulement comme
+  historique, déjà explicitement « non requis par ce MVP » avant cette
+  session).
+
 - **Next : POST-MVP 0.1 EXPERIMENT / DISCOVERY.** Pas encore un MVP 0.2 —
   décision à prendre avec l'utilisateur. Axe (1) — pilote Lean frais
   (Roman Numerals) — **fait, PASS**. Axe (2) — Mistral/Vibe — **fait,

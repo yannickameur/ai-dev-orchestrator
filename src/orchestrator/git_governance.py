@@ -43,17 +43,16 @@ Design invariants:
   orchestrator imposes on a target repository it governs. Every git
   operation here relies on the target repository's own configuration (or
   a future configurable policy), never a literal name/email.
-- No general-purpose worktree manager: each WorkItem's development/QA-
-  authoring/estimation work still happens on a single governed branch
-  inside the workspace ``RalphExecutionEngine`` already uses (Ralph's own
-  parallel-loop worktrees, if ever used, are a distinct, unrelated
-  mechanism this module does not touch or duplicate). The one exception
-  is ``IsolatedReviewWorkspace``: a disposable, detached worktree used
-  *only* to run a review execution outside the governed target workspace
-  entirely — added after a real external-project pilot showed a review
-  execution has the same real file-system access as development, with no
-  git-fact enforcement, and could mutate the shared target workspace
-  before the (already-existing) post-execution check could catch it.
+- No general-purpose worktree manager: each WorkItem's development work
+  happens on a single governed branch inside the workspace
+  ``RalphExecutionEngine`` already uses (Ralph's own parallel-loop
+  worktrees, if ever used, are a distinct, unrelated mechanism this
+  module does not touch or duplicate). An isolated, disposable detached
+  worktree (once used to run an independent-review execution outside the
+  governed target workspace) existed here historically, under the
+  now-removed ``GOVERNED_FULL`` pipeline — see ROADMAP.md's dated removal
+  entry; LEAN_FEATURE_FLOW's DEV B corrective review runs directly in the
+  governed workspace, like DEV A.
 """
 
 from __future__ import annotations
@@ -350,32 +349,14 @@ class LocalGitWorkspace:
             )
         return self.head_sha()
 
-    def worktree_add(self, path: str | Path, sha: str) -> None:
-        """``git worktree add --detach <path> <sha>`` — a disposable,
-        DETACHED checkout of an exact commit, sharing this repository's
-        own object database (no clone, no network) but never sharing a
-        working tree with it. Detached (never a branch) so it can never
-        collide with any branch already checked out elsewhere, including
-        this repository's own governed work branch."""
-        self._require_repository()
-        self._run(["worktree", "add", "--detach", str(path), sha])
-
-    def worktree_remove(self, path: str | Path) -> None:
-        """``git worktree remove --force <path>`` then ``git worktree
-        prune`` — best-effort cleanup; never raises if the worktree is
-        already gone (nothing left to leak either way)."""
-        self._require_repository()
-        self._run(["worktree", "remove", "--force", str(path)], check=False)
-        self._run(["worktree", "prune"], check=False)
-
     def git_common_dir(self) -> Path:
         """``git rev-parse --git-common-dir`` — the ONE directory shared by
         this repository and every linked worktree of it (unlike the
         per-worktree ``.git`` file/dir). Installing something under here
-        (e.g. ``info/exclude``) applies to the repository AND every
-        ``IsolatedReviewWorkspace`` worktree created from it, with no
-        extra wiring needed. Resolved to an absolute path regardless of
-        whether git reports it relative to this repository's own path."""
+        (e.g. ``info/exclude``) applies to the repository AND every linked
+        worktree of it, with no extra wiring needed. Resolved to an
+        absolute path regardless of whether git reports it relative to
+        this repository's own path."""
         self._require_repository()
         result = self._run(["rev-parse", "--git-common-dir"])
         raw = Path(result.stdout.strip())
@@ -389,128 +370,6 @@ class LocalGitWorkspace:
         result = self._run(["ls-files", "--", prefix])
         return tuple(line for line in result.stdout.splitlines() if line)
 
-
-class _IsolatedGitWorktree:
-    """Shared mechanics for a disposable, DETACHED git worktree checked
-    out at an EXACT sha — so a write-capable execution's Ralph process
-    never runs inside the governed target workspace at all (added after a
-    real external-project pilot: even a governance check that catches a
-    mutation after the fact still let it briefly exist in the real,
-    shared target workspace). ``IsolatedReviewWorkspace`` and
-    ``IsolatedQAWorkspace`` are both thin subclasses of this — same
-    mechanics, different disposable-directory label purely for a human
-    inspecting ``/tmp`` during a real run (never load-bearing).
-
-    Built entirely on ``LocalGitWorkspace.worktree_add``/``worktree_remove``
-    — no clone, no network, no fetch/pull/push, no checkout of any other
-    governed branch, no rebase, no reset of the real target. The worktree
-    shares the target's own object database (so `git worktree add` is
-    instant and needs no network) but has its own working-tree files,
-    completely separate from the target's checked-out branch.
-
-    Used as a context manager: ``__exit__`` removes the worktree unless
-    ``preserve()`` was called first (a governance violation or any other
-    incident should keep it around for forensics — the caller decides,
-    this class never guesses). This is deliberately the *only* worktree
-    mechanism in this codebase — the module's own "no worktree manager"
-    design note (see module docstring) still holds for the single
-    governed branch each WorkItem otherwise uses.
-    """
-
-    _LABEL = "isolated"
-
-    def __init__(
-        self, *, source_repository_path: str | Path, sha: str, workspace_id: str,
-        git_binary: str = DEFAULT_GIT_BINARY, parent_dir: str | Path | None = None,
-    ) -> None:
-        _require_non_empty_str(sha, field_name=f"{type(self).__name__}.sha")
-        _require_non_empty_str(workspace_id, field_name=f"{type(self).__name__}.workspace_id")
-        self._source = LocalGitWorkspace(source_repository_path, git_binary=git_binary)
-        self._sha = sha
-        self._workspace_id = workspace_id
-        self._parent_dir = Path(parent_dir) if parent_dir is not None else Path(tempfile.gettempdir())
-        self._path: Path | None = None
-        self._preserved = False
-
-    @property
-    def path(self) -> Path:
-        if self._path is None:
-            raise RuntimeError(f"{type(self).__name__}: not created yet — use as a context manager")
-        return self._path
-
-    def preserve(self) -> None:
-        """Marks this worktree to survive ``__exit__``/``cleanup`` — for a
-        governance violation or any other incident worth inspecting."""
-        self._preserved = True
-
-    def __enter__(self) -> "_IsolatedGitWorktree":
-        self._parent_dir.mkdir(parents=True, exist_ok=True)
-        # `workspace_id` alone is not safe as a bare, predictable path
-        # component: it is only unique within one MVPManager's own
-        # id_factory counter, so two unrelated runs (e.g. two offline
-        # tests, or two real pipelines sharing a tmp dir) can compute the
-        # exact same "<label>-<id>" name. `mkdtemp` guarantees a genuinely
-        # unique, empty directory (`git worktree add` accepts a
-        # pre-existing empty target) while keeping `workspace_id` visible
-        # in the name for a human inspecting `/tmp` during a real run.
-        self._path = Path(tempfile.mkdtemp(dir=self._parent_dir, prefix=f"{self._LABEL}-{self._workspace_id}-"))
-        self._source.worktree_add(self._path, self._sha)
-        return self
-
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self.cleanup()
-
-    def cleanup(self) -> None:
-        if self._preserved or self._path is None:
-            return
-        self._source.worktree_remove(self._path)
-        self._path = None
-
-
-class IsolatedReviewWorkspace(_IsolatedGitWorktree):
-    """Isolation for a Review execution — read-only by contract; any
-    change found inside is itself the violation (see
-    ``MVPManager._run_review``). ``review_id`` is kept as this class's own
-    keyword (rather than the generic ``workspace_id``) for readability at
-    every existing call site/test."""
-
-    _LABEL = "review"
-
-    def __init__(
-        self, *, source_repository_path: str | Path, sha: str, review_id: str,
-        git_binary: str = DEFAULT_GIT_BINARY, parent_dir: str | Path | None = None,
-    ) -> None:
-        super().__init__(
-            source_repository_path=source_repository_path, sha=sha, workspace_id=review_id,
-            git_binary=git_binary, parent_dir=parent_dir,
-        )
-
-
-class IsolatedQAWorkspace(_IsolatedGitWorktree):
-    """Isolation for a QA Test Authoring execution — unlike Review, this
-    phase is write-CAPABLE (it may legitimately add/modify tests), so
-    unlike Review a change found inside is not itself a violation: the
-    caller (``InternalQATestAuthor.run_authoring``) inspects the real git
-    facts here, classifies them against the existing allowed-path rule
-    (``internal_qa_engine.classify_authoring_changes``), and — only for an
-    allowed change-set — promotes it onto the governed target itself via
-    an explicit, orchestrator-controlled ``LocalGitWorkspace.stage_and_commit``
-    call; the worker's own execution here never commits anything the
-    governed target will ever see directly."""
-
-    _LABEL = "qa"
-
-    def __init__(
-        self, *, source_repository_path: str | Path, sha: str, qa_run_id: str,
-        git_binary: str = DEFAULT_GIT_BINARY, parent_dir: str | Path | None = None,
-    ) -> None:
-        super().__init__(
-            source_repository_path=source_repository_path, sha=sha, workspace_id=qa_run_id,
-            git_binary=git_binary, parent_dir=parent_dir,
-        )
-
-
-# --- policy -------------------------------------------------------------
 
 
 class MergeStrategy(str, Enum):
@@ -1189,9 +1048,9 @@ class GitGovernanceService:
         reorders, deduplicates, or touches any other line (including a
         repository owner's own pre-existing local exclusions, and git's
         own default template comments in a freshly-initialized repo).
-        Applies to every ``IsolatedReviewWorkspace`` worktree of this same
-        repository too, with no extra wiring: ``info/exclude`` lives under
-        the repository's shared common dir, not any single worktree.
+        Applies to every linked worktree of this same repository too, with
+        no extra wiring: ``info/exclude`` lives under the repository's
+        shared common dir, not any single worktree.
         """
         ws = self._workspace(repository_path)
         ws._require_repository()  # noqa: SLF001 - same module, deliberate reuse
@@ -1296,19 +1155,6 @@ class GitGovernanceService:
             raise GitHeadDriftError(work_item_id, record.current_head_sha, ws.head_sha())
         head = ws.head_sha()
         return self._store.update_head(work_item_id, head)
-
-    def assert_review_target(self, work_item_id: str, *, repository_path: str | Path) -> GitWorkItemRecord:
-        """Verifies the governed branch/head a reviewer is about to see is
-        exactly what the store expects — never an ambiguous ``base_branch``
-        state."""
-        record = self._store.get(work_item_id)
-        ws = self._workspace(repository_path)
-        if not ws.branch_exists(record.work_branch):
-            raise GitBranchMissingError(work_item_id, record.work_branch)
-        actual_head = ws.try_rev_parse(record.work_branch)
-        if record.current_head_sha is not None and actual_head != record.current_head_sha:
-            raise GitHeadDriftError(work_item_id, record.current_head_sha, actual_head or "")
-        return record
 
     # --- merge eligibility & merge ------------------------------------------
 

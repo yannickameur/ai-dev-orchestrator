@@ -27,7 +27,6 @@ from orchestrator.realization_report import (
     compute_html_hash,
     write_html,
 )
-from orchestrator.review import ReviewFinding, ReviewRecord, ReviewStatus, ReviewStore
 from orchestrator.validation import ValidationCommand, ValidationKind, ValidationStatus, ValidationStore
 from orchestrator.wait import WaitPhase, WaitReason, WaitStore
 
@@ -223,22 +222,6 @@ class TestBasicAggregation:
 
         assert len(report.validations) == 1
         assert report.validations[0].status == "passed"
-
-    def test_reviews_are_optionally_aggregated(self, tmp_path: Path) -> None:
-        project_store, execution_store, handoff_store, report_store = _stores(tmp_path)
-        _seed_work_item(project_store, tmp_path)
-        review_store = ReviewStore(tmp_path / "review.sqlite3", clock=lambda: UTC_NOW)
-        review_store.record(ReviewRecord(
-            review_id="rev-1", project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
-            author_execution_id="exec-1", author_worker_id="alice", started_at=UTC_NOW, finished_at=UTC_NOW,
-            status=ReviewStatus.APPROVED, reviewer_worker_id="victor",
-        ))
-
-        service = _service(project_store, execution_store, handoff_store, report_store, review_store=review_store)
-        report = service.generate(project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a")
-
-        assert len(report.reviews) == 1
-        assert report.reviews[0].status == "approved"
 
     def test_reviews_absent_when_no_review_store_configured(self, tmp_path: Path) -> None:
         project_store, execution_store, handoff_store, report_store = _stores(tmp_path)

@@ -3,13 +3,13 @@
 This is the composition root for Slice 10: it never runs a worker, never
 selects one, and never mutates git — it only *reads* the stores Slices
 5/7/8/9 already built (``ProjectStateStore``, ``ExecutionStore``,
-``ValidationStore``, ``ReviewStore``, ``HandoffStore``), builds a small,
+``ValidationStore``, ``HandoffStore``), builds a small,
 explicit set of :class:`~orchestrator.release.ReleaseCheck` objects, and —
 only if every one of them holds — transitions the MVP to ``RELEASED`` and
 persists a durable :class:`~orchestrator.activity_report.ActivityReport`.
 
 Kept deliberately separate from :class:`~orchestrator.mvp_manager.MVPManager`:
-that class drives WorkItems through development/quality-gate/review: this
+that class drives WorkItems through development/corrective-review/QA: this
 class only evaluates whether the MVP, as a whole, is release-worthy, once
 those WorkItems are believed to be done. Merging the two would turn
 MVPManager into exactly the kind of god object this codebase avoids.
@@ -17,20 +17,23 @@ MVPManager into exactly the kind of god object this codebase avoids.
 FAIL-CLOSED, always:
 
 - Every WorkItem of the MVP must be ``COMPLETED`` — anything else
-  (PLANNED/READY/RUNNING/REVIEWING/NEEDS_REWORK/FAILED/BLOCKED) fails the
-  release outright.
+  (PLANNED/READY/RUNNING/WAITING/NEEDS_REWORK/RECOVERY_REQUIRED/FAILED/
+  BLOCKED) fails the release outright.
 - If the project has any configured validation commands, every COMPLETED
   WorkItem must have a ``PASSED`` quality-gate result — a *missing* gate
   result for a COMPLETED WorkItem is never treated as passing.
-- Review is only checked when the caller explicitly says it is required
-  for this release (``review_required=True``) — this module never
-  invents that policy from the mere presence/absence of review data (see
-  ROADMAP.md, Slice 10 task notes: no opaque heuristic). When required,
-  every COMPLETED WorkItem's *latest* review must be APPROVED.
 - No execution tied to any WorkItem of this MVP may still be RUNNING.
 - ``exit_code`` is never consulted for this decision — only the
-  already-normalized ``WorkItemStatus``/``ValidationStatus``/``ReviewStatus``
+  already-normalized ``WorkItemStatus``/``ValidationStatus``
   values the earlier slices already computed correctly.
+
+A separate, independent-reviewer "reviews-approved" release check existed
+here historically (Slice 10, under the old ``GOVERNED_FULL`` pipeline) and
+was removed when ``GOVERNED_FULL`` was removed before the first public
+release — see ROADMAP.md's dated removal entry. The current model's
+equivalent of independent review is Lean's own DEV B corrective review,
+which is not a separate release-gate check: it happens before a WorkItem
+can even reach ``COMPLETED``.
 
 A release attempt is never skipped or overwritten: each call gets its own
 ``release_id``, persisted via ``ReleaseStore`` regardless of outcome. A
@@ -59,7 +62,6 @@ from orchestrator.activity_report import (
     HandoffSummary,
     Incident,
     ReleaseCheckSummary,
-    ReviewSummary,
     ValidationSummary,
     WorkItemSummary,
 )
@@ -69,18 +71,10 @@ from orchestrator.release import (
     ReleaseRecord,
     ReleaseStore,
 )
-from orchestrator.review import ReviewStatus, ReviewStore
 from orchestrator.validation import ValidationStore
 
 Clock = Callable[[], datetime]
 IdFactory = Callable[[], str]
-
-_INCOMPLETE_STATUSES = (
-    WorkItemStatus.PLANNED, WorkItemStatus.READY, WorkItemStatus.RUNNING,
-    WorkItemStatus.REVIEWING, WorkItemStatus.NEEDS_REWORK, WorkItemStatus.FAILED,
-    WorkItemStatus.BLOCKED,
-)
-
 
 def _default_id_factory() -> str:
     return uuid.uuid4().hex
@@ -107,7 +101,6 @@ class ReleaseManager:
         project_state_store: ProjectStateStore,
         execution_store: ExecutionStore,
         validation_store: ValidationStore,
-        review_store: ReviewStore,
         handoff_store: HandoffStore,
         release_store: ReleaseStore,
         activity_report_store: ActivityReportStore,
@@ -120,7 +113,6 @@ class ReleaseManager:
         self._project_state_store = project_state_store
         self._execution_store = execution_store
         self._validation_store = validation_store
-        self._review_store = review_store
         self._handoff_store = handoff_store
         self._release_store = release_store
         self._activity_report_store = activity_report_store
@@ -129,9 +121,7 @@ class ReleaseManager:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or _default_id_factory
 
-    def attempt_release(
-        self, project_id: str, mvp_id: str, *, review_required: bool = False
-    ) -> ReleaseRecord:
+    def attempt_release(self, project_id: str, mvp_id: str) -> ReleaseRecord:
         """Evaluates the release gate once and persists the attempt.
 
         Never raises for a failed/erroring gate — that is a legitimate,
@@ -145,7 +135,7 @@ class ReleaseManager:
         git_sha = _git_head_sha(project.workspace)
 
         try:
-            checks = self._build_checks(project_id, mvp_id, review_required=review_required)
+            checks = self._build_checks(project_id, mvp_id)
             status = ReleaseGateStatus.PASSED if all(c.passed for c in checks) else ReleaseGateStatus.FAILED
         except Exception as exc:  # noqa: BLE001 - an evaluation error is a real, distinct outcome
             checks = (
@@ -175,9 +165,7 @@ class ReleaseManager:
         self._release_store.record(release)
         return release
 
-    def _build_checks(
-        self, project_id: str, mvp_id: str, *, review_required: bool
-    ) -> tuple[ReleaseCheck, ...]:
+    def _build_checks(self, project_id: str, mvp_id: str) -> tuple[ReleaseCheck, ...]:
         work_items = self._project_state_store.list_work_items(mvp_id)
 
         incomplete = [wi.work_item_id for wi in work_items if wi.status is not WorkItemStatus.COMPLETED]
@@ -214,26 +202,6 @@ class ReleaseManager:
                 summary="no validation commands configured for this project",
             )
 
-        if review_required:
-            missing_or_unapproved = [
-                work_item_id for work_item_id in completed_ids
-                if not self._has_approved_review(work_item_id)
-            ]
-            review_check = ReleaseCheck(
-                check_id="reviews-approved",
-                passed=not missing_or_unapproved,
-                summary=(
-                    f"{len(completed_ids) - len(missing_or_unapproved)}/{len(completed_ids)} completed "
-                    "work items have an approved review"
-                ),
-                related_ids=tuple(missing_or_unapproved),
-            )
-        else:
-            review_check = ReleaseCheck(
-                check_id="reviews-approved", passed=True,
-                summary="review not required for this release",
-            )
-
         dangling = [
             record.execution_id
             for wi in work_items
@@ -250,7 +218,7 @@ class ReleaseManager:
             related_ids=tuple(dangling),
         )
 
-        checks = (all_completed_check, gate_check, review_check, running_check)
+        checks = (all_completed_check, gate_check, running_check)
         if self._git_work_item_store is not None:
             checks += (self._build_git_merge_check(completed_ids),)
         if self._qa_run_store is not None:
@@ -330,10 +298,6 @@ class ReleaseManager:
         gate = self._validation_store.latest_gate_result_for_work_item(work_item_id)
         return gate is not None and gate.passed
 
-    def _has_approved_review(self, work_item_id: str) -> bool:
-        review = self._review_store.latest_for_work_item(work_item_id)
-        return review is not None and review.status is ReviewStatus.APPROVED
-
     def _build_activity_report(
         self, *, release_id: str, project_id: str, mvp: MVP, git_sha: str | None,
         checks: tuple[ReleaseCheck, ...],
@@ -376,22 +340,6 @@ class ReleaseManager:
                     )
                 )
 
-        reviews: list[ReviewSummary] = []
-        for wi in work_items:
-            for cycle_number, review in enumerate(
-                self._review_store.list_for_work_item(wi.work_item_id), start=1
-            ):
-                reviews.append(
-                    ReviewSummary(
-                        review_id=review.review_id, work_item_id=wi.work_item_id,
-                        author_worker_id=review.author_worker_id, status=review.status.value,
-                        cycle_number=cycle_number, reviewer_worker_id=review.reviewer_worker_id,
-                        reviewer_provider=review.reviewer_provider, reviewer_model=review.reviewer_model,
-                        findings_summary=tuple(f.summary for f in review.findings),
-                        git_sha_reviewed=review.git_sha_reviewed,
-                    )
-                )
-
         handoffs: list[HandoffSummary] = []
         for wi in work_items:
             for handoff in self._handoff_store.list_for_work_item(wi.work_item_id):
@@ -422,17 +370,16 @@ class ReleaseManager:
                         summary=f"{v.validation_id} {v.status}",
                     )
                 )
-        for r in reviews:
-            if r.status in ("rejected", "error", "interrupted"):
-                incidents.append(
-                    Incident(work_item_id=r.work_item_id, kind=f"review_{r.status}", summary=f"review {r.review_id} {r.status}")
-                )
-
         workers_used = tuple(sorted({e.worker_id for e in executions}))
         providers_used = tuple(sorted({e.provider for e in executions}))
         failure_count = sum(1 for e in executions if e.status == "failed")
         interruption_count = sum(1 for e in executions if e.status == "interrupted")
-        rework_count = sum(1 for r in reviews if r.status == "rejected")
+        # Historically counted review rejections (GOVERNED_FULL, removed
+        # before the first public release). Lean's own rework signal is
+        # WorkItemStatus.NEEDS_REWORK (driven by QA FAIL, not by review),
+        # which this report does not currently have a transition history
+        # to count from — left at 0 rather than fabricated.
+        rework_count = 0
 
         duration_seconds = None
         finished_ats = [e.finished_at for e in executions if e.finished_at is not None]
@@ -441,7 +388,7 @@ class ReleaseManager:
 
         summary = ActivitySummary(
             work_item_count=len(work_items), execution_count=len(executions),
-            validation_count=len(validations), review_count=len(reviews),
+            validation_count=len(validations), review_count=0,
             rework_count=rework_count, failure_count=failure_count,
             interruption_count=interruption_count, workers_used=workers_used,
             providers_used=providers_used, duration_seconds=duration_seconds,
@@ -453,7 +400,7 @@ class ReleaseManager:
             mvp_final_status="released", summary=summary,
             mvp_acceptance_criteria=mvp.acceptance_criteria, git_sha=git_sha,
             work_items=work_item_summaries, executions=tuple(executions),
-            validations=tuple(validations), reviews=tuple(reviews), handoffs=tuple(handoffs),
+            validations=tuple(validations), reviews=(), handoffs=tuple(handoffs),
             incidents=tuple(incidents),
             gate_checks=tuple(
                 ReleaseCheckSummary(check_id=c.check_id, passed=c.passed, summary=c.summary)

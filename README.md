@@ -67,10 +67,12 @@ HUMAN_REVIEW_REQUIRED     (BLOCKED + TODO ajouté à la roadmap du projet
 ```
 
 Pas d'estimation de complexité obligatoire, pas de phase QA Test Authoring
-séparée, pas de Final QA séparée — volontairement KISS/YAGNI. L'ancien
-pipeline plus lourd (`GOVERNED_FULL`) reste sélectionnable explicitement
-mais est `DEPRECATED`/`REMOVAL_CANDIDATE`. Voir `ROADMAP.md`, section
-« Chemin nominal actuel », pour le détail et les invariants exacts.
+séparée, pas de Final QA séparée — volontairement KISS/YAGNI. C'est le
+**seul** workflow d'exécution de WorkItem que ce projet implémente :
+l'ancien pipeline plus lourd (`GOVERNED_FULL` — Reviewer indépendant en
+lecture seule, QA Test Authoring isolée, Final QA séparée) a été retiré
+avant la première release publique. Voir `ROADMAP.md`, section « Chemin
+nominal actuel » et son entrée datée de retrait, pour le détail complet.
 
 ### Sélection des workers et fallback provider
 

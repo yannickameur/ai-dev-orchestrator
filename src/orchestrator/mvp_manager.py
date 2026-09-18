@@ -1,76 +1,70 @@
 """MVPManager — orchestrates high-level WorkItems for the current MVP.
 
-This is the composition root for the Slice 7/8/9 cycle:
+This is the composition root for the supported product workflow,
+``LEAN_FEATURE_FLOW`` — the only WorkItem execution pipeline this module
+implements:
 
     ROADMAP (functional intent, read by a human/future agent)
       -> MVP / WorkItem (this module's input, via ProjectStateStore)
-      -> WorkerSelector (existing, Slice 4: chooses a worker — for both
-         development AND review; author-independence enforcement already
-         lives there, never duplicated here)
-      -> RalphExecutionEngine (existing, Slice 6: runs development AND
-         review executions — never a direct claude/codex/ralph call)
-      -> QualityGateRunner (existing, Slice 8: validates development —
-         optional; a review is only ever attempted after a PASSED gate)
-      -> ReviewStore (Slice 9: durable, structured review verdicts)
-      -> HandoffStore (Slice 7: durable handoff, now gate- and review-aware)
+      -> WorkerSelector (chooses DEV A, then DEV B — a genuinely
+         independent second developer, `DEV_B.worker_id != DEV_A.worker_id`
+         enforced by WorkerSelector itself, never duplicated here)
+      -> RalphExecutionEngine (runs DEV A/DEV B — never a direct
+         claude/codex/ralph call)
+      -> deterministic QA (opt-in via ``qa_engine``/``qa_policy``/
+         ``qa_run_store`` — read-only, non-LLM, the sole PASS/FAIL
+         authority: `LLM IS NOT ORACLE`, a developer's own claim that
+         "it works" is never sufficient)
+      -> GitGovernanceService (opt-in via ``git_governance_service`` —
+         merge/tag once QA PASSES)
+      -> HandoffStore (durable handoff after every step, gate/QA-aware)
 
-Both Slice 8 (quality gates) and Slice 9 (independent review) are
-deliberately minimal and opt-in, in the same way: supplying
-``quality_gate_runner``/``review_store`` enables the corresponding step;
-omitting either preserves the exact behavior of the slice before it. A
-WorkItem is only ``COMPLETED`` when every step actually configured for
-this MVPManager instance said so — development success, quality gate
-PASSED (if configured), and review APPROVED (if configured).
+A WorkItem reaches ``COMPLETED`` only once DEV A succeeded, DEV B's
+corrective review completed, and QA (if configured) verdict is PASS.
 
 MVPManager orchestrates WorkItems — high-level units of work — never a
 second, fine-grained task queue: once a WorkItem is delegated to Ralph (via
 RalphExecutionEngine), Ralph keeps its own internal orchestration. This
 module re-implements none of WorkerSelector's capability/governance/quota
-logic (including cross-provider review independence — that policy lives on
-the injected WorkerSelector's own WorkerSelectionPolicy, Slice 4, and is
-never duplicated here), and never launches `claude`/`codex`/`ralph`
-directly — only through the existing `WorkerSelector`/`RalphExecutionEngine`.
+logic, and never launches `claude`/`codex`/`ralph` directly — only through
+the existing `WorkerSelector`/`RalphExecutionEngine`.
 
-Execution is strictly sequential and deterministic in this slice: exactly
-one WorkItem is considered per `run_next_work_item()` call, chosen among
-the READY/NEEDS_REWORK ones by ascending `work_item_id`. No parallelism.
+Execution is strictly sequential and deterministic: exactly one WorkItem is
+considered per `run_next_work_item()` call, chosen among the
+READY/NEEDS_REWORK ones by ascending `work_item_id`. No parallelism.
 
 REWORK MACHINE-CONTROLLED, NEVER A BLIND TECHNICAL RETRY:
-a WorkItem moved to NEEDS_REWORK by an independent review rejection is
-eligible for exactly one more development attempt, explicitly motivated by
-the review's findings (attached to the next development execution's
-instructions) — this is business rework, never an automatic re-run of a
-crashed/timed-out execution (that remains forbidden everywhere in this
-codebase). The review/rework loop is bounded by ``ReviewPolicy.
-max_review_cycles``: once exhausted without approval, the WorkItem is
-``BLOCKED`` with an explicit reason, and — as with every other terminal
-path — its dependents are never executed (they resolve to BLOCKED via
+a WorkItem that fails QA moves to `NEEDS_REWORK` and is eligible for a
+bounded number of further DEV-FIX-then-QA cycles
+(``QAPolicy.max_qa_cycles``) — this is business rework driven by QA's own
+findings, never an automatic re-run of a crashed/timed-out execution (that
+remains forbidden everywhere in this codebase). Once exhausted without a
+PASS, the WorkItem is `BLOCKED` with an explicit reason
+(`HUMAN_REVIEW_REQUIRED`), and — as with every other terminal path — its
+dependents are never executed (they resolve to BLOCKED via
 `ProjectStateStore.refresh_readiness`, never silently skipped or re-tried).
 
-A plain RUNNING/REVIEWING WorkItem is never picked up again by the normal
-candidate query: `run_next_work_item`'s fresh-candidate step only ever
-selects from READY/NEEDS_REWORK items, and `refresh_readiness` never
-touches a WorkItem that is not PLANNED. Recognizing *why* a WorkItem is
-still RUNNING/REVIEWING (a live in-progress attempt vs. one orphaned by a
-crash) is not something this module — or `RalphExecutionEngine` for
-`ExecutionRecord` — decides implicitly; see EXECUTION-LEVEL RECOVERY below
-for the explicit reconciliation this slice performs before that query
-ever runs.
+A plain RUNNING WorkItem is never picked up again by the normal candidate
+query: `run_next_work_item`'s fresh-candidate step only ever selects from
+READY/NEEDS_REWORK items, and `refresh_readiness` never touches a WorkItem
+that is not PLANNED. Recognizing *why* a WorkItem is still RUNNING (a live
+in-progress attempt vs. one orphaned by a crash) is not something this
+module — or `RalphExecutionEngine` for `ExecutionRecord` — decides
+implicitly; see EXECUTION-LEVEL RECOVERY below for the explicit
+reconciliation this module performs before that query ever runs.
 
-QUOTA WAITING / DURABLE RESUME (Slice 11a):
+QUOTA WAITING / DURABLE RESUME:
 
 Supplying an optional ``wait_store`` enables a third opt-in capability,
 composed the same way as the two before it: when `WorkerSelector` raises
-`NoEligibleWorkerError`/`ReviewIndependenceError` for the developer or the
-reviewer, this module asks the error's own ``diagnostics`` (a read-only,
-`WorkerSelector`-authored fact list — never re-derived or duplicated here)
-whether a plausible next retry moment is known. If — and only if — at
-least one candidate provider is diagnosed ``quota_exhausted`` with a real
-`QuotaWindow.reset_at`, the WorkItem moves to `WorkItemStatus.WAITING` and
-a durable `orchestrator.wait.WaitRecord` is persisted with that exact
-deadline. If no reliable deadline is known, behavior is unchanged from
-Slice 9: the exception propagates (developer side) or the WorkItem is
-`BLOCKED` (reviewer side) — this module never invents a wait.
+`NoEligibleWorkerError` for DEV A or DEV B, this module asks the error's
+own ``diagnostics`` (a read-only, `WorkerSelector`-authored fact list —
+never re-derived or duplicated here) whether a plausible next retry moment
+is known. If — and only if — at least one candidate provider is diagnosed
+``quota_exhausted`` with a real `QuotaWindow.reset_at`, the WorkItem moves
+to `WorkItemStatus.WAITING` and a durable `orchestrator.wait.WaitRecord`
+is persisted with that exact deadline. If no reliable deadline is known,
+the exception propagates — this module never invents a wait.
 
 Resuming is pull-based and re-checked, never a background poller: the
 very first thing `run_next_work_item` does is ask
@@ -85,128 +79,70 @@ deadline remains. A resumed WorkItem may land on an entirely different
 worker/provider than before; nothing about resumption depends on the
 previous worker still existing or remembering anything.
 
-EXECUTION-LEVEL RECOVERY (Slice 11b):
+EXECUTION-LEVEL RECOVERY:
 
 Distinct from quota waiting above: this handles an *execution* that never
 reached a reliable terminal outcome — a RUNNING `ExecutionRecord` found
 orphaned after a restart (the process that owned it is gone; its real
 fate is unknown), or one that came back `INTERRUPTED` (e.g. a
 `RalphExecutionEngine` timeout) whose WorkItem never got moved out of
-RUNNING/REVIEWING before a crash. Supplying an optional ``execution_store``
-enables a fourth opt-in capability: a `orchestrator.recovery.
-RecoveryCoordinator` reconciles every RUNNING/REVIEWING WorkItem of the
-MVP at the very start of every `run_next_work_item` call — cheap,
-synchronous, no execution launched by the reconciliation itself. An
-orphaned/interrupted execution is NEVER relaunched and NEVER flipped back
-toward RUNNING; it stays exactly as `RECOVERY_REQUIRED`/`INTERRUPTED`
-forever, permanent audit history. Instead, the WorkItem moves to
-`WorkItemStatus.RECOVERY_REQUIRED` (immediately re-orchestrable, no
-deadline to wait out, unlike `WAITING`), backed by a durable recovery
-handoff (reused if one already exists for that exact execution, else
-synthesized from persisted `ExecutionRecord`/`WorkItem`/prior-handoff/
-review facts — never by asking the interrupted worker for a summary). The
-very next thing this module does is resume it: a fresh `WorkerSelector`
-selection (possibly a different worker/provider) and a **brand-new**
-`execution_id` — never the orphaned/interrupted one. The same principle
-applies symmetrically to a review execution: it stays in `REVIEWING` (no
-fantom `APPROVED`/`REJECTED` `ReviewRecord` is ever fabricated for an
-interruption), and resuming selects a fresh, still-independent reviewer.
+RUNNING before a crash. Supplying an optional ``execution_store`` enables
+a fourth opt-in capability: a `orchestrator.recovery.RecoveryCoordinator`
+reconciles every RUNNING WorkItem of the MVP at the very start of every
+`run_next_work_item` call — cheap, synchronous, no execution launched by
+the reconciliation itself. An orphaned/interrupted execution is NEVER
+relaunched and NEVER flipped back toward RUNNING; it stays exactly as
+`RECOVERY_REQUIRED`/`INTERRUPTED` forever, permanent audit history.
+Instead, the WorkItem moves to `WorkItemStatus.RECOVERY_REQUIRED`
+(immediately re-orchestrable, no deadline to wait out, unlike `WAITING`),
+backed by a durable recovery handoff (reused if one already exists for
+that exact execution, else synthesized from persisted
+`ExecutionRecord`/`WorkItem`/prior-handoff facts — never by asking the
+interrupted worker for a summary). The very next thing this module does
+is resume it: a fresh `WorkerSelector` selection (possibly a different
+worker/provider) and a **brand-new** `execution_id` — never the
+orphaned/interrupted one.
 
-ADAPTIVE DEVELOPMENT/REWORK SELECTION (Slice 17):
+ADAPTIVE DEVELOPMENT/REWORK SELECTION:
 
-Supplying an optional ``adaptive_execution_selector`` enables a fifth
-opt-in capability, composed the same way as the ones before it: every
-DEVELOPMENT/REWORK path that resolves a developer —  the fresh-candidate
-path in `run_next_work_item`, the quota-wait resume
-(`_try_resume_due_wait`), and the execution-recovery resume
-(`_try_resume_recovery_required`) — shares one helper,
+Supplying an optional ``adaptive_execution_selector`` enables a fifth,
+independent opt-in capability: every DEVELOPMENT/REWORK path that resolves
+a developer — the fresh-candidate path in `run_next_work_item`, the
+quota-wait resume (`_try_resume_due_wait`), and the execution-recovery
+resume (`_try_resume_recovery_required`) — shares one helper,
 `_select_dev_worker`, so a *resumed* attempt is held to exactly the same
-rules as a fresh one. Each call runs a complexity pre-flight
-(`orchestrator.complexity_estimation`, Slice 16) from *current* persisted
-facts (latest handoff, latest review findings, git SHA — re-read every
-time, never cached in a `WaitRecord`/recovery handoff) and resolves a
-concrete `Worker`/`ExecutionProfile` (`orchestrator.adaptive_execution`,
-Slice 17) instead of a plain `WorkerSelector.select(...)` +
-`Worker.profile()` default. A resume is NEVER allowed to reason "it's
-just a resume, use the default profile" — that would silently violate
-the no-downgrade invariant (e.g. a COMPLEX-tier wait must never resume
-into a STANDARD-only worker just because it happens to be available).
-Because the pre-flight is rebuilt from current facts on every resume, the
-Slice 16 fingerprint/cache does the right thing automatically: unchanged
-facts reuse the existing recommendation (no new Ralph estimator call, no
-tier drift), while a changed handoff/git SHA/review findings naturally
-produce a fresh fingerprint and a fresh recommendation — this module
-never forces or forbids that either way.
+rules as a fresh one. When configured, each call runs a complexity
+pre-flight (`orchestrator.complexity_estimation`) from *current* persisted
+facts (latest handoff, git SHA — re-read every time, never cached in a
+`WaitRecord`/recovery handoff) and resolves a concrete
+`Worker`/`ExecutionProfile` (`orchestrator.adaptive_execution`) instead of
+a plain `WorkerSelector.select(...)` + `Worker.profile()` default. No
+`LEAN_FEATURE_FLOW` caller in this codebase currently wires this
+capability (the Lean default is a plain `WorkerSelector.select()`), but
+the mechanism itself is orthogonal to workflow choice and stays available.
+No silent downgrade below a recommended quality tier, no fallback to a
+default profile on any pre-flight/selection failure (those exceptions
+propagate unchanged).
 
-Every invariant from Slices 15/16/17 stays enforced end to end: no silent
-downgrade below the recommended quality tier, no fallback to a default
-profile on any pre-flight/selection failure (those exceptions propagate
-unchanged — this module never catches
-`NoReliableRecommendationError`/`EstimatorProfileNotConfiguredError`/
-`InvalidRecommendationPayloadError`/`NoCapableProfileError` to paper over
-them with a default), and the resulting `AdaptiveExecutionDecision` is
-what actually parameterizes the `ExecutionRequest` (`model`/
-`reasoning_effort`), never `Worker.profile()`'s own default. A worker can
-freely differ between the original attempt and a resume (e.g. Victor/deep
-timed out, Alice/deep resumes) — no worker-continuity affinity is ever
-assumed or enforced.
+Historical note: an earlier, heavier pipeline (`WorkflowMode.GOVERNED_FULL`
+— a separate read-only Reviewer phase, isolated QA Test Authoring, and a
+separate Final QA phase) existed in this module and was removed before the
+first public release, superseded by `LEAN_FEATURE_FLOW`'s DEV A -> DEV B
+corrective review -> deterministic QA. See ROADMAP.md's dated removal
+entry for the full rationale; nothing in this module implements it anymore.
 
-ADAPTIVE REVIEW SELECTION (Slice 19):
-
-`_run_review` — the single method already shared by every path that
-resolves a reviewer (the fresh path via `_execute_work_item`, the
-quota-wait resume via `_resume_review_wait`, and the execution-recovery
-resume via `_try_resume_recovery_required`'s review branch, both of the
-latter through `_run_review_from_handoff`) — now goes through
-`_select_reviewer_worker`, the exact same pattern as `_select_dev_worker`:
-when `adaptive_execution_selector` is configured, a fresh
-`ComplexityEstimationRequest` (role=`REVIEWER_ROLE`, never
-`DEFAULT_WORK_ITEM_ROLE` — so the Slice 16 fingerprint/cache is
-independent of development's own pre-flight by construction:
-development=SIMPLE and review=COMPLEX, or the reverse, are both possible
-real outcomes) drives a real `AdaptiveExecutionSelector.select()` call
-instead of a plain `WorkerSelector.select()` + `Worker.profile()` default.
-Because all three call sites already shared `_run_review`, no separate
-wiring was needed per resume path — a resumed review is automatically
-held to the same rules as a fresh one, exactly mirroring Slice 17's
-development-resume fix.
-
-`author_worker_id` is always forwarded through to
-`AdaptiveExecutionSelector.select()` (which forwards it, in turn, to
-`WorkerSelectionRequest.author_worker_id`) — `ReviewPolicy`'s author!=
-reviewer guarantee and the existing cross-provider review-independence
-policy (`prefer_distinct_provider_for_review`/
-`require_distinct_provider_for_review`) are never bypassed or weakened by
-the adaptive layer; they are the same `WorkerSelector`-owned checks as
-before, merely reached through one more layer. `ReviewRecord`'s own
-`__post_init__` invariant (`reviewer_worker_id != author_worker_id`) is
-the final, structural backstop either way.
-
-A quota-exhausted-for-the-required-tier reviewer never falls back to the
-author or to a weaker tier: `NoEligibleWorkerError`/`ReviewIndependenceError`/
-`UnknownWorkerError` from the adaptive selector's own `WorkerSelector`
-call are still the only exceptions `_run_review` catches to consider a
-`WAITING`/`BLOCKED` outcome — exactly as before Slice 19. A structural
-incapacity discovered by the adaptive layer itself
-(`NoReliableRecommendationError`/`EstimatorProfileNotConfiguredError`/
-`InvalidRecommendationPayloadError`/`NoCapableProfileError`) is never
-caught here either, symmetric with development: it propagates, fail-
-closed, never mislabeled as a diagnosable quota wait.
-
-Release planning and roadmap synthesis are made adaptive by this slice
-too, but entirely within `orchestrator.planning` — see that module's own
-docstring; nothing in `MVPManager` changes for either.
+Release planning and roadmap synthesis are made adaptive by
+`orchestrator.planning`, not by this module — see that module's own
+docstring; nothing here changes for either.
 """
 
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Callable
 
@@ -218,18 +154,10 @@ from orchestrator.git_governance import (
     GitGovernanceService,
     GitWorkItemRecord,
     GitWorkItemStatus,
-    IsolatedReviewWorkspace,
     LocalGitWorkspace,
 )
 from orchestrator.handoff import HandoffRecord, HandoffStore
-from orchestrator.internal_qa_engine import (
-    AuthoringViolationError,
-    InternalQATestAuthor,
-    QA_TESTING_CAPABILITY,
-    QA_TESTING_ROLE,
-    changed_files_since,
-    working_tree_changed_files,
-)
+from orchestrator.internal_qa_engine import working_tree_changed_files
 from orchestrator.project_state import MVP, Project, ProjectStateStore, WorkItem, WorkItemStatus
 from orchestrator.qa import (
     QAEngine,
@@ -257,20 +185,11 @@ from orchestrator.ralph_execution_engine import (
     RalphExecutionEngineError,
 )
 from orchestrator.recovery import RecoveryCoordinator
-from orchestrator.review import (
-    ReviewFinding,
-    ReviewPolicy,
-    ReviewRecord,
-    ReviewStatus,
-    ReviewStore,
-    parse_findings,
-)
-from orchestrator.validation import QualityGateResult, QualityGateRunner, ValidationStore
+from orchestrator.validation import QualityGateResult, ValidationStore
 from orchestrator.wait import WaitCoordinator, WaitPhase, WaitRecord, WaitStore
 from orchestrator.worker_selector import (
     NoEligibleWorkerError,
     ProviderSelectionDiagnostic,
-    ReviewIndependenceError,
     UnknownWorkerError,
     Worker,
     WorkerSelectionRequest,
@@ -280,60 +199,15 @@ from orchestrator.worker_selector import (
 Clock = Callable[[], datetime]
 IdFactory = Callable[[], str]
 
-class WorkflowMode(str, Enum):
-    """Which execution pipeline ``MVPManager`` runs a WorkItem through.
-
-    ``LEAN_FEATURE_FLOW`` (the default, product decision 2026-09-16):
-    DEV A -> DEV B corrective review (a second, independent developer who
-    may fix code directly, not a read-only reviewer) -> a single QA phase
-    (deterministic, read-only) -> merge -> tag. No complexity estimation,
-    no separate QA Test Authoring phase, no separate Final QA phase — KISS/
-    YAGNI, at most 3 real AI executions per feature on the happy path.
-
-    ``GOVERNED_FULL`` is the original, heavier pipeline (adaptive
-    estimation before every phase, isolated QA Test Authoring +
-    governed promotion, isolated read-only Review, separate Final QA
-    Verification) — kept, unmodified, for comparison/compatibility.
-    DEPRECATED / REMOVAL_CANDIDATE: no new capability is added to it: only
-    critical regressions are fixed going forward.
-    """
-
-    LEAN_FEATURE_FLOW = "lean_feature_flow"
-    GOVERNED_FULL = "governed_full"
-
-
 DEFAULT_WORK_ITEM_ROLE = "developer"
-REVIEWER_ROLE = "reviewer"
-# The reviewer *role* (above) and the reviewer *capability* (below) are
-# deliberately distinct: role is a logical label used for
-# ExecutionRequest/ExecutionRecord identification and logging,
-# capability is what WorkerSelector actually matches against a Worker's
-# configured ``capabilities`` (config/workers.yaml). The canonical
-# capability string is "code_review" — it must match config/workers.yaml
-# exactly, never a synonym, and never both at once.
-REVIEW_CAPABILITY = "code_review"
 DEFAULT_TIMEOUT_SECONDS = 900.0
 INITIAL_EVENT_TOPIC = "work.start"
 SUCCESS_TOPIC = "work.completed"
 FAILURE_TOPIC = "work.failed"
-REVIEW_INITIAL_EVENT_TOPIC = "review.start"
-REVIEW_SUCCESS_TOPIC = "review.approved"
-REVIEW_FAILURE_TOPIC = "review.rejected"
-
-# Reviewer selection failures that must never be papered over with a
-# silent same-worker/same-provider fallback — WorkerSelector already
-# raises these when independence cannot be satisfied.
-_REVIEWER_SELECTION_ERRORS = (NoEligibleWorkerError, ReviewIndependenceError, UnknownWorkerError)
 
 
 def _default_id_factory() -> str:
     return uuid.uuid4().hex
-
-
-def _summarize_findings(findings: tuple[ReviewFinding, ...]) -> str:
-    if not findings:
-        return "(no specific findings recorded)"
-    return "; ".join(f"[{f.severity}] {f.summary}" for f in findings)
 
 
 # Generic, backend-agnostic commit-governance reminder included in every
@@ -372,9 +246,9 @@ def _build_dev_instructions(work_item: WorkItem, *, resume_context: str | None) 
 
 
 def _build_dev_b_instructions(work_item: WorkItem, *, dev_a_worker_id: str) -> str:
-    """LEAN_FEATURE_FLOW's DEV B corrective review — deliberately NOT
-    read-only (see ``WorkflowMode`` docstring): fix evident issues
-    directly rather than only listing suggestions, and commit the fix."""
+    """DEV B's corrective review — deliberately NOT read-only: fix evident
+    issues directly rather than only listing suggestions, and commit the
+    fix."""
     criteria = "\n".join(f"- {c}" for c in work_item.acceptance_criteria) or "- (none specified)"
     return (
         f"Corrective review of the implementation just produced by another developer "
@@ -395,95 +269,20 @@ def _build_dev_b_instructions(work_item: WorkItem, *, dev_a_worker_id: str) -> s
     )
 
 
-def _build_review_instructions(
-    work_item: WorkItem,
-    *,
-    quality_gate_summary: str,
-    git_sha: str | None,
-    previous_findings: tuple[ReviewFinding, ...] | None,
-) -> str:
-    criteria = "\n".join(f"- {c}" for c in work_item.acceptance_criteria) or "- (none specified)"
-    lines = [
-        f"Independently review the work completed for: {work_item.title}",
-        "",
-        "Acceptance criteria:",
-        criteria,
-        "",
-        f"Quality gate result: {quality_gate_summary}",
-    ]
-    if git_sha:
-        lines.append(f"Git SHA to review: {git_sha}")
-    if previous_findings:
-        lines += ["", "This is a re-review after a previous rejection. Previous findings:", _summarize_findings(previous_findings)]
-    lines += [
-        "",
-        "Verify the actual result produced yourself — do not simply trust the author's summary.",
-        "",
-        "If the work meets the acceptance criteria, emit exactly:",
-        "",
-        f'ralph emit "{REVIEW_SUCCESS_TOPIC}" "approved"',
-        "",
-        "If it does not, emit exactly (a short reason, or a JSON array of finding objects "
-        'with fields summary/severity/detail/file_path/line/category):',
-        "",
-        f'ralph emit "{REVIEW_FAILURE_TOPIC}" "<reason or JSON findings>"',
-        "",
-        "Then output:",
-        "",
-        "LOOP_COMPLETE",
-    ]
-    return "\n".join(lines)
-
-
-def _summarize_gate(gate: QualityGateResult) -> str:
-    verdict = "PASSED" if gate.passed else "FAILED"
-    details = ", ".join(f"{r.validation_id}={r.status.value}" for r in gate.results)
-    return f"quality_gate={verdict} ({details})" if details else f"quality_gate={verdict}"
-
-
-def _summarize_review(review: ReviewRecord) -> str:
-    reviewer = review.reviewer_worker_id or "none"
-    summary = f"review_id={review.review_id} status={review.status.value} reviewer={reviewer}"
-    if review.findings:
-        summary += "; findings: " + _summarize_findings(review.findings)
-    return summary
-
-
-@dataclass(frozen=True, slots=True)
-class _RecoveredExecutionRecordFacts:
-    """The 3 fields `_run_review` actually reads off `ExecutionResult.record`.
-
-    Used only when resuming a REVIEW-phase wait after a restart: there is
-    no live `ExecutionResult` to pass anymore (the process that produced
-    it may no longer exist), only the durable facts a past `HandoffRecord`
-    already captured. Duck-typed so `_run_review` needs no special-casing.
-    """
-
-    execution_id: str
-    worker_id: str
-    git_sha_after: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class _RecoveredExecutionResult:
-    record: _RecoveredExecutionRecordFacts
-
-
 @dataclass(frozen=True, slots=True)
 class WorkItemRunResult:
     """What happened when MVPManager ran one WorkItem.
 
     ``handoff`` is ``None`` exactly when nothing was executed this call —
-    a fresh WAITING (Slice 11: no eligible worker at all, but a reset is
-    known) or a give-up to BLOCKED with no execution attempted. ``wait``
-    is set only when this call's outcome was recording or updating a
-    durable wait (never set on a resumed, executed, or terminal outcome).
+    a fresh WAITING (no eligible worker at all, but a reset is known) or a
+    give-up to BLOCKED with no execution attempted. ``wait`` is set only
+    when this call's outcome was recording or updating a durable wait
+    (never set on a resumed, executed, or terminal outcome).
     """
 
     work_item: WorkItem
     handoff: HandoffRecord | None
     gate_result: QualityGateResult | None = None
-    review_result: ReviewRecord | None = None
     wait: WaitRecord | None = None
 
 
@@ -501,9 +300,6 @@ class MVPManager:
         worker_selector: WorkerSelector,
         execution_engine: RalphExecutionEngine,
         *,
-        quality_gate_runner: QualityGateRunner | None = None,
-        review_store: ReviewStore | None = None,
-        review_policy: ReviewPolicy | None = None,
         wait_store: WaitStore | None = None,
         execution_store: ExecutionStore | None = None,
         adaptive_execution_selector: AdaptiveExecutionSelector | None = None,
@@ -513,7 +309,6 @@ class MVPManager:
         qa_policy: QAPolicy | None = None,
         qa_run_store: QARunStore | None = None,
         qa_protected_paths: tuple[str, ...] = (),
-        workflow_mode: WorkflowMode = WorkflowMode.LEAN_FEATURE_FLOW,
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
@@ -522,10 +317,6 @@ class MVPManager:
         self._handoff_store = handoff_store
         self._worker_selector = worker_selector
         self._execution_engine = execution_engine
-        self._workflow_mode = workflow_mode
-        self._quality_gate_runner = quality_gate_runner
-        self._review_store = review_store
-        self._review_policy = review_policy or ReviewPolicy()
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or _default_id_factory
         self._timeout_seconds = timeout_seconds
@@ -541,32 +332,23 @@ class MVPManager:
         self._execution_store = execution_store
         self._recovery_coordinator = (
             RecoveryCoordinator(
-                execution_store, handoff_store, project_state_store, review_store,
+                execution_store, handoff_store, project_state_store,
                 clock=self._clock, id_factory=self._id_factory,
             )
             if execution_store is not None
             else None
         )
-        # QA integration (Slice 24) — opt-in, composed exactly like every
-        # capability above: supplying qa_engine+qa_policy+qa_run_store
-        # enables it, omitting any one preserves pre-Slice-24 behavior
-        # byte-for-byte. `qa_engine` is only ever used through the
-        # provider-independent `QAEngine` Protocol (`.run(request)`) —
-        # this module never imports or isinstance-checks a specific
-        # engine implementation (InternalQAEngine or otherwise).
+        # QA integration — opt-in, composed exactly like every capability
+        # above: supplying qa_engine+qa_policy+qa_run_store enables it,
+        # omitting any one preserves the exact behavior of not having QA at
+        # all. `qa_engine` is only ever used through the provider-
+        # independent `QAEngine` Protocol (`.run(request)`) — this module
+        # never imports or isinstance-checks a specific engine
+        # implementation (InternalQAEngine or otherwise).
         self._qa_engine = qa_engine
         self._qa_policy = qa_policy or QAPolicy()
         self._qa_run_store = qa_run_store
         self._qa_protected_paths = tuple(qa_protected_paths)
-        self._qa_test_author = (
-            InternalQATestAuthor(
-                adaptive_execution_selector=adaptive_execution_selector, worker_selector=worker_selector,
-                execution_engine=execution_engine, clock=self._clock, id_factory=self._id_factory,
-                timeout_seconds=timeout_seconds,
-            )
-            if qa_engine is not None and adaptive_execution_selector is not None
-            else None
-        )
 
     @property
     def _qa_enabled(self) -> bool:
@@ -586,10 +368,10 @@ class MVPManager:
         enabled.
 
         Otherwise: eligible means READY (dependencies satisfied) or
-        NEEDS_REWORK (a previous review rejected it and rework cycles
-        remain) — the latter skips dependency re-checking since it was
-        already established. Returns ``None`` when nothing is currently
-        eligible and nothing is due.
+        NEEDS_REWORK (QA failed with rework cycles remaining) — the
+        latter skips dependency re-checking since it was already
+        established. Returns ``None`` when nothing is currently eligible
+        and nothing is due.
         """
         if self._recovery_coordinator is not None:
             self._recovery_coordinator.reconcile_mvp(mvp_id)
@@ -640,12 +422,7 @@ class MVPManager:
             raise
 
         resume_context = self._build_resume_context(work_item.work_item_id) if not is_rework else None
-        executor = (
-            self._execute_work_item_lean
-            if self._workflow_mode is WorkflowMode.LEAN_FEATURE_FLOW
-            else self._execute_work_item
-        )
-        return await executor(
+        return await self._execute_work_item_lean(
             mvp_id=mvp_id, mvp=mvp, work_item=work_item, dev_worker=dev_worker,
             is_rework=is_rework, resume_context=resume_context,
             dev_model=dev_model, dev_reasoning_effort=dev_reasoning_effort,
@@ -691,117 +468,36 @@ class MVPManager:
         )
         return worker, None, None
 
-    async def _select_reviewer_worker(
-        self, *, project: Project, mvp_id: str, work_item: WorkItem, author_worker_id: str,
-        git_sha: str | None, previous_findings: tuple[ReviewFinding, ...] | None,
-    ) -> tuple[Worker, str | None, str | None]:
-        """Resolves the reviewer for one review attempt (Slice 19).
-
-        Mirrors ``_select_dev_worker`` exactly: shared by every path that
-        resolves a reviewer — the fresh path (``_run_review`` called from
-        ``_execute_work_item``), the quota-wait resume
-        (``_resume_review_wait``), and the execution-recovery resume
-        (``_try_resume_recovery_required``'s review branch) — because all
-        three already funnel through this same ``_select_reviewer_worker``
-        (via ``_run_review``/``_run_review_from_handoff``), a resumed
-        review is held to exactly the same adaptive rules as a fresh one,
-        with no separate wiring needed per resume path.
-
-        ``author_worker_id`` is always forwarded to
-        ``AdaptiveExecutionSelector.select()``/``WorkerSelector.select()``
-        so the existing author!=reviewer guarantee and cross-provider
-        review-independence policy apply exactly as before — this method
-        never weakens or bypasses either.
-
-        Returns ``(worker, model, reasoning_effort)``; ``model``/
-        ``reasoning_effort`` are ``None`` when adaptive execution is not
-        configured (caller then falls back to ``Worker.profile()``'s
-        default, exactly as pre-Slice-19).
-        """
-        if self._adaptive_execution_selector is not None:
-            if self._git_governance_service is not None:
-                self._git_governance_service.ensure_runtime_exclusion(project.workspace)
-            estimation_request = self._build_review_estimation_request(
-                project=project, mvp_id=mvp_id, work_item=work_item,
-                git_sha=git_sha, previous_findings=previous_findings,
-            )
-            selection = await self._adaptive_execution_selector.select(
-                estimation_request=estimation_request,
-                required_capabilities=frozenset({REVIEW_CAPABILITY}),
-                author_worker_id=author_worker_id,
-            )
-            return selection.worker, selection.decision.model, selection.decision.reasoning_effort
-        reviewer = await self._worker_selector.select(
-            WorkerSelectionRequest(
-                required_capabilities=frozenset({REVIEW_CAPABILITY}), author_worker_id=author_worker_id,
-            )
-        )
-        return reviewer, None, None
-
-    def _build_review_estimation_request(
-        self, *, project: Project, mvp_id: str, work_item: WorkItem,
-        git_sha: str | None, previous_findings: tuple[ReviewFinding, ...] | None,
-    ) -> ComplexityEstimationRequest:
-        """Facts available right now for a review pre-flight.
-
-        Deliberately its own ``role`` (``REVIEWER_ROLE``, never
-        ``DEFAULT_WORK_ITEM_ROLE``) — the Slice 16 fingerprint already
-        includes ``role``, so this is independently estimated/cached from
-        development's own pre-flight by construction: development=SIMPLE
-        and review=COMPLEX (or the reverse) are both possible real
-        outcomes, never one copied from the other. ``review_findings`` is
-        populated whenever a previous review exists (a re-review after
-        rework), never gated on a separate "is this rework" flag the way
-        the development pre-flight is — a review pre-flight always wants
-        whatever review history exists for this exact WorkItem.
-        """
-        latest_handoff = self._handoff_store.latest_for_work_item(work_item.work_item_id)
-        return ComplexityEstimationRequest(
-            project_id=project.project_id, role=REVIEWER_ROLE, workspace=project.workspace,
-            objective=work_item.title, acceptance_criteria=work_item.acceptance_criteria,
-            mvp_id=mvp_id, work_item_id=work_item.work_item_id,
-            latest_handoff=latest_handoff, review_findings=previous_findings or (), git_sha=git_sha,
-        )
-
     def _build_estimation_request(
         self, *, project: Project, mvp_id: str, work_item: WorkItem, is_rework: bool,
     ) -> ComplexityEstimationRequest:
         """Facts available right now for a development/rework pre-flight.
 
-        REWORK includes the latest review's findings (never for a first
-        attempt); both include the latest handoff/git SHA if one already
-        exists. The Slice 16 fingerprint decides on its own whether an
-        existing recommendation is still reusable — this method never
+        Includes the latest handoff/git SHA if one already exists (REWORK
+        under Lean is driven by QA findings, attached to the next
+        development execution's own instructions — see
+        ``_execute_work_item_lean`` — never a separate review-findings
+        channel here). The Slice 16 fingerprint decides on its own whether
+        an existing recommendation is still reusable — this method never
         second-guesses that by forcing ``force_refresh``, whether called
         fresh or from a resume path.
         """
         latest_handoff = self._handoff_store.latest_for_work_item(work_item.work_item_id)
-        review_findings: tuple[ReviewFinding, ...] = ()
-        if is_rework and self._review_store is not None:
-            previous_review = self._review_store.latest_for_work_item(work_item.work_item_id)
-            if previous_review is not None:
-                review_findings = previous_review.findings
         git_sha = latest_handoff.git_sha_after if latest_handoff is not None else None
         return ComplexityEstimationRequest(
             project_id=project.project_id, role=DEFAULT_WORK_ITEM_ROLE, workspace=project.workspace,
             objective=work_item.title, acceptance_criteria=work_item.acceptance_criteria,
             mvp_id=mvp_id, work_item_id=work_item.work_item_id,
-            latest_handoff=latest_handoff, review_findings=review_findings, git_sha=git_sha,
+            latest_handoff=latest_handoff, review_findings=(), git_sha=git_sha,
         )
 
-    # --- LEAN_FEATURE_FLOW (2026-09-16 product decision, default workflow) --
+    # --- LEAN_FEATURE_FLOW (2026-09-16 product decision, the only
+    # supported workflow — see ROADMAP.md's dated removal entry for the
+    # earlier, heavier GOVERNED_FULL pipeline this superseded) ----------
     #
     # DEV A -> DEV B corrective review -> single QA phase -> merge -> tag.
     # No complexity estimation, no isolated QA Test Authoring/promotion, no
-    # separate read-only Review, no separate Final QA phase — deliberately
-    # reuses the exact same lower-level primitives GOVERNED_FULL already
-    # has (``WorkerSelector``, ``ExecutionRequest``/``RalphExecutionEngine``,
-    # ``GitGovernanceService.prepare_work_item``/``capture_head``/
-    # ``compute_merge_eligibility``/``merge``, ``_run_qa_cycle`` with
-    # ``QAPhase.FINAL_VERIFICATION``, ``WaitCoordinator``) — never a second,
-    # parallel implementation of any of them. GOVERNED_FULL's own methods
-    # (``_execute_work_item`` and everything it calls) are never modified
-    # or called from here.
+    # separate read-only Review, no separate Final QA phase.
 
     async def _run_lean_development(
         self, *, project: Project, work_item: WorkItem, worker: Worker,
@@ -926,8 +622,8 @@ class MVPManager:
         dev_b_worker: Worker, head_after_a: str, base_sha: str,
     ) -> WorkItemRunResult:
         """DEV B's corrective review execution (write-capable, direct in
-        the governed workspace — never read-only, never isolated: this is
-        a deliberate design choice, see ``WorkflowMode`` docstring) through
+        the governed workspace — never read-only, never isolated: a
+        deliberate design choice, see this module's own docstring) through
         to QA. Shared by the fresh-attempt path and the DEV_B_REVIEW wait
         resume, so both go through the exact same continuation."""
         profile = dev_b_worker.profile()
@@ -1031,7 +727,7 @@ class MVPManager:
         if run.verdict is not None and run.verdict.status is QAVerdictStatus.PASS:
             work_item = self._project_state_store.mark_work_item_completed(work_item.work_item_id)
             self._maybe_finalize_git(
-                project=project, work_item=work_item, gate_result=None, review_result=None,
+                project=project, work_item=work_item, gate_result=None,
                 qa_passed=True, qa_git_sha=head_sha,
             )
             merged_sha = self._maybe_tag_lean_merge(project=project, work_item=work_item)
@@ -1110,22 +806,6 @@ class MVPManager:
         )
 
     # --- QA integration (Slice 24) ------------------------------------------
-
-    def _build_qa_estimation_request(
-        self, *, project: Project, mvp_id: str, work_item: WorkItem, base_sha: str, head_sha: str,
-    ) -> ComplexityEstimationRequest:
-        """Facts for the QA Test Authoring worker pre-flight — its own
-        ``role`` (``QA_TESTING_ROLE``), so the Slice 16 fingerprint/cache
-        is independent of both development's and review's own pre-flight
-        by construction, exactly like review's own ``REVIEWER_ROLE``
-        (Slice 19)."""
-        latest_handoff = self._handoff_store.latest_for_work_item(work_item.work_item_id)
-        return ComplexityEstimationRequest(
-            project_id=project.project_id, role=QA_TESTING_ROLE, workspace=project.workspace,
-            objective=work_item.title, acceptance_criteria=work_item.acceptance_criteria,
-            mvp_id=mvp_id, work_item_id=work_item.work_item_id,
-            latest_handoff=latest_handoff, git_sha=head_sha,
-        )
 
     def _capture_protected_baseline(
         self, *, workspace: str, base_sha: str
@@ -1261,210 +941,6 @@ class MVPManager:
         self._qa_run_store.record_verdict(run.run_id, verdict)
         return self._qa_run_store.get(run.run_id)
 
-    async def _run_qa_authoring(
-        self, *, project: Project, mvp_id: str, work_item: WorkItem,
-        developer_worker_id: str, base_sha: str, head_sha: str,
-    ) -> WorkItemRunResult | str:
-        """QA Test Authoring (Part B), right after a successful
-        DEVELOPMENT/REWORK execution, before quality gates. Returns the
-        (possibly refreshed, if the QA worker committed a new test) head
-        SHA to continue with on PASS/acceptable evidence — the caller
-        then proceeds to quality gates — or a terminal ``WorkItemRunResult``
-        (WAITING/NEEDS_REWORK/BLOCKED) the caller must return immediately.
-        """
-        cycles_used = self._count_qa_cycles(work_item.work_item_id, QAPhase.TEST_AUTHORING)
-        if cycles_used >= self._qa_policy.max_qa_cycles:
-            blocked = self._project_state_store.mark_work_item_blocked(
-                work_item.work_item_id,
-                reason=f"max_qa_cycles ({self._qa_policy.max_qa_cycles}) reached without a passing QA verdict",
-            )
-            return WorkItemRunResult(
-                work_item=blocked, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
-            )
-
-        if self._qa_test_author is not None:
-            if self._git_governance_service is not None:
-                self._git_governance_service.ensure_runtime_exclusion(project.workspace)
-            estimation_request = self._build_qa_estimation_request(
-                project=project, mvp_id=mvp_id, work_item=work_item, base_sha=base_sha, head_sha=head_sha,
-            )
-            try:
-                worker, model, reasoning_effort = await self._qa_test_author.select_worker(
-                    estimation_request=estimation_request, developer_worker_id=developer_worker_id,
-                )
-            except _REVIEWER_SELECTION_ERRORS as exc:
-                if self._wait_coordinator is not None:
-                    wait = self._wait_coordinator.record_wait(
-                        project_id=project.project_id, mvp_id=mvp_id, work_item_id=work_item.work_item_id,
-                        phase=WaitPhase.QA_AUTHORING, diagnostics=getattr(exc, "diagnostics", ()),
-                    )
-                    if wait is not None:
-                        waiting = self._project_state_store.mark_work_item_waiting(work_item.work_item_id)
-                        return WorkItemRunResult(work_item=waiting, handoff=None, wait=wait)
-                blocked = self._project_state_store.mark_work_item_blocked(
-                    work_item.work_item_id, reason=f"no eligible QA authoring worker available: {exc}",
-                )
-                return WorkItemRunResult(
-                    work_item=blocked, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
-                )
-
-            # IMPORTANT: `run_authoring`'s own `base_sha` param is the
-            # *pre-this-execution* baseline `verify_authoring_git_facts`
-            # diffs against to detect a violation (Slice 23) — it must be
-            # `head_sha` (the state right after DEVELOPMENT, immediately
-            # before this QA authoring execution starts), never the
-            # WorkItem's overall `base_sha` (before development). Passing
-            # the WorkItem's own base_sha here would flag the developer's
-            # own legitimate prior commit as an "unauthorized production
-            # file" on every single QA authoring run — this mirrors
-            # exactly the base_sha==head_sha pattern the Part R smoke
-            # script already uses for its own (dev-phase-less) scenario.
-            # `changed_files` still reflects the *whole* WorkItem's real
-            # diff (base_sha -> head_sha) as richer context for the
-            # worker's own instructions.
-            outcome = await self._qa_test_author.run_authoring(
-                worker=worker, model=model, reasoning_effort=reasoning_effort,
-                task_id=work_item.work_item_id, workspace=project.workspace,
-                objective=work_item.title, acceptance_criteria=work_item.acceptance_criteria,
-                base_sha=head_sha, head_sha=head_sha,
-                changed_files=changed_files_since(project.workspace, base_sha, head_sha),
-                existing_coverage=(),
-            )
-            if outcome.unauthorized_files:
-                blocked = self._project_state_store.mark_work_item_blocked(
-                    work_item.work_item_id,
-                    reason=f"QA authoring touched unauthorized file(s): {list(outcome.unauthorized_files)!r}",
-                )
-                return WorkItemRunResult(
-                    work_item=blocked, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
-                )
-            if outcome.promotion_blocked_reason:
-                # An allowed QA change-set existed but could not be safely
-                # promoted (the governed target advanced past `head_sha`
-                # or was already dirty while QA authoring ran in
-                # isolation) — never rebase/merge/retry; the target was
-                # never touched, so this fails closed exactly like an
-                # unauthorized-file violation, with its own distinct
-                # reason for diagnosis.
-                blocked = self._project_state_store.mark_work_item_blocked(
-                    work_item.work_item_id,
-                    reason=f"QA authoring promotion blocked: {outcome.promotion_blocked_reason}",
-                )
-                return WorkItemRunResult(
-                    work_item=blocked, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
-                )
-            if outcome.git_sha_after and outcome.git_sha_after != head_sha:
-                head_sha = outcome.git_sha_after
-                if self._git_governance_service is not None:
-                    self._git_governance_service.capture_head(
-                        work_item.work_item_id, repository_path=project.workspace,
-                    )
-
-        request = QARequest(
-            project_id=project.project_id, mvp_id=mvp_id, work_item_id=work_item.work_item_id,
-            workspace=str(project.workspace), base_sha=base_sha, head_sha=head_sha,
-            objective=work_item.title, acceptance_criteria=work_item.acceptance_criteria,
-            phase=QAPhase.TEST_AUTHORING,
-        )
-        run = await self._run_qa_cycle(request=request, phase=QAPhase.TEST_AUTHORING)
-
-        if run.verdict is not None and run.verdict.status is QAVerdictStatus.PASS:
-            return head_sha
-
-        result = self._qa_run_store.get_result(run.run_id)
-        requires_coding = result is not None and result.requires_coding_agent
-        if run.verdict is not None and run.verdict.status is QAVerdictStatus.FAIL and requires_coding:
-            handoff = self._create_qa_handoff(
-                project=project, mvp_id=mvp_id, work_item=work_item, run=run, head_sha=head_sha,
-            )
-            rework = self._project_state_store.mark_work_item_needs_rework(work_item.work_item_id)
-            return WorkItemRunResult(work_item=rework, handoff=handoff)
-
-        reason = run.verdict.reason if run.verdict is not None else "QA authoring produced no verdict"
-        blocked = self._project_state_store.mark_work_item_blocked(
-            work_item.work_item_id, reason=f"QA authoring did not pass: {reason}",
-        )
-        return WorkItemRunResult(
-            work_item=blocked, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
-        )
-
-    async def _run_final_qa_verification(
-        self, *, project: Project, mvp_id: str, work_item: WorkItem, base_sha: str, head_sha: str,
-    ) -> tuple[WorkItem, str, bool]:
-        """QA Final Verification (Part F), after REVIEW APPROVED (or, when
-        review is not configured, after quality gates PASS) — read-only,
-        on the exact current head. Returns
-        ``(updated_work_item, next_action, qa_passed)``: ``qa_passed`` is
-        True only for a governed ``PASS`` on this exact SHA, in which case
-        the caller proceeds to ``mark_work_item_completed`` +
-        ``_maybe_finalize_git`` (passing the same QA facts through). Any
-        other outcome (FAIL -> REWORK, or BLOCKED) is already fully
-        resolved here — the caller must return immediately in that case,
-        never mark COMPLETED.
-
-        PRE-condition (external pilot finding): the workspace must
-        functionally match ``head_sha`` *before* a single pytest command
-        runs — the existing read-only guarantee
-        (``run_final_verification_gate``/``verify_repository_unchanged``)
-        only ever proves nothing changed *during* this call; it cannot by
-        itself catch a workspace that was already wrong going in (e.g. a
-        prior review execution left real, uncommitted edits). Verified
-        the same content-based way as everywhere else in this module —
-        never a role label taken on trust.
-        """
-        if self._git_governance_service is not None:
-            pre_violations = self._verify_workspace_matches(project.workspace, head_sha)
-            if pre_violations:
-                blocked = self._project_state_store.mark_work_item_blocked(
-                    work_item.work_item_id,
-                    reason=(
-                        f"workspace does not match expected head {head_sha!r} before Final QA "
-                        f"Verification (governance violation): {list(pre_violations)!r}"
-                    ),
-                )
-                return (
-                    blocked,
-                    "workspace integrity violation before Final QA Verification — "
-                    "blocked pending manual intervention",
-                    False,
-                )
-        request = QARequest(
-            project_id=project.project_id, mvp_id=mvp_id, work_item_id=work_item.work_item_id,
-            workspace=str(project.workspace), base_sha=base_sha, head_sha=head_sha,
-            objective=work_item.title, acceptance_criteria=work_item.acceptance_criteria,
-            phase=QAPhase.FINAL_VERIFICATION,
-        )
-        run = await self._run_qa_cycle(request=request, phase=QAPhase.FINAL_VERIFICATION)
-
-        if run.verdict is not None and run.verdict.status is QAVerdictStatus.PASS:
-            return work_item, "final QA verification passed", True
-
-        result = self._qa_run_store.get_result(run.run_id)
-        requires_coding = result is not None and result.requires_coding_agent
-        if run.verdict is not None and run.verdict.status is QAVerdictStatus.FAIL and requires_coding:
-            cycles_used = self._count_qa_cycles(work_item.work_item_id, QAPhase.TEST_AUTHORING) + \
-                self._count_qa_cycles(work_item.work_item_id, QAPhase.FINAL_VERIFICATION)
-            if cycles_used >= self._qa_policy.max_qa_cycles:
-                blocked = self._project_state_store.mark_work_item_blocked(
-                    work_item.work_item_id,
-                    reason=f"max_qa_cycles ({self._qa_policy.max_qa_cycles}) reached after final QA FAIL",
-                )
-                return blocked, "max QA cycles reached — blocked pending manual intervention", False
-            self._create_qa_handoff(project=project, mvp_id=mvp_id, work_item=work_item, run=run, head_sha=head_sha)
-            rework = self._project_state_store.mark_work_item_needs_rework(work_item.work_item_id)
-            # A fix after a final-QA FAIL always invalidates the review
-            # that just approved this exact head — SHA-binding (unchanged
-            # from Slice 20/21.5) already guarantees the *next* review
-            # targets the *new* head; no separate invalidation mechanism
-            # is needed, re-review is simply mandatory by construction.
-            return rework, "final QA verification failed — rework needed, see QA findings", False
-
-        reason = run.verdict.reason if run.verdict is not None else "final QA verification produced no verdict"
-        blocked = self._project_state_store.mark_work_item_blocked(
-            work_item.work_item_id, reason=f"final QA verification did not pass: {reason}",
-        )
-        return blocked, "final QA verification did not pass — blocked pending manual intervention", False
-
     def _build_resume_context(self, work_item_id: str) -> str | None:
         """Grounds a fresh (possibly different) worker in the last handoff.
 
@@ -1543,12 +1019,6 @@ class MVPManager:
         mvp = self._project_state_store.get_mvp(mvp_id)
         project = self._project_state_store.get_project(mvp.project_id)
 
-        if due.phase is WaitPhase.REVIEW:
-            return await self._resume_review_wait(project=project, mvp_id=mvp_id, work_item=work_item, due=due)
-
-        if due.phase is WaitPhase.QA_AUTHORING:
-            return await self._resume_qa_authoring_wait(project=project, mvp_id=mvp_id, work_item=work_item, due=due)
-
         if due.phase is WaitPhase.DEV_B_REVIEW:
             return await self._resume_lean_dev_b_wait(project=project, mvp_id=mvp_id, work_item=work_item, due=due)
 
@@ -1570,12 +1040,7 @@ class MVPManager:
             else self._project_state_store.mark_work_item_ready(work_item.work_item_id)
         )
         resume_context = self._build_resume_context(work_item.work_item_id)
-        executor = (
-            self._execute_work_item_lean
-            if self._workflow_mode is WorkflowMode.LEAN_FEATURE_FLOW
-            else self._execute_work_item
-        )
-        return await executor(
+        return await self._execute_work_item_lean(
             mvp_id=mvp_id, mvp=mvp, work_item=work_item, dev_worker=dev_worker,
             is_rework=is_rework, resume_context=resume_context,
             dev_model=dev_model, dev_reasoning_effort=dev_reasoning_effort,
@@ -1586,10 +1051,11 @@ class MVPManager:
 
         Unlike a quota wait, there is no deadline to check — reconciliation
         already established that this WorkItem's execution is genuinely
-        orphaned/interrupted, so it is immediately re-orchestrable. Which
-        phase to resume (development/rework vs. review) is read off the
-        role of the execution that was actually reconciled (persisted in
-        ExecutionStore) — never re-derived heuristically, never guessed.
+        orphaned/interrupted, so it is immediately re-orchestrable. Both DEV
+        A and DEV B executions carry the same ``DEFAULT_WORK_ITEM_ROLE`` —
+        ``_run_lean_development`` (shared by both) always resumes as a
+        fresh development attempt; there is no separate phase to
+        distinguish here.
         """
         candidates = sorted(
             (
@@ -1603,194 +1069,16 @@ class MVPManager:
 
         work_item = candidates[0]
         mvp = self._project_state_store.get_mvp(mvp_id)
-        project = self._project_state_store.get_project(mvp.project_id)
-
-        executions = self._execution_store.list_for_task(work_item.work_item_id)
-        was_review_phase = bool(executions) and executions[-1].role == REVIEWER_ROLE
-        was_qa_phase = bool(executions) and executions[-1].role == QA_TESTING_ROLE
-
-        if was_qa_phase:
-            # Same principle as the review branch below: the author is
-            # always read from the last *development*-role handoff, never
-            # a recovery handoff recording the crashed QA worker's own
-            # identity (RecoveryCoordinator.ensure_recovery_handoff
-            # already created one, but it is not the author).
-            handoff = self._find_last_developer_handoff(work_item.work_item_id)
-            if handoff is None:
-                blocked = self._project_state_store.mark_work_item_blocked(
-                    work_item.work_item_id,
-                    reason="recovery required for QA authoring but no author handoff was found",
-                )
-                return WorkItemRunResult(work_item=blocked, handoff=None)
-            work_item = self._project_state_store.mark_work_item_running(work_item.work_item_id)
-            base_sha: str | None = None
-            if self._git_governance_service is not None:
-                # Idempotent: a governed record already exists for this
-                # WorkItem, so this reconciles (Slice 20/21.5's own
-                # restart-safe reconciliation, never a new heuristic) and
-                # checks the branch back out rather than recreating it.
-                record = self._git_governance_service.prepare_work_item(
-                    project_id=project.project_id, mvp_id=mvp_id, work_item_id=work_item.work_item_id,
-                    repository_path=project.workspace,
-                )
-                base_sha = record.base_sha
-            dev_facts = _RecoveredExecutionResult(
-                record=_RecoveredExecutionRecordFacts(
-                    execution_id=handoff.execution_id, worker_id=handoff.worker_id,
-                    git_sha_after=handoff.git_sha_after,
-                )
-            )
-            return await self._continue_after_development(
-                project=project, mvp_id=mvp_id, work_item=work_item, dev_result=dev_facts, base_sha=base_sha,
-            )
-
-        if was_review_phase:
-            # NOT `latest_for_work_item`: reconciliation may just have
-            # created a *newer* recovery handoff recording the interrupted
-            # reviewer's own identity (an audit fact about that execution)
-            # — using it here would corrupt "who is the author" and could
-            # even make the reviewer equal the author. The author is
-            # always read from the last handoff that came out of an actual
-            # development-role execution.
-            handoff = self._find_last_developer_handoff(work_item.work_item_id)
-            if handoff is None:
-                # RecoveryCoordinator.reconcile_work_item always ensures a
-                # recovery handoff exists before this status is ever
-                # reached, and a review-phase WorkItem always followed a
-                # completed development execution — fail closed rather
-                # than guess if that invariant is somehow violated.
-                blocked = self._project_state_store.mark_work_item_blocked(
-                    work_item.work_item_id,
-                    reason="recovery required for review but no author handoff was found",
-                )
-                return WorkItemRunResult(work_item=blocked, handoff=None)
-            work_item = self._project_state_store.mark_work_item_reviewing(work_item.work_item_id)
-            return await self._run_review_from_handoff(
-                project=project, mvp_id=mvp_id, work_item=work_item, handoff=handoff
-            )
 
         dev_worker, dev_model, dev_reasoning_effort = await self._select_dev_worker(
             mvp=mvp, work_item=work_item, is_rework=False,
         )
         resume_context = self._build_resume_context(work_item.work_item_id)
-        return await self._execute_work_item(
+        return await self._execute_work_item_lean(
             mvp_id=mvp_id, mvp=mvp, work_item=work_item, dev_worker=dev_worker,
             is_rework=False, resume_context=resume_context,
             dev_model=dev_model, dev_reasoning_effort=dev_reasoning_effort,
         )
-
-    async def _resume_review_wait(
-        self, *, project: Project, mvp_id: str, work_item: WorkItem, due: WaitRecord
-    ) -> WorkItemRunResult:
-        handoff = self._handoff_store.latest_for_work_item(work_item.work_item_id)
-        if handoff is None:
-            # A review-phase wait always follows a completed development
-            # execution, which always creates a handoff — this should not
-            # happen, but fail closed rather than guess at recovery facts.
-            self._wait_coordinator.resolve(due.wait_id, resolution="gave up: no recovery handoff available")
-            blocked = self._project_state_store.mark_work_item_blocked(
-                work_item.work_item_id, reason="review wait due but no prior handoff to resume from"
-            )
-            return WorkItemRunResult(work_item=blocked, handoff=None)
-
-        # `_run_review` itself re-probes WorkerSelector exactly once (a
-        # theoretical reset is never treated as proof of availability) and
-        # already knows how to requeue-or-block if still unavailable — so
-        # this resolves the due wait and delegates the actual re-selection
-        # to it, rather than probing a second time here.
-        self._wait_coordinator.resolve(
-            due.wait_id, resolution="deadline reached — re-attempting reviewer selection"
-        )
-        work_item = self._project_state_store.mark_work_item_reviewing(work_item.work_item_id)
-        return await self._run_review_from_handoff(
-            project=project, mvp_id=mvp_id, work_item=work_item, handoff=handoff
-        )
-
-    async def _resume_qa_authoring_wait(
-        self, *, project: Project, mvp_id: str, work_item: WorkItem, due: WaitRecord
-    ) -> WorkItemRunResult:
-        """Resumes a QA_AUTHORING wait (Slice 24) — development already
-        succeeded before this wait was ever recorded, so resuming re-enters
-        RUNNING directly (never READY): development is never re-run, only
-        QA authoring onward (via ``_continue_after_development``, the
-        exact same pipeline a fresh attempt uses).
-        """
-        handoff = self._handoff_store.latest_for_work_item(work_item.work_item_id)
-        if handoff is None:
-            # A QA_AUTHORING wait always follows a completed development
-            # execution, which always creates a handoff first (see
-            # ``_continue_after_development``) — this should not happen,
-            # but fail closed rather than guess at recovery facts.
-            self._wait_coordinator.resolve(due.wait_id, resolution="gave up: no recovery handoff available")
-            blocked = self._project_state_store.mark_work_item_blocked(
-                work_item.work_item_id, reason="QA authoring wait due but no prior handoff to resume from"
-            )
-            return WorkItemRunResult(work_item=blocked, handoff=None)
-
-        self._wait_coordinator.resolve(
-            due.wait_id, resolution="deadline reached — re-attempting QA authoring worker selection"
-        )
-        work_item = self._project_state_store.mark_work_item_running(work_item.work_item_id)
-
-        base_sha: str | None = None
-        if self._git_governance_service is not None:
-            record = self._reconcile_governed_head(work_item.work_item_id, project.workspace)
-            base_sha = record.base_sha
-
-        dev_facts = _RecoveredExecutionResult(
-            record=_RecoveredExecutionRecordFacts(
-                execution_id=handoff.execution_id, worker_id=handoff.worker_id,
-                git_sha_after=handoff.git_sha_after,
-            )
-        )
-        return await self._continue_after_development(
-            project=project, mvp_id=mvp_id, work_item=work_item, dev_result=dev_facts, base_sha=base_sha,
-        )
-
-    async def _run_review_from_handoff(
-        self, *, project: Project, mvp_id: str, work_item: WorkItem, handoff: HandoffRecord
-    ) -> WorkItemRunResult:
-        """Re-attempts a review purely from durable facts — no live ExecutionResult needed.
-
-        Shared by both resume paths that can no longer rely on an
-        in-memory ``dev_result`` (the process that produced it may not
-        even be the one running now): quota-wait review resume and
-        execution-level recovery review resume. Never asks the previous
-        author for anything; the quality gate is never re-run here either
-        (``handoff.test_results`` — from the original, still-valid PASSED
-        gate — is carried forward as-is, since no new development code was
-        produced).
-        """
-        dev_facts = _RecoveredExecutionResult(
-            record=_RecoveredExecutionRecordFacts(
-                execution_id=handoff.execution_id, worker_id=handoff.worker_id,
-                git_sha_after=handoff.git_sha_after,
-            )
-        )
-        review_result, work_item, next_action, _qa_passed = await self._run_review(
-            project=project, mvp_id=mvp_id, work_item=work_item,
-            dev_result=dev_facts, gate_result=None, gate_summary_override=handoff.test_results,
-        )
-
-        decisions: str | None = None
-        open_issues: str | None = None
-        if review_result is not None:
-            if review_result.status is ReviewStatus.APPROVED:
-                decisions = (
-                    f"review_id={review_result.review_id} approved by "
-                    f"{review_result.reviewer_worker_id}"
-                )
-            else:
-                open_issues = _summarize_review(review_result)
-
-        new_handoff = self._handoff_store.create(
-            handoff_id=self._id_factory(), project_id=project.project_id, mvp_id=mvp_id,
-            work_item_id=work_item.work_item_id, objective=work_item.title,
-            execution_id=handoff.execution_id, worker_id=handoff.worker_id,
-            decisions=decisions, test_results=handoff.test_results, open_issues=open_issues,
-            next_action=next_action, git_sha_after=handoff.git_sha_after, created_at=self._clock(),
-        )
-        return WorkItemRunResult(work_item=work_item, handoff=new_handoff, review_result=review_result)
 
     def _requeue_or_give_up(
         self, *, project_id: str, mvp_id: str, work_item: WorkItem, due: WaitRecord,
@@ -1821,274 +1109,6 @@ class MVPManager:
             work_item.work_item_id, reason="no eligible worker and no reliable reset known"
         )
         return WorkItemRunResult(work_item=blocked, handoff=None)
-
-    async def _execute_work_item(
-        self,
-        *,
-        mvp_id: str,
-        mvp: MVP,
-        work_item: WorkItem,
-        dev_worker: Worker,
-        is_rework: bool,
-        resume_context: str | None,
-        dev_model: str | None = None,
-        dev_reasoning_effort: str | None = None,
-    ) -> WorkItemRunResult:
-        """Runs one development execution through to its handoff.
-
-        Shared by the normal candidate path and both wait-resume paths
-        (development/rework) so a resumed WorkItem goes through the exact
-        same gate/review/handoff pipeline as a first attempt — the only
-        difference is ``resume_context`` and possibly a different worker.
-
-        ``dev_model``/``dev_reasoning_effort``, when supplied (Slice 17
-        adaptive selection), are used as-is — the actual snapshot an
-        ``AdaptiveExecutionDecision`` already resolved and persisted. When
-        omitted (the wait-resume/recovery-resume paths, and any caller
-        without adaptive execution configured), ``dev_worker.profile()``'s
-        default is used, exactly as before Slice 17.
-        """
-        self._project_state_store.mark_mvp_running(mvp_id)
-        work_item = self._project_state_store.mark_work_item_running(work_item.work_item_id)
-        project = self._project_state_store.get_project(mvp.project_id)
-
-        dev_context = resume_context
-        if is_rework:
-            latest_handoff = self._handoff_store.latest_for_work_item(work_item.work_item_id)
-            qa_engine_id = getattr(self._qa_engine, "engine_id", None)
-            if (
-                latest_handoff is not None and latest_handoff.open_issues
-                and qa_engine_id is not None and latest_handoff.worker_id == qa_engine_id
-            ):
-                # The most recent handoff came from a QA run (Slice 24),
-                # not a review rejection — ground the rework in the QA
-                # findings, never the generic "make tests green" framing.
-                dev_context = (
-                    "This work item was previously rejected by QA verification, not by code "
-                    f"review. QA findings: {latest_handoff.open_issues} Fix the underlying product "
-                    "behavior per the acceptance criteria — do not weaken, skip, or rewrite any "
-                    "existing test's expectations."
-                )
-            elif self._review_store is not None:
-                previous_review = self._review_store.latest_for_work_item(work_item.work_item_id)
-                if previous_review is not None:
-                    dev_context = (
-                        "This work item was previously reviewed and rejected. "
-                        f"Previous review findings: {_summarize_findings(previous_review.findings)}"
-                    )
-
-        base_sha: str | None = None
-        if self._git_governance_service is not None:
-            prep_record = self._git_governance_service.prepare_work_item(
-                project_id=project.project_id, mvp_id=mvp_id, work_item_id=work_item.work_item_id,
-                repository_path=project.workspace,
-            )
-            base_sha = prep_record.base_sha
-
-        if dev_model is None:
-            dev_profile = dev_worker.profile()
-            dev_model = dev_profile.model
-            dev_reasoning_effort = dev_profile.reasoning_effort
-        dev_request = ExecutionRequest(
-            execution_id=self._id_factory(),
-            task_id=work_item.work_item_id,
-            worker=dev_worker,
-            role=DEFAULT_WORK_ITEM_ROLE,
-            workspace=project.workspace,
-            instructions=_build_dev_instructions(work_item, resume_context=dev_context),
-            initial_event_topic=INITIAL_EVENT_TOPIC,
-            success_topics=frozenset({SUCCESS_TOPIC}),
-            failure_topics=frozenset({FAILURE_TOPIC}),
-            timeout_seconds=self._timeout_seconds,
-            model=dev_model,
-            reasoning_effort=dev_reasoning_effort,
-        )
-        dev_result = await self._execution_engine.execute(dev_request)
-
-        if self._git_governance_service is not None:
-            self._git_governance_service.capture_head(
-                work_item.work_item_id, repository_path=project.workspace,
-            )
-
-        if dev_result.record.status is ExecutionStatus.INTERRUPTED and self._recovery_coordinator is not None:
-            # A timeout RalphExecutionEngine observed itself, within this
-            # very call — the execution is already a genuine terminal
-            # outcome (stays INTERRUPTED, permanent history), never
-            # relaunched. Only the WorkItem needs to become explicitly
-            # re-orchestrable: RECOVERY_REQUIRED, never a silent FAILED
-            # that would forbid a normal continuation.
-            self._recovery_coordinator.ensure_recovery_handoff(
-                project_id=project.project_id, mvp_id=mvp_id, work_item=work_item,
-                execution=dev_result.record,
-            )
-            work_item = self._project_state_store.mark_work_item_recovery_required(work_item.work_item_id)
-            handoff = self._handoff_store.latest_for_work_item(work_item.work_item_id)
-            return WorkItemRunResult(work_item=work_item, handoff=handoff)
-
-        return await self._continue_after_development(
-            project=project, mvp_id=mvp_id, work_item=work_item, dev_result=dev_result, base_sha=base_sha,
-        )
-
-    async def _continue_after_development(
-        self, *, project: Project, mvp_id: str, work_item: WorkItem, dev_result, base_sha: str | None,
-    ) -> WorkItemRunResult:
-        """Everything after a DEVELOPMENT/REWORK execution reached a
-        terminal (non-INTERRUPTED) outcome: QA Test Authoring (Slice 24,
-        if configured) -> quality gates -> review (or Final QA
-        Verification directly, if review is not configured) -> handoff.
-
-        Factored out of ``_execute_work_item`` so a QA_AUTHORING wait
-        resume (Slice 24 — development already succeeded before that wait
-        was ever recorded) can re-enter exactly here, at QA authoring
-        onward, without ever re-running development. ``dev_result`` may be
-        a real ``ExecutionResult`` (the fresh/rework path) or the same
-        duck-typed ``_RecoveredExecutionResult`` used elsewhere in this
-        module for a resume with no live execution object.
-        """
-        # A resumed dev_result (the duck-typed _RecoveredExecutionResult,
-        # used by the QA_AUTHORING wait resume below) has no `.status` at
-        # all — development is known-succeeded by construction whenever
-        # this method is reached that way (that's exactly why QA authoring
-        # was resumed, not development), so absence defaults to SUCCEEDED.
-        dev_succeeded = getattr(dev_result.record, "status", ExecutionStatus.SUCCEEDED) is ExecutionStatus.SUCCEEDED
-        current_head_sha = dev_result.record.git_sha_after
-        effective_base_sha = (
-            base_sha or getattr(dev_result.record, "git_sha_before", None) or current_head_sha
-        )
-
-        if dev_succeeded and self._qa_enabled:
-            # QA Test Authoring (Slice 24, Part B) — after DEVELOPMENT,
-            # before quality gates. The developer's own handoff is
-            # persisted first: QA authoring is a separate async step (its
-            # own worker selection/execution) and must never be conflated
-            # with what the developer themselves did.
-            self._handoff_store.create(
-                handoff_id=self._id_factory(), project_id=project.project_id, mvp_id=mvp_id,
-                work_item_id=work_item.work_item_id, objective=work_item.title,
-                execution_id=dev_result.record.execution_id, worker_id=dev_result.record.worker_id,
-                next_action="development succeeded — proceeding to QA test authoring",
-                git_sha_after=current_head_sha, created_at=self._clock(),
-            )
-            qa_outcome = await self._run_qa_authoring(
-                project=project, mvp_id=mvp_id, work_item=work_item,
-                developer_worker_id=dev_result.record.worker_id,
-                base_sha=effective_base_sha, head_sha=current_head_sha,
-            )
-            if isinstance(qa_outcome, WorkItemRunResult):
-                return qa_outcome
-            current_head_sha = qa_outcome  # possibly refreshed by a committed QA test
-            if current_head_sha != dev_result.record.git_sha_after:
-                # QA authoring committed a real test — every downstream
-                # consumer of `dev_result` (review's own git_sha_reviewed/
-                # instructions, Final QA Verification's head_sha,
-                # _maybe_finalize_git's qa_git_sha) must see this refreshed
-                # head, never the stale pre-QA-authoring SHA. `dev_result`/
-                # `.record` are frozen dataclasses (real ``ExecutionResult``
-                # on the fresh path, or the duck-typed
-                # ``_RecoveredExecutionResult`` on a resume path) —
-                # ``dataclasses.replace`` works uniformly for both since
-                # only ``git_sha_after`` (present on both shapes) changes.
-                dev_result = dataclasses.replace(
-                    dev_result, record=dataclasses.replace(dev_result.record, git_sha_after=current_head_sha),
-                )
-
-        # PRE-condition (external pilot finding, Invariant 2): the
-        # workspace must functionally match `current_head_sha` before the
-        # gate runs a single command against it — never assume "the last
-        # execution said it succeeded" is enough. Same content-based
-        # verification used everywhere else in this module.
-        workspace_violation_before_gate: tuple[str, ...] = ()
-        gate_result: QualityGateResult | None = None
-        if dev_succeeded and self._quality_gate_runner is not None:
-            if self._git_governance_service is not None:
-                workspace_violation_before_gate = self._verify_workspace_matches(
-                    project.workspace, current_head_sha,
-                )
-            if not workspace_violation_before_gate:
-                gate_result = await self._quality_gate_runner.run_gate(
-                    project_id=project.project_id,
-                    cwd=project.workspace,
-                    mvp_id=mvp_id,
-                    work_item_id=work_item.work_item_id,
-                )
-        gate_passed = gate_result is None or gate_result.passed
-
-        review_result: ReviewRecord | None = None
-        decisions: str | None = None
-        open_issues: str | None = None
-        qa_passed_final = True  # vacuously true when QA is not enabled — never blocks completion
-
-        if not dev_succeeded:
-            work_item = self._project_state_store.mark_work_item_failed(work_item.work_item_id)
-            next_action = "investigate the failure before retrying — no automatic retry"
-        elif workspace_violation_before_gate:
-            work_item = self._project_state_store.mark_work_item_blocked(
-                work_item.work_item_id,
-                reason=(
-                    f"workspace does not match governed head {current_head_sha!r} before quality "
-                    f"gate (governance violation): {list(workspace_violation_before_gate)!r}"
-                ),
-            )
-            next_action = "workspace integrity violation before quality gate — blocked pending manual intervention"
-        elif not gate_passed:
-            work_item = self._project_state_store.mark_work_item_failed(work_item.work_item_id)
-            next_action = "quality gate failed — investigate before retrying, no automatic retry"
-        elif self._review_store is None:
-            if self._qa_enabled:
-                work_item, next_action, qa_passed_final = await self._run_final_qa_verification(
-                    project=project, mvp_id=mvp_id, work_item=work_item,
-                    base_sha=effective_base_sha, head_sha=current_head_sha,
-                )
-                if not qa_passed_final:
-                    handoff = self._handoff_store.create(
-                        handoff_id=self._id_factory(), project_id=project.project_id, mvp_id=mvp_id,
-                        work_item_id=work_item.work_item_id, objective=work_item.title,
-                        execution_id=dev_result.record.execution_id, worker_id=dev_result.record.worker_id,
-                        test_results=_summarize_gate(gate_result) if gate_result is not None else None,
-                        next_action=next_action, git_sha_after=current_head_sha, created_at=self._clock(),
-                    )
-                    return WorkItemRunResult(work_item=work_item, handoff=handoff, gate_result=gate_result)
-            work_item = self._project_state_store.mark_work_item_completed(work_item.work_item_id)
-            next_action = "proceed to the next eligible WorkItem"
-            self._maybe_finalize_git(
-                project=project, work_item=work_item, gate_result=gate_result, review_result=None,
-                qa_passed=qa_passed_final if self._qa_enabled else None, qa_git_sha=current_head_sha,
-            )
-        else:
-            work_item = self._project_state_store.mark_work_item_reviewing(work_item.work_item_id)
-            review_result, work_item, next_action, qa_passed_final = await self._run_review(
-                project=project, mvp_id=mvp_id, work_item=work_item,
-                dev_result=dev_result, gate_result=gate_result, base_sha=effective_base_sha,
-            )
-            if review_result is None:
-                pass  # entered WAITING (Slice 11) — nothing to summarize yet
-            elif review_result.status is ReviewStatus.APPROVED:
-                decisions = (
-                    f"review_id={review_result.review_id} approved by "
-                    f"{review_result.reviewer_worker_id}"
-                )
-            else:
-                open_issues = _summarize_review(review_result)
-
-        handoff = self._handoff_store.create(
-            handoff_id=self._id_factory(),
-            project_id=project.project_id,
-            mvp_id=mvp_id,
-            work_item_id=work_item.work_item_id,
-            objective=work_item.title,
-            execution_id=dev_result.record.execution_id,
-            worker_id=dev_result.record.worker_id,
-            decisions=decisions,
-            test_results=_summarize_gate(gate_result) if gate_result is not None else None,
-            open_issues=open_issues,
-            next_action=next_action,
-            git_sha_after=dev_result.record.git_sha_after,
-            created_at=self._clock(),
-        )
-
-        return WorkItemRunResult(
-            work_item=work_item, handoff=handoff, gate_result=gate_result, review_result=review_result,
-        )
 
     #: Real, independently-verified evidence (Slice 24 self-dogfood
     #: acceptance) that Ralph itself always commits under this prefix as
@@ -2168,355 +1188,34 @@ class MVPManager:
         changed = working_tree_changed_files(Path(workspace), expected_sha)
         return tuple(f for f in changed if not f.startswith(self._RALPH_HOUSEKEEPING_PREFIX))
 
-    async def _run_review(
-        self,
-        *,
-        project: Project,
-        mvp_id: str,
-        work_item: WorkItem,
-        dev_result: ExecutionResult,
-        gate_result: QualityGateResult | None,
-        gate_summary_override: str | None = None,
-        base_sha: str | None = None,
-    ) -> tuple[ReviewRecord | None, WorkItem, str, bool]:
-        """Selects an independent reviewer and runs the review via Ralph.
-
-        Returns (ReviewRecord, updated WorkItem, next_action, qa_passed).
-        ``None`` for the ReviewRecord means the WorkItem moved to WAITING
-        (Slice 11: no eligible reviewer right now, but a reliable reset is
-        known) — no review was attempted, so nothing is recorded
-        (recording an ERROR review here would wrongly consume a bounded
-        rework cycle for an attempt that never happened). Otherwise this
-        never raises for an expected "cannot review right now" outcome (no
-        eligible reviewer at all, review execution error): those
-        fail-close to BLOCKED with an explicit, persisted reason rather
-        than leaving the WorkItem dangling in REVIEWING or propagating an
-        exception that would abort the caller's loop over other WorkItems.
-
-        ``qa_passed`` (Slice 24) is ``True`` whenever QA is not enabled
-        (vacuous — never blocks completion) or the review did not reach
-        APPROVED (not yet relevant); it only reflects a real Final QA
-        Verification outcome when the review is APPROVED and QA is
-        configured — the caller must not finalize git/mark COMPLETED when
-        it is ``False`` (``_run_final_qa_verification`` already resolved
-        the WorkItem's next state — REWORK or BLOCKED — in that case).
-        """
-        review_id = self._id_factory()
-        started_at = self._clock()
-        gate_summary = gate_summary_override or (
-            _summarize_gate(gate_result) if gate_result is not None else "not configured"
-        )
-
-        previous_review = self._review_store.latest_for_work_item(work_item.work_item_id)
-        previous_findings = previous_review.findings if previous_review is not None else None
-
-        try:
-            reviewer, reviewer_model, reviewer_reasoning_effort = await self._select_reviewer_worker(
-                project=project, mvp_id=mvp_id, work_item=work_item,
-                author_worker_id=dev_result.record.worker_id,
-                git_sha=dev_result.record.git_sha_after, previous_findings=previous_findings,
-            )
-        except _REVIEWER_SELECTION_ERRORS as exc:
-            if self._wait_coordinator is not None:
-                wait = self._wait_coordinator.record_wait(
-                    project_id=project.project_id, mvp_id=mvp_id, work_item_id=work_item.work_item_id,
-                    phase=WaitPhase.REVIEW, diagnostics=getattr(exc, "diagnostics", ()),
-                    source_execution_id=dev_result.record.execution_id,
-                )
-                if wait is not None:
-                    work_item = self._project_state_store.mark_work_item_waiting(work_item.work_item_id)
-                    return None, work_item, "no eligible independent reviewer — waiting for quota reset", True
-
-            review = ReviewRecord(
-                review_id=review_id, project_id=project.project_id, mvp_id=mvp_id,
-                work_item_id=work_item.work_item_id,
-                author_execution_id=dev_result.record.execution_id,
-                author_worker_id=dev_result.record.worker_id,
-                started_at=started_at, finished_at=self._clock(), status=ReviewStatus.ERROR,
-                git_sha_reviewed=dev_result.record.git_sha_after,
-            )
-            self._review_store.record(review)
-            work_item = self._project_state_store.mark_work_item_blocked(
-                work_item.work_item_id,
-                reason=f"no eligible independent reviewer available: {exc}",
-            )
-            return review, work_item, "no eligible independent reviewer — blocked pending manual intervention", True
-
-        pre_review_head: str | None = None
-        if self._git_governance_service is not None:
-            governed_record = self._reconcile_governed_head(work_item.work_item_id, project.workspace)
-            base_sha = governed_record.base_sha
-            pre_review_head = governed_record.current_head_sha
-
-        if reviewer_model is None:
-            reviewer_profile = reviewer.profile()
-            reviewer_model = reviewer_profile.model
-            reviewer_reasoning_effort = reviewer_profile.reasoning_effort
-
-        # Isolation (external pilot follow-up): a review execution has the
-        # exact same real file-system access as development, with no
-        # git-fact enforcement of its own — never run it inside the
-        # governed target workspace at all. `IsolatedReviewWorkspace` is a
-        # disposable, detached `git worktree` checked out at exactly
-        # `pre_review_head` — sharing the target's object database (no
-        # clone, no network) but never its working tree. Cleaned up on
-        # every normal exit via `finally` below; preserved (never deleted)
-        # if any violation is found, for forensics.
-        isolated_review_ws: IsolatedReviewWorkspace | None = None
-        review_workspace = project.workspace
-        if self._git_governance_service is not None and pre_review_head is not None:
-            isolated_review_ws = IsolatedReviewWorkspace(
-                source_repository_path=project.workspace, sha=pre_review_head, review_id=review_id,
-            )
-            isolated_review_ws.__enter__()
-            review_workspace = isolated_review_ws.path
-
-        review_request = ExecutionRequest(
-            execution_id=self._id_factory(),
-            task_id=work_item.work_item_id,
-            worker=reviewer,
-            role=REVIEWER_ROLE,
-            workspace=review_workspace,
-            instructions=_build_review_instructions(
-                work_item, quality_gate_summary=gate_summary,
-                git_sha=dev_result.record.git_sha_after, previous_findings=previous_findings,
-            ),
-            initial_event_topic=REVIEW_INITIAL_EVENT_TOPIC,
-            success_topics=frozenset({REVIEW_SUCCESS_TOPIC}),
-            failure_topics=frozenset({REVIEW_FAILURE_TOPIC}),
-            timeout_seconds=self._timeout_seconds,
-            model=reviewer_model,
-            reasoning_effort=reviewer_reasoning_effort,
-        )
-
-        try:
-            try:
-                review_exec_result = await self._execution_engine.execute(review_request)
-            except RalphExecutionEngineError:
-                review = ReviewRecord(
-                    review_id=review_id, project_id=project.project_id, mvp_id=mvp_id,
-                    work_item_id=work_item.work_item_id,
-                    author_execution_id=dev_result.record.execution_id,
-                    author_worker_id=dev_result.record.worker_id,
-                    reviewer_execution_id=review_request.execution_id,
-                    reviewer_worker_id=reviewer.worker_id, reviewer_provider=reviewer.provider,
-                    reviewer_model=reviewer_model,
-                    started_at=started_at, finished_at=self._clock(), status=ReviewStatus.ERROR,
-                    git_sha_reviewed=dev_result.record.git_sha_after,
-                )
-                self._review_store.record(review)
-                work_item = self._project_state_store.mark_work_item_blocked(
-                    work_item.work_item_id, reason="review execution failed to run"
-                )
-                return review, work_item, "review execution failed — blocked pending manual intervention", True
-
-            # Invariant (external pilot finding): review must be strictly
-            # read-only, verified by real git facts — never trusted from
-            # the reviewer's own emitted verdict, exactly like
-            # development/QA-authoring are never trusted on their say-so
-            # either. Checked AFTER the execution genuinely ends (never
-            # mid-loop, never from the business event alone — a
-            # `review.approved` emitted early followed by more iterations
-            # of undefined activity must not short-circuit this), and
-            # BEFORE `_determine_review_verdict` is even consulted: a real
-            # mutation here means the emitted verdict, whatever it says,
-            # is never usable. `git_sha_reviewed` is bound to
-            # `pre_review_head` — the SHA actually in front of the
-            # reviewer before it ran — never silently reattributed to
-            # whatever the workspace looks like now.
-            #
-            # Checked in the ISOLATED workspace first (where the review
-            # actually ran) — a violation there means the reviewer wrote
-            # real, non-noise changes to its own disposable checkout, even
-            # though the governed target was never at risk. The governed
-            # TARGET is then re-verified unconditionally too (whether or
-            # not the isolated check found anything): isolation is a
-            # mechanism, not an assumption — if it ever failed and the
-            # target itself was mutated, that is a distinct, more severe
-            # finding (an isolation-mechanism defect, not a reviewer
-            # behavior problem) and is reported as such.
-            if self._git_governance_service is not None and pre_review_head is not None:
-                review_violations = self._verify_workspace_matches(review_workspace, pre_review_head)
-                target_contamination = self._verify_workspace_matches(project.workspace, pre_review_head)
-
-                if target_contamination:
-                    if isolated_review_ws is not None:
-                        isolated_review_ws.preserve()
-                    review = ReviewRecord(
-                        review_id=review_id, project_id=project.project_id, mvp_id=mvp_id,
-                        work_item_id=work_item.work_item_id,
-                        author_execution_id=dev_result.record.execution_id,
-                        author_worker_id=dev_result.record.worker_id,
-                        reviewer_execution_id=review_exec_result.record.execution_id,
-                        reviewer_worker_id=reviewer.worker_id, reviewer_provider=reviewer.provider,
-                        reviewer_model=reviewer_model,
-                        started_at=started_at, finished_at=self._clock(), status=ReviewStatus.ERROR,
-                        git_sha_reviewed=pre_review_head,
-                    )
-                    self._review_store.record(review)
-                    work_item = self._project_state_store.mark_work_item_blocked(
-                        work_item.work_item_id,
-                        reason=(
-                            "CRITICAL: review isolation failed — the governed target workspace "
-                            f"was itself mutated during an isolated review execution: "
-                            f"{list(target_contamination)!r}"
-                        ),
-                    )
-                    return (
-                        review, work_item,
-                        "review isolation failure — blocked, escalate immediately",
-                        True,
-                    )
-
-                if review_violations:
-                    if isolated_review_ws is not None:
-                        isolated_review_ws.preserve()
-                    review = ReviewRecord(
-                        review_id=review_id, project_id=project.project_id, mvp_id=mvp_id,
-                        work_item_id=work_item.work_item_id,
-                        author_execution_id=dev_result.record.execution_id,
-                        author_worker_id=dev_result.record.worker_id,
-                        reviewer_execution_id=review_exec_result.record.execution_id,
-                        reviewer_worker_id=reviewer.worker_id, reviewer_provider=reviewer.provider,
-                        reviewer_model=reviewer_model,
-                        started_at=started_at, finished_at=self._clock(), status=ReviewStatus.ERROR,
-                        git_sha_reviewed=pre_review_head,
-                    )
-                    self._review_store.record(review)
-                    work_item = self._project_state_store.mark_work_item_blocked(
-                        work_item.work_item_id,
-                        reason=(
-                            "review execution left non-read-only changes in its isolated "
-                            f"workspace (governance violation): {list(review_violations)!r}"
-                        ),
-                    )
-                    return (
-                        review, work_item,
-                        "review produced a workspace integrity violation — blocked pending manual intervention",
-                        True,
-                    )
-
-            status, findings = self._determine_review_verdict(review_exec_result)
-
-            review = ReviewRecord(
-                review_id=review_id, project_id=project.project_id, mvp_id=mvp_id,
-                work_item_id=work_item.work_item_id,
-                author_execution_id=dev_result.record.execution_id,
-                author_worker_id=dev_result.record.worker_id,
-                reviewer_execution_id=review_exec_result.record.execution_id,
-                reviewer_worker_id=reviewer.worker_id, reviewer_provider=reviewer.provider,
-                reviewer_model=reviewer_model,
-                started_at=started_at, finished_at=self._clock(), status=status, findings=findings,
-                git_sha_reviewed=dev_result.record.git_sha_after,
-            )
-            self._review_store.record(review)
-
-            if status is ReviewStatus.APPROVED:
-                if self._qa_enabled:
-                    effective_base_sha = (
-                        base_sha or getattr(dev_result.record, "git_sha_before", None)
-                        or dev_result.record.git_sha_after
-                    )
-                    work_item, qa_next_action, qa_passed = await self._run_final_qa_verification(
-                        project=project, mvp_id=mvp_id, work_item=work_item,
-                        base_sha=effective_base_sha, head_sha=dev_result.record.git_sha_after,
-                    )
-                    if not qa_passed:
-                        return review, work_item, qa_next_action, False
-                work_item = self._project_state_store.mark_work_item_completed(work_item.work_item_id)
-                self._maybe_finalize_git(
-                    project=project, work_item=work_item, gate_result=gate_result, review_result=review,
-                    qa_passed=True if self._qa_enabled else None, qa_git_sha=dev_result.record.git_sha_after,
-                )
-                return review, work_item, "review approved — proceed to the next eligible WorkItem", True
-
-            if status is ReviewStatus.INTERRUPTED and self._recovery_coordinator is not None:
-                # Never treated as a rejection (would wrongly consume a
-                # bounded rework cycle for an attempt that never reached a
-                # verdict) and never left dangling in REVIEWING —
-                # RECOVERY_REQUIRED, to be resumed with a brand-new review
-                # execution, never this one.
-                self._recovery_coordinator.ensure_recovery_handoff(
-                    project_id=project.project_id, mvp_id=mvp_id, work_item=work_item,
-                    execution=review_exec_result.record,
-                )
-                work_item = self._project_state_store.mark_work_item_recovery_required(work_item.work_item_id)
-                return (
-                    review, work_item,
-                    "review execution interrupted — recovery required, will resume with a new review",
-                    True,
-                )
-
-            # REJECTED / ERROR / INTERRUPTED-without-recovery-configured:
-            # never COMPLETED. Bounded rework (pre-Slice-11b behavior,
-            # preserved exactly when execution-level recovery is not
-            # configured).
-            cycles_used = self._review_store.count_for_work_item(work_item.work_item_id)
-            if cycles_used >= self._review_policy.max_review_cycles:
-                work_item = self._project_state_store.mark_work_item_blocked(
-                    work_item.work_item_id,
-                    reason=(
-                        f"max_review_cycles ({self._review_policy.max_review_cycles}) "
-                        "reached without approval"
-                    ),
-                )
-                return review, work_item, "max review cycles reached — blocked pending manual intervention", True
-
-            work_item = self._project_state_store.mark_work_item_needs_rework(work_item.work_item_id)
-            return review, work_item, "review rejected — rework needed, see findings", True
-        finally:
-            if isolated_review_ws is not None:
-                isolated_review_ws.cleanup()  # no-op if preserve() was called above
-
-    def _determine_review_verdict(
-        self, review_exec_result: ExecutionResult
-    ) -> tuple[ReviewStatus, tuple[ReviewFinding, ...]]:
-        if review_exec_result.record.status is ExecutionStatus.SUCCEEDED:
-            return ReviewStatus.APPROVED, ()
-        if review_exec_result.record.status is ExecutionStatus.INTERRUPTED:
-            return ReviewStatus.INTERRUPTED, ()
-
-        # FAILED: RalphExecutionEngine's own fail-closed rule already
-        # collapses "explicit review.rejected" and "no reliable terminal
-        # event at all" into the same status — distinguish them here using
-        # the actual events, so a genuine rejection (with findings) is
-        # never conflated with an inconclusive run.
-        rejection_events = [e for e in review_exec_result.events if e.topic == REVIEW_FAILURE_TOPIC]
-        if rejection_events:
-            findings = parse_findings(rejection_events[-1].payload, self._id_factory)
-            return ReviewStatus.REJECTED, findings
-        return ReviewStatus.ERROR, ()
-
     def _maybe_finalize_git(
         self, *, project: Project, work_item: WorkItem,
-        gate_result: QualityGateResult | None, review_result: ReviewRecord | None,
+        gate_result: QualityGateResult | None,
         qa_passed: bool | None = None, qa_git_sha: str | None = None,
     ) -> None:
-        """Computes merge eligibility (Slice 20/24) once a WorkItem reaches
-        ``COMPLETED``, and merges immediately if ``policy.auto_merge`` says
-        so — otherwise leaves it at ``MERGE_READY`` for a later explicit
-        merge. A no-op when git governance is not configured (exact
-        pre-Slice-20 behavior preserved).
+        """Computes merge eligibility once a WorkItem reaches ``COMPLETED``,
+        and merges immediately if ``policy.auto_merge`` says so —
+        otherwise leaves it at ``MERGE_READY`` for a later explicit merge.
+        A no-op when git governance is not configured.
 
-        Never trusts a live ``gate_result``/``review_result``/``qa_passed``
-        alone: any can be ``None``/absent here (the review-not-configured
-        completion path passes no review; a resumed-review completion has
-        no live ``gate_result``) — in that case the latest persisted
-        evidence is read back from ``validation_store``/``review_store``/
-        ``qa_run_store`` instead, so eligibility is computed identically
-        whether the evidence came from this exact call or survived a cold
-        restart.
+        Never trusts a live ``gate_result``/``qa_passed`` alone: either can
+        be ``None``/absent here (a resumed completion has no live
+        ``gate_result``) — in that case the latest persisted evidence is
+        read back from ``validation_store``/``qa_run_store`` instead, so
+        eligibility is computed identically whether the evidence came from
+        this exact call or survived a cold restart.
 
         ``qa_passed=None`` means QA is not enabled for this MVPManager at
-        all — ``qa_required`` is then never passed as True, preserving
-        exact pre-Slice-24 eligibility behavior. When QA *is* enabled,
-        this method's caller only ever calls it after
-        ``_run_final_qa_verification`` already returned ``True`` (or QA
-        was never enabled) — a QA FAIL/INCONCLUSIVE never reaches this
-        method at all (the WorkItem is REWORK/BLOCKED instead), so
-        ``qa_passed`` is only ever ``True`` or ``None`` in practice; the
-        restart-replay fallback below still re-derives it honestly from
-        ``qa_run_store`` regardless.
+        all — ``qa_required`` is then never passed as True. When QA *is*
+        enabled, this method's caller only ever calls it after Lean's own
+        QA phase already returned PASS (a QA FAIL/INCONCLUSIVE never
+        reaches this method at all — the WorkItem is REWORK/BLOCKED
+        instead), so ``qa_passed`` is only ever ``True`` or ``None`` in
+        practice; the restart-replay fallback below still re-derives it
+        honestly from ``qa_run_store`` regardless. Review is never checked
+        here (LEAN_FEATURE_FLOW has no separate reviewer phase —
+        ``GitGovernancePolicy.require_review`` must be configured
+        ``False`` by any caller of this codebase's lean pipeline).
         """
         if self._git_governance_service is None:
             return
@@ -2531,17 +1230,6 @@ class MVPManager:
             if latest_gate is not None:
                 gate_passed = latest_gate.passed
                 gate_git_sha = latest_gate.git_sha
-
-        review_approved: bool | None = None
-        review_git_sha: str | None = None
-        if review_result is not None:
-            review_approved = review_result.status is ReviewStatus.APPROVED
-            review_git_sha = review_result.git_sha_reviewed
-        elif self._review_store is not None:
-            latest_review = self._review_store.latest_for_work_item(work_item.work_item_id)
-            if latest_review is not None:
-                review_approved = latest_review.status is ReviewStatus.APPROVED
-                review_git_sha = latest_review.git_sha_reviewed
 
         qa_required = False
         qa_run_terminal: bool | None = None
@@ -2560,7 +1248,7 @@ class MVPManager:
             work_item.work_item_id, repository_path=project.workspace,
             work_item_status=work_item.status.value,
             gate_passed=gate_passed, gate_git_sha=gate_git_sha,
-            review_approved=review_approved, review_git_sha=review_git_sha,
+            review_approved=None, review_git_sha=None,
             qa_required=qa_required, qa_passed=qa_passed, qa_git_sha=qa_git_sha,
             qa_run_terminal=qa_run_terminal, noise_path_prefixes=self._RALPH_HOUSEKEEPING_PREFIX,
         )

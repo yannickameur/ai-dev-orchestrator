@@ -257,69 +257,6 @@ class TestMVPTransitions:
         assert second.status is MVPStatus.RUNNING
 
 
-class TestReviewWorkflowTransitions:
-    def test_running_to_reviewing_to_completed(self, tmp_path: Path) -> None:
-        store = _store(tmp_path)
-        _seed_project_and_mvp(store, tmp_path)
-        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
-        store.refresh_readiness("mvp-1")
-        store.mark_work_item_running("wi-a")
-        reviewing = store.mark_work_item_reviewing("wi-a")
-        assert reviewing.status is WorkItemStatus.REVIEWING
-
-        completed = store.mark_work_item_completed("wi-a")
-        assert completed.status is WorkItemStatus.COMPLETED
-
-    def test_reviewing_to_needs_rework_to_running_again(self, tmp_path: Path) -> None:
-        store = _store(tmp_path)
-        _seed_project_and_mvp(store, tmp_path)
-        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
-        store.refresh_readiness("mvp-1")
-        store.mark_work_item_running("wi-a")
-        store.mark_work_item_reviewing("wi-a")
-
-        rework = store.mark_work_item_needs_rework("wi-a")
-        assert rework.status is WorkItemStatus.NEEDS_REWORK
-
-        running_again = store.mark_work_item_running("wi-a")
-        assert running_again.status is WorkItemStatus.RUNNING
-
-    def test_reviewing_to_blocked_with_reason(self, tmp_path: Path) -> None:
-        store = _store(tmp_path)
-        _seed_project_and_mvp(store, tmp_path)
-        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
-        store.refresh_readiness("mvp-1")
-        store.mark_work_item_running("wi-a")
-        store.mark_work_item_reviewing("wi-a")
-
-        blocked = store.mark_work_item_blocked("wi-a", reason="max review cycles reached")
-        assert blocked.status is WorkItemStatus.BLOCKED
-        assert blocked.blocked_reason == "max review cycles reached"
-
-    def test_needs_rework_cannot_go_directly_to_completed(self, tmp_path: Path) -> None:
-        store = _store(tmp_path)
-        _seed_project_and_mvp(store, tmp_path)
-        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
-        store.refresh_readiness("mvp-1")
-        store.mark_work_item_running("wi-a")
-        store.mark_work_item_reviewing("wi-a")
-        store.mark_work_item_needs_rework("wi-a")
-
-        with pytest.raises(InvalidWorkItemTransitionError):
-            store.mark_work_item_completed("wi-a")
-
-    def test_running_cannot_go_directly_to_reviewing_skip_not_allowed_from_ready(
-        self, tmp_path: Path
-    ) -> None:
-        store = _store(tmp_path)
-        _seed_project_and_mvp(store, tmp_path)
-        store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
-        store.refresh_readiness("mvp-1")
-
-        with pytest.raises(InvalidWorkItemTransitionError):
-            store.mark_work_item_reviewing("wi-a")  # still READY, not RUNNING
-
-
 class TestWaitingTransitions:
     """Slice 11: WAITING is an orchestration decision, always resumed into
     the exact state it was waiting to re-attempt — never "in place"."""

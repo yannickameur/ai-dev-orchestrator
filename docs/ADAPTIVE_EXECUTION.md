@@ -23,8 +23,15 @@ la note de statut courante ci-dessous.
   nominal n'invoque **aucune** estimation de complexité/sélection adaptative.
 - Cette machinerie est conservée telle quelle mais **non enrichie** sans
   besoin réel démontré (KISS/YAGNI).
-- `GOVERNED_FULL` (qui l'utilise pleinement) est `DEPRECATED`/
-  `REMOVAL_CANDIDATE`.
+- `GOVERNED_FULL` (qui utilisait pleinement cette machinerie pour le
+  développement/rework/review) a été **retiré** avant la première release
+  publique (2026-09-18, voir l'entrée datée dans `ROADMAP.md`) —
+  `WorkflowMode` lui-même n'existe plus. Seule la partie
+  développement/rework de cette machinerie adaptative reste effectivement
+  invocable par du code produit (`MVPManager._select_dev_worker`,
+  toujours optionnelle, jamais câblée par défaut) ; la sélection
+  adaptative de reviewer a été retirée avec le reste de l'ancien
+  pipeline.
 
 Contexte (au moment de l'étude) : depuis Slice 14, la boucle Release ->
 ActivityReport -> planning -> RoadmapProposal -> approbation ->

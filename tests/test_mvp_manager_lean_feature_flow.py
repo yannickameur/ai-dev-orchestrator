@@ -1,15 +1,16 @@
-"""Tests for LEAN_FEATURE_FLOW (product decision 2026-09-16): the new
-DEFAULT MVPManager workflow — DEV A -> DEV B corrective review -> a
-single, deterministic QA phase -> merge -> tag. No complexity
-estimation, no isolated QA Test Authoring/promotion, no separate
-read-only Review, no separate Final QA phase.
+"""Tests for LEAN_FEATURE_FLOW — the only WorkItem execution pipeline
+MVPManager implements: DEV A -> DEV B corrective review -> a single,
+deterministic QA phase -> merge -> tag. No complexity estimation, no
+isolated QA Test Authoring/promotion, no separate read-only Review, no
+separate Final QA phase.
 
-Uses real, temporary git repositories (mirrors
-``test_mvp_manager_git_governance.py``/``test_mvp_manager_qa_integration.py``)
-so branch/SHA/tag bookkeeping is exercised for real. The QA engine is a
-small, scriptable fake satisfying only the ``QAEngine`` Protocol
-(``.run(request) -> QAResult``) — deterministic, no LLM/Ralph execution
-involved in QA at all in this workflow.
+Uses real, temporary git repositories so branch/SHA/tag bookkeeping is
+exercised for real (see also ``test_git_governance.py``, which tests
+``GitGovernanceService``'s own primitives, e.g. branch-reuse idempotency,
+independently of MVPManager). The QA engine is a small, scriptable fake
+satisfying only the ``QAEngine`` Protocol (``.run(request) -> QAResult``)
+— deterministic, no LLM/Ralph execution involved in QA at all in this
+workflow.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from orchestrator.git_governance import (
     LocalGitWorkspace,
 )
 from orchestrator.handoff import HandoffStore
-from orchestrator.mvp_manager import MVPManager, WorkflowMode
+from orchestrator.mvp_manager import MVPManager
 from orchestrator.project_state import ProjectStateStore, WorkItemStatus
 from orchestrator.qa import FailureClassification, QAPhase, QAPolicy, QARunStore, QAResult
 from orchestrator.ralph_execution_engine import ExecutionResult
@@ -45,7 +46,7 @@ from orchestrator.worker_selector import (
 UTC_NOW = datetime(2026, 9, 16, 22, 0, tzinfo=timezone.utc)
 
 
-# --- git repo helpers (mirrors test_mvp_manager_git_governance.py) ---------
+# --- git repo helpers -------------------------------------------------------
 
 
 def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -220,8 +221,8 @@ class LeanFakeEngine:
     """Every real execution in LEAN_FEATURE_FLOW's nominal path has
     ``role == "developer"`` (DEV A, DEV B, and a post-QA-FAIL fix are all
     plain development executions, by design — see
-    ``WorkflowMode`` docstring) — asserted here directly, so any
-    accidental estimator/review/qa_testing-role execution fails the test
+    ``orchestrator.mvp_manager``'s own module docstring) — asserted here
+    directly, so any accidental estimator-role execution fails the test
     immediately rather than silently behaving oddly.
 
     ``dev_actions``: an ordered script, one entry per developer-role
@@ -331,6 +332,29 @@ def _new_stack(
 
 
 class TestLeanNominalFlow:
+    def test_multiple_ready_candidates_pick_ascending_work_item_id_first(self, tmp_path: Path) -> None:
+        """``run_next_work_item`` picks among READY/NEEDS_REWORK candidates
+        by ascending ``work_item_id`` (module docstring) — asserted
+        directly here, independent of creation order, since this specific
+        guarantee had only ever been exercised through
+        ``test_mvp_manager.py`` (removed with ``GOVERNED_FULL`` — see
+        ROADMAP.md's dated removal entry)."""
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+        stack = _new_stack(
+            tmp_path, workers=[alice, victor],
+            dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A implementation"), None],
+        )
+        # wi-1 already created by _new_stack; add two more, deliberately
+        # out of ascending order, and make wi-1 depend on nothing so all
+        # three are simultaneously READY.
+        stack["project_store"].create_work_item(work_item_id="wi-9", mvp_id="mvp-1", title="Z")
+        stack["project_store"].create_work_item(work_item_id="wi-2", mvp_id="mvp-1", title="B")
+        stack["project_store"].refresh_readiness("mvp-1")
+
+        result = asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+
+        assert result.work_item.work_item_id == "wi-1"
+
     def test_default_workflow_is_lean_and_completes_dev_a_dev_b_qa_merge_tag(self, tmp_path: Path) -> None:
         alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
         stack = _new_stack(
@@ -338,10 +362,6 @@ class TestLeanNominalFlow:
             dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A implementation"), None],
         )
         manager, engine, qa_engine = stack["manager"], stack["engine"], stack["qa_engine"]
-
-        # A: no explicit workflow_mode was passed to MVPManager — this is
-        # what "default" means.
-        assert manager._workflow_mode is WorkflowMode.LEAN_FEATURE_FLOW
 
         result = asyncio.run(manager.run_next_work_item("mvp-1"))
 
@@ -688,26 +708,3 @@ class TestLeanWorkerPoolSameProviderFallback:
         dev_requests = [r for r in stack["engine"].requests if r.role == "developer"]
         assert [r.worker.worker_id for r in dev_requests] == ["victor", "oscar"]
         assert stack["git_store"].get("wi-1").status is GitWorkItemStatus.MERGED
-
-
-# --- B/X: GOVERNED_FULL stays available and green ---------------------------
-
-
-class TestGovernedFullStillAvailable:
-    def test_explicit_governed_full_still_selectable(self, tmp_path: Path) -> None:
-        """B: passing workflow_mode explicitly still works — this file
-        does not re-exercise GOVERNED_FULL's own pipeline (that is
-        ``test_mvp_manager*.py``'s job, all still green — see X), it only
-        proves the enum value round-trips through MVPManager."""
-        from orchestrator.mvp_manager import WorkflowMode as WM
-
-        alice = _worker("alice")
-        repo = _git_repo(tmp_path)
-        project_store, handoff_store = _stores(tmp_path, repo)
-        git_service, _ = _git_service(tmp_path)
-        manager = MVPManager(
-            project_store, handoff_store, _real_worker_selector([alice]), LeanFakeEngine(),
-            git_governance_service=git_service, workflow_mode=WM.GOVERNED_FULL,
-            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
-        )
-        assert manager._workflow_mode is WM.GOVERNED_FULL

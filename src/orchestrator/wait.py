@@ -66,20 +66,20 @@ class WaitPhase(str, Enum):
     """What the WorkItem was trying to do when it had to start waiting.
 
     Deliberately small: enough to know whether resuming means re-entering
-    READY, NEEDS_REWORK, or REVIEWING — never a general-purpose workflow
+    READY, NEEDS_REWORK, or RUNNING — never a general-purpose workflow
     state machine.
     """
 
     DEVELOPMENT = "development"
     REWORK = "rework"
+    #: Historical/decode-only — the independent read-only Reviewer phase
+    #: this represented existed only under GOVERNED_FULL, removed before
+    #: the first public release (see ROADMAP.md's dated removal entry).
+    #: No current code path ever records a wait with this phase.
     REVIEW = "review"
-    #: Slice 24: a QA Test Authoring worker-selection failure diagnosable
-    #: as quota. Development already succeeded before this wait is ever
-    #: recorded, so resuming re-enters RUNNING directly, never READY —
-    #: only QA authoring onward is retried, development is never re-run.
-    #: Final Verification is deliberately not represented here — it is
-    #: read-only/deterministic and has no comparable "no eligible worker"
-    #: failure mode to wait out (see docs/QA_GOVERNANCE.md).
+    #: Historical/decode-only, same reason — QA Test Authoring existed
+    #: only under GOVERNED_FULL. No current code path ever records a
+    #: wait with this phase.
     QA_AUTHORING = "qa_authoring"
     #: LEAN_FEATURE_FLOW (2026-09-16): DEV A already succeeded before this
     #: wait is ever recorded — resuming re-enters RUNNING directly (like
