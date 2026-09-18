@@ -20,7 +20,6 @@ from orchestrator.handoff import HandoffStore
 from orchestrator.project_state import ProjectStateStore, WorkItemStatus, MVPStatus
 from orchestrator.release import ReleaseGateStatus, ReleaseStore
 from orchestrator.release_manager import ReleaseManager
-from orchestrator.review import ReviewFinding, ReviewRecord, ReviewStatus, ReviewStore
 from orchestrator.validation import (
     ValidationCommand,
     ValidationKind,
@@ -36,11 +35,10 @@ def _stores(tmp_path: Path):
     project_store = ProjectStateStore(tmp_path / "project.sqlite3", clock=lambda: UTC_NOW)
     execution_store = ExecutionStore(tmp_path / "execution.sqlite3", clock=lambda: UTC_NOW)
     validation_store = ValidationStore(tmp_path / "validation.sqlite3", clock=lambda: UTC_NOW)
-    review_store = ReviewStore(tmp_path / "review.sqlite3", clock=lambda: UTC_NOW)
     handoff_store = HandoffStore(tmp_path / "handoff.sqlite3", clock=lambda: UTC_NOW)
     release_store = ReleaseStore(tmp_path / "release.sqlite3", clock=lambda: UTC_NOW)
     activity_store = ActivityReportStore(tmp_path / "activity.sqlite3", clock=lambda: UTC_NOW)
-    return project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store
+    return project_store, execution_store, validation_store, handoff_store, release_store, activity_store
 
 
 def _manager(stores, **kwargs) -> ReleaseManager:
@@ -103,24 +101,6 @@ def _record_gate(
     validation_store.record_result(run_id, "proj-1", result, work_item_id=work_item_id, git_sha="deadbee")
 
 
-def _record_review(
-    review_store: ReviewStore, *, work_item_id: str, review_id: str,
-    status: ReviewStatus = ReviewStatus.APPROVED, author_worker_id: str = "claude_dev_01",
-    reviewer_worker_id: str | None = "codex_dev_01",
-) -> None:
-    review_store.record(
-        ReviewRecord(
-            review_id=review_id, project_id="proj-1", mvp_id="mvp-1", work_item_id=work_item_id,
-            author_execution_id="exec-1", author_worker_id=author_worker_id,
-            started_at=UTC_NOW, finished_at=UTC_NOW, status=status,
-            reviewer_execution_id="exec-2" if reviewer_worker_id else None,
-            reviewer_worker_id=reviewer_worker_id, reviewer_provider="openai" if reviewer_worker_id else None,
-            reviewer_model="gpt-5.6-terra" if reviewer_worker_id else None,
-            findings=() if status is ReviewStatus.APPROVED else (ReviewFinding(finding_id="f-1", summary="fix this"),),
-        )
-    )
-
-
 class TestWorkItemCompletionCheck:
     def test_all_completed_passes_release(self, tmp_path: Path) -> None:
         project_store, *rest = _stores(tmp_path)
@@ -148,7 +128,6 @@ class TestWorkItemCompletionCheck:
         elif setup_status == "needs_rework":
             project_store.refresh_readiness("mvp-1")
             project_store.mark_work_item_running("wi-a")
-            project_store.mark_work_item_reviewing("wi-a")
             project_store.mark_work_item_needs_rework("wi-a")
         elif setup_status == "failed":
             project_store.refresh_readiness("mvp-1")
@@ -157,7 +136,6 @@ class TestWorkItemCompletionCheck:
         elif setup_status == "blocked":
             project_store.refresh_readiness("mvp-1")
             project_store.mark_work_item_running("wi-a")
-            project_store.mark_work_item_reviewing("wi-a")
             project_store.mark_work_item_blocked("wi-a", reason="test")
 
         manager = _manager((project_store, *rest))
@@ -171,24 +149,24 @@ class TestWorkItemCompletionCheck:
 
 class TestQualityGateCheck:
     def test_required_validation_passed_allows_release(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
         _configure_validation(validation_store, required=True)
         _record_gate(validation_store, work_item_id="wi-a", run_id="run-1", status=ValidationStatus.PASSED)
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
 
         release = manager.attempt_release("proj-1", "mvp-1")
 
         assert release.status is ReleaseGateStatus.PASSED
 
     def test_required_validation_failed_refuses_release(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
         _configure_validation(validation_store, required=True)
         _record_gate(validation_store, work_item_id="wi-a", run_id="run-1", status=ValidationStatus.FAILED)
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
 
         release = manager.attempt_release("proj-1", "mvp-1")
 
@@ -197,12 +175,12 @@ class TestQualityGateCheck:
         assert gate_check.passed is False
 
     def test_missing_gate_result_fails_closed(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
         _configure_validation(validation_store, required=True)
         # No gate result ever recorded for wi-a.
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
 
         release = manager.attempt_release("proj-1", "mvp-1")
 
@@ -211,12 +189,12 @@ class TestQualityGateCheck:
         assert "wi-a" in gate_check.related_ids
 
     def test_optional_validation_failure_does_not_block_release(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
         _configure_validation(validation_store, required=False)
         _record_gate(validation_store, work_item_id="wi-a", run_id="run-1", status=ValidationStatus.FAILED, required=False)
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
 
         release = manager.attempt_release("proj-1", "mvp-1")
 
@@ -234,63 +212,15 @@ class TestQualityGateCheck:
         assert gate_check.passed is True
 
 
-class TestReviewCheck:
-    def test_approved_review_allows_release_when_required(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
-        _seed(project_store, tmp_path, ["wi-a"])
-        _complete(project_store, "wi-a")
-        _record_review(review_store, work_item_id="wi-a", review_id="rev-1", status=ReviewStatus.APPROVED)
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
-
-        release = manager.attempt_release("proj-1", "mvp-1", review_required=True)
-
-        assert release.status is ReleaseGateStatus.PASSED
-
-    def test_rejected_review_refuses_release_when_required(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
-        _seed(project_store, tmp_path, ["wi-a"])
-        _complete(project_store, "wi-a")
-        _record_review(review_store, work_item_id="wi-a", review_id="rev-1", status=ReviewStatus.REJECTED)
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
-
-        release = manager.attempt_release("proj-1", "mvp-1", review_required=True)
-
-        assert release.status is ReleaseGateStatus.FAILED
-        review_check = next(c for c in release.checks if c.check_id == "reviews-approved")
-        assert review_check.passed is False
-
-    def test_missing_review_refuses_release_when_required(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
-        _seed(project_store, tmp_path, ["wi-a"])
-        _complete(project_store, "wi-a")
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
-
-        release = manager.attempt_release("proj-1", "mvp-1", review_required=True)
-
-        assert release.status is ReleaseGateStatus.FAILED
-
-    def test_review_not_required_is_skipped_entirely(self, tmp_path: Path) -> None:
-        project_store, *rest = _stores(tmp_path)
-        _seed(project_store, tmp_path, ["wi-a"])
-        _complete(project_store, "wi-a")
-        manager = _manager((project_store, *rest))
-
-        release = manager.attempt_release("proj-1", "mvp-1", review_required=False)
-
-        review_check = next(c for c in release.checks if c.check_id == "reviews-approved")
-        assert review_check.passed is True
-        assert release.status is ReleaseGateStatus.PASSED
-
-
 class TestDanglingExecutionCheck:
     def test_running_execution_refuses_release(self, tmp_path: Path) -> None:
         from orchestrator.execution_store import ExecutionStatus
 
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
         _record_execution(execution_store, execution_id="exec-dangling", task_id="wi-a", status=None)
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
 
         release = manager.attempt_release("proj-1", "mvp-1")
 
@@ -324,10 +254,10 @@ class TestMVPStatusTransitions:
 
 class TestReleaseRecordPersistence:
     def test_release_record_is_persisted(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
 
         release = manager.attempt_release("proj-1", "mvp-1")
 
@@ -335,9 +265,9 @@ class TestReleaseRecordPersistence:
         assert fetched == release
 
     def test_multiple_attempts_for_same_mvp_are_kept(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
 
         first = manager.attempt_release("proj-1", "mvp-1")  # fails: wi-a not completed
         _complete(project_store, "wi-a")
@@ -349,9 +279,9 @@ class TestReleaseRecordPersistence:
         assert len(release_store.list_for_mvp("mvp-1")) == 2
 
     def test_latest_for_mvp_is_correct(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
 
         manager.attempt_release("proj-1", "mvp-1")
         _complete(project_store, "wi-a")
@@ -362,12 +292,12 @@ class TestReleaseRecordPersistence:
 
 class TestActivityReportGeneration:
     def test_report_generated_only_after_successful_release(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
         _record_execution(execution_store, execution_id="exec-1", task_id="wi-a", status=None)
         execution_store.mark_succeeded("exec-1", exit_code=0, finished_at=UTC_NOW)
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
 
         release = manager.attempt_release("proj-1", "mvp-1")
 
@@ -376,10 +306,10 @@ class TestActivityReportGeneration:
         assert report.mvp_id == "mvp-1"
 
     def test_no_report_fabricated_after_failed_release(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         # wi-a not completed -> gate fails.
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
 
         release = manager.attempt_release("proj-1", "mvp-1")
 
@@ -387,20 +317,19 @@ class TestActivityReportGeneration:
         assert activity_store.latest_for_mvp("mvp-1") is None
 
     def test_report_survives_restart(self, tmp_path: Path) -> None:
-        project_db, execution_db, validation_db, review_db, handoff_db, release_db, activity_db = [
+        project_db, execution_db, validation_db, handoff_db, release_db, activity_db = [
             tmp_path / name for name in
-            ("project.sqlite3", "execution.sqlite3", "validation.sqlite3", "review.sqlite3", "handoff.sqlite3", "release.sqlite3", "activity.sqlite3")
+            ("project.sqlite3", "execution.sqlite3", "validation.sqlite3", "handoff.sqlite3", "release.sqlite3", "activity.sqlite3")
         ]
         project_store = ProjectStateStore(project_db, clock=lambda: UTC_NOW)
         execution_store = ExecutionStore(execution_db, clock=lambda: UTC_NOW)
         validation_store = ValidationStore(validation_db, clock=lambda: UTC_NOW)
-        review_store = ReviewStore(review_db, clock=lambda: UTC_NOW)
         handoff_store = HandoffStore(handoff_db, clock=lambda: UTC_NOW)
         release_store = ReleaseStore(release_db, clock=lambda: UTC_NOW)
         activity_store = ActivityReportStore(activity_db, clock=lambda: UTC_NOW)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
         release = manager.attempt_release("proj-1", "mvp-1")
         activity_store.close()
 
@@ -411,11 +340,11 @@ class TestActivityReportGeneration:
     def test_report_contains_worker_provider_model(self, tmp_path: Path) -> None:
         from orchestrator.execution_store import ExecutionStatus
 
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
         _record_execution(execution_store, execution_id="exec-1", task_id="wi-a", worker_id="codex_dev_01", provider="openai", backend="codex", model="gpt-5.6-terra", status=ExecutionStatus.SUCCEEDED)
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
 
         release = manager.attempt_release("proj-1", "mvp-1")
         report = activity_store.get(release.report_id)
@@ -425,12 +354,12 @@ class TestActivityReportGeneration:
         assert report.executions[0].model == "gpt-5.6-terra"
 
     def test_report_contains_validations(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
         _configure_validation(validation_store, required=True)
         _record_gate(validation_store, work_item_id="wi-a", run_id="run-1", status=ValidationStatus.PASSED)
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
 
         release = manager.attempt_release("proj-1", "mvp-1")
         report = activity_store.get(release.report_id)
@@ -438,28 +367,30 @@ class TestActivityReportGeneration:
         assert len(report.validations) == 1
         assert report.validations[0].validation_id == "unit-tests"
 
-    def test_report_contains_reviews_and_findings(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+    def test_report_never_fabricates_reviews(self, tmp_path: Path) -> None:
+        """Independent review was removed with GOVERNED_FULL before the
+        first public release (see ROADMAP.md's dated removal entry) — a
+        report never has reviews to show, and never pretends otherwise."""
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
-        _record_review(review_store, work_item_id="wi-a", review_id="rev-1", status=ReviewStatus.APPROVED)
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
 
-        release = manager.attempt_release("proj-1", "mvp-1", review_required=True)
+        release = manager.attempt_release("proj-1", "mvp-1")
         report = activity_store.get(release.report_id)
 
-        assert len(report.reviews) == 1
-        assert report.reviews[0].reviewer_worker_id == "codex_dev_01"
+        assert report.reviews == ()
+        assert report.summary.review_count == 0
 
     def test_report_contains_handoffs(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
         handoff_store.create(
             handoff_id="ho-1", project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
             objective="Task wi-a", next_action="proceed", created_at=UTC_NOW,
         )
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
 
         release = manager.attempt_release("proj-1", "mvp-1")
         report = activity_store.get(release.report_id)
@@ -467,22 +398,20 @@ class TestActivityReportGeneration:
         assert len(report.handoffs) == 1
         assert report.handoffs[0].handoff_id == "ho-1"
 
-    def test_report_and_summary_count_failures_and_reworks(self, tmp_path: Path) -> None:
+    def test_report_and_summary_count_failures(self, tmp_path: Path) -> None:
         from orchestrator.execution_store import ExecutionStatus
 
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _record_execution(execution_store, execution_id="exec-1", task_id="wi-a", status=ExecutionStatus.FAILED)
-        _record_review(review_store, work_item_id="wi-a", review_id="rev-1", status=ReviewStatus.REJECTED)
         _complete(project_store, "wi-a")  # force-complete for the purpose of this summary-count test
-        manager = _manager((project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store))
+        manager = _manager((project_store, execution_store, validation_store, handoff_store, release_store, activity_store))
 
         release = manager.attempt_release("proj-1", "mvp-1")
         report = activity_store.get(release.report_id)
 
         assert report.summary.failure_count == 1
-        assert report.summary.rework_count == 1
-        assert len(report.incidents) >= 2
+        assert len(report.incidents) >= 1
 
 
 class TestGitShaCapture:
@@ -523,7 +452,7 @@ class TestGovernedMergeCheck:
     def test_release_blocked_when_a_governed_work_item_is_not_merged(self, tmp_path: Path) -> None:
         from orchestrator.git_governance import GitWorkItemRecord, GitWorkItemStatus, GitWorkItemStore
 
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
         git_store = GitWorkItemStore(tmp_path / "git.sqlite3", clock=lambda: UTC_NOW)
@@ -533,7 +462,7 @@ class TestGovernedMergeCheck:
             base_sha="a" * 40, status=GitWorkItemStatus.PREPARED, created_at=UTC_NOW, updated_at=UTC_NOW,
         ))
         manager = _manager(
-            (project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store),
+            (project_store, execution_store, validation_store, handoff_store, release_store, activity_store),
             git_work_item_store=git_store,
         )
 
@@ -547,7 +476,7 @@ class TestGovernedMergeCheck:
     def test_release_passes_once_governed_work_item_is_merged(self, tmp_path: Path) -> None:
         from orchestrator.git_governance import GitWorkItemRecord, GitWorkItemStatus, GitWorkItemStore
 
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
         git_store = GitWorkItemStore(tmp_path / "git.sqlite3", clock=lambda: UTC_NOW)
@@ -560,7 +489,7 @@ class TestGovernedMergeCheck:
         git_store.mark_merge_ready("wi-a")
         git_store.mark_merged("wi-a", merged_sha="b" * 40)
         manager = _manager(
-            (project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store),
+            (project_store, execution_store, validation_store, handoff_store, release_store, activity_store),
             git_work_item_store=git_store,
         )
 
@@ -571,12 +500,12 @@ class TestGovernedMergeCheck:
     def test_ungoverned_work_items_never_penalized(self, tmp_path: Path) -> None:
         from orchestrator.git_governance import GitWorkItemStore
 
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
         git_store = GitWorkItemStore(tmp_path / "git.sqlite3", clock=lambda: UTC_NOW)  # configured, but wi-a never governed
         manager = _manager(
-            (project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store),
+            (project_store, execution_store, validation_store, handoff_store, release_store, activity_store),
             git_work_item_store=git_store,
         )
 
@@ -587,11 +516,11 @@ class TestGovernedMergeCheck:
         assert check.passed is True
 
     def test_no_git_work_item_store_preserves_prior_behavior(self, tmp_path: Path) -> None:
-        project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store = _stores(tmp_path)
+        project_store, execution_store, validation_store, handoff_store, release_store, activity_store = _stores(tmp_path)
         _seed(project_store, tmp_path, ["wi-a"])
         _complete(project_store, "wi-a")
         manager = _manager(
-            (project_store, execution_store, validation_store, review_store, handoff_store, release_store, activity_store),
+            (project_store, execution_store, validation_store, handoff_store, release_store, activity_store),
         )  # no git_work_item_store at all
 
         release = manager.attempt_release("proj-1", "mvp-1")

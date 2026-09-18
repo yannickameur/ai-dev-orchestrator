@@ -28,7 +28,6 @@ from orchestrator.git_governance import (
     GitGovernanceService,
     GitHeadDriftError,
     GitHubCliPullRequestPublisher,
-    IsolatedReviewWorkspace,
     GitWorkItemStatus,
     GitWorkItemStore,
     InvalidGitWorkItemTransitionError,
@@ -189,24 +188,15 @@ class TestNoDestructiveCommands:
 
         source = inspect.getsource(module)
 
-        # The one narrow, explicitly-reviewed exception: removing OUR OWN
-        # disposable `IsolatedReviewWorkspace` worktree needs `--force`
-        # (a worktree containing untracked/uncommitted content — e.g.
-        # Ralph's own noise files, or a real governance violation
-        # deliberately left in place for forensics via `preserve()` —
-        # otherwise refuses to be removed at all) — never a target
-        # branch, never history, never anything shared with the governed
-        # repository beyond a disposable checkout this same module
-        # created and is now deleting.
-        allowed_force_line = '["worktree", "remove", "--force", str(path)], check=False)'
-        assert allowed_force_line in source, "expected worktree-remove --force line not found (test is stale)"
-        scrubbed_source = source.replace(allowed_force_line, "")
-
-        # Precise check: only these specific dangerous argv tokens must
-        # never appear as a literal git subcommand/flag anywhere else in
-        # the module (not a substring ban on unrelated prose/docstrings).
+        # Precise check: these dangerous argv tokens must never appear as
+        # a literal git subcommand/flag anywhere in the module (not a
+        # substring ban on unrelated prose/docstrings). No isolated-
+        # worktree exception remains — the disposable detached worktree
+        # mechanism (once used only for the now-removed GOVERNED_FULL
+        # independent-review pipeline, see ROADMAP.md's dated removal
+        # entry) was removed along with it.
         for token in ("\"reset\"", "\"--hard\"", "\"clean\"", "\"-fd\"", "\"rebase\"", "\"push\"", "\"--force\""):
-            assert token not in scrubbed_source, f"forbidden git argv token found: {token}"
+            assert token not in source, f"forbidden git argv token found: {token}"
 
 
 # --- GitWorkItemStore --------------------------------------------------------
@@ -485,32 +475,6 @@ class TestHeadCapture:
         LocalGitWorkspace(repo).switch("main")
         with pytest.raises(GitHeadDriftError):
             service.capture_head("wi-1", repository_path=repo)
-
-
-class TestReviewTarget:
-    def test_review_targets_exact_head(self, tmp_path: Path) -> None:
-        store = _store(tmp_path)
-        service = GitGovernanceService(store, clock=lambda: UTC_NOW)
-        repo = _init_repo(tmp_path)
-        service.prepare_work_item(project_id="p", mvp_id="m", work_item_id="wi-1", repository_path=repo)
-        head = _commit_file(repo, "a.txt", "a", "dev commit")
-        service.capture_head("wi-1", repository_path=repo)
-        record = service.assert_review_target("wi-1", repository_path=repo)
-        assert record.current_head_sha == head
-
-    def test_review_target_missing_branch_fails_closed(self, tmp_path: Path) -> None:
-        store = _store(tmp_path)
-        service = GitGovernanceService(store, clock=lambda: UTC_NOW)
-        repo = _init_repo(tmp_path)
-        service.prepare_work_item(project_id="p", mvp_id="m", work_item_id="wi-1", repository_path=repo)
-        record = store.get("wi-1")
-        _run_git(repo, "checkout", "main")
-        _run_git(repo, "branch", "-D", record.work_branch)
-        with pytest.raises(GitBranchMissingError):
-            service.assert_review_target("wi-1", repository_path=repo)
-
-
-# --- merge eligibility -------------------------------------------------------
 
 
 def _prepared(tmp_path: Path, *, work_item_id: str = "wi-1") -> tuple[GitGovernanceService, Path, str]:
@@ -1014,75 +978,6 @@ class TestReconcile:
         # reconciling a MERGED record never raises.
         record = service.reconcile("wi-1", repository_path=repo)
         assert record.status is GitWorkItemStatus.MERGED
-
-
-# --- isolated review workspace (external pilot follow-up) -------------------
-#
-# A review execution has the exact same real file-system access as
-# development, with no git-fact enforcement of its own — a real external
-# pilot showed a real reviewer writing functional code during its own
-# review. `IsolatedReviewWorkspace` runs the review in a disposable,
-# DETACHED `git worktree` checked out at the exact SHA to review, so the
-# governed target workspace is never even a candidate for mutation in the
-# first place — these tests exercise the primitive directly (the
-# MVPManager-level wiring/violation-detection is covered in
-# ``tests/test_mvp_manager_git_governance.py::TestReviewMustBeStrictlyReadOnly``).
-
-
-class TestIsolatedReviewWorkspace:
-    def test_checked_out_content_matches_the_exact_sha(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        sha = _commit_file(repo, "a.txt", "v1", "second commit")
-        with IsolatedReviewWorkspace(source_repository_path=repo, sha=sha, review_id="rev-1", parent_dir=tmp_path / "reviews") as ws:
-            assert (ws.path / "a.txt").read_text() == "v1"
-            assert LocalGitWorkspace(ws.path).head_sha() == sha
-
-    def test_mutation_inside_never_reaches_the_source_repository(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        sha = LocalGitWorkspace(repo).head_sha()
-        original = (repo / "README.md").read_text()
-        with IsolatedReviewWorkspace(source_repository_path=repo, sha=sha, review_id="rev-1", parent_dir=tmp_path / "reviews") as ws:
-            (ws.path / "README.md").write_text("mutated by a reviewer\n")
-            assert (repo / "README.md").read_text() == original
-            assert subprocess.run(
-                ["git", "status", "--porcelain"], cwd=str(repo), capture_output=True, text=True,
-            ).stdout == ""
-
-    def test_cleanup_removes_the_worktree_by_default(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        sha = LocalGitWorkspace(repo).head_sha()
-        with IsolatedReviewWorkspace(source_repository_path=repo, sha=sha, review_id="rev-1", parent_dir=tmp_path / "reviews") as ws:
-            path = ws.path
-            assert path.exists()
-        assert not path.exists()
-        assert "review-" not in subprocess.run(
-            ["git", "worktree", "list"], cwd=str(repo), capture_output=True, text=True,
-        ).stdout
-
-    def test_preserve_keeps_the_worktree_for_forensics(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        sha = LocalGitWorkspace(repo).head_sha()
-        ws = IsolatedReviewWorkspace(source_repository_path=repo, sha=sha, review_id="rev-1", parent_dir=tmp_path / "reviews")
-        ws.__enter__()
-        path = ws.path
-        (path / "README.md").write_text("evidence of a violation\n")
-        ws.preserve()
-        ws.cleanup()
-        assert path.exists()
-        assert (path / "README.md").read_text() == "evidence of a violation\n"
-
-    def test_two_isolated_workspaces_with_the_same_review_id_never_collide(self, tmp_path: Path) -> None:
-        """Regression: a bare `review-<review_id>` path is not globally
-        unique (only unique within one MVPManager's own id_factory
-        counter) — two unrelated reviews sharing a parent dir must never
-        collide on the same path."""
-        repo = _init_repo(tmp_path)
-        sha = LocalGitWorkspace(repo).head_sha()
-        parent = tmp_path / "reviews"
-        with IsolatedReviewWorkspace(source_repository_path=repo, sha=sha, review_id="id-2", parent_dir=parent) as ws1:
-            with IsolatedReviewWorkspace(source_repository_path=repo, sha=sha, review_id="id-2", parent_dir=parent) as ws2:
-                assert ws1.path != ws2.path
-                assert ws1.path.exists() and ws2.path.exists()
 
 
 # --- pull request abstraction ------------------------------------------------

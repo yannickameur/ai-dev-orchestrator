@@ -16,14 +16,19 @@ Dernière mise à jour : Mistral Vibe ✅ VALIDATED + reprise Morpion Web 3D mul
 - **Worker pool** (`config/workers.yaml`) : 6 workers, 3 providers —
   `alice`/`bob` (anthropic), `victor`/`oscar` (openai), `milo`/`juno`
   (mistral, `development` uniquement, priorité 60, statut ✅ VALIDATED).
-- **GOVERNED_FULL** : `DEPRECATED` / `REMOVAL_CANDIDATE` (reste
-  sélectionnable explicitement, tests verts, non enrichi).
+- **GOVERNED_FULL** : `REMOVED` (2026-09-18, avant la première release
+  publique — voir l'entrée datée ci-dessous). `LEAN_FEATURE_FLOW` est
+  désormais le seul workflow d'exécution de WorkItem implémenté ;
+  `WorkflowMode` lui-même a été supprimé (un seul mode restant).
 - **Slice 24** : `ACCEPTANCE_DONE` (2026-09-16) — voir détail ci-dessous.
-- **Tests offline** : 1189 PASS (état courant — +1 depuis les entrées
-  historiques mentionnant 1188 : un test de régression a été ajouté à
-  `tests/test_mvp_manager_lean_feature_flow.py` lors de la préparation de
-  la première release publique, pour le défaut de policy
-  `GitGovernancePolicy` trouvé dans `scripts/run_external_project_pilot.py`).
+- **Tests offline** : 983 PASS (état courant). Les entrées historiques
+  mentionnant 1188/1189 restent correctes pour leur date — la baisse
+  vient du retrait de `GOVERNED_FULL` (2026-09-18, voir entrée datée
+  ci-dessous) : uniquement des tests validant exclusivement ce pipeline
+  supprimé, jamais une réduction de couverture du chemin Lean actuel (une
+  lacune de couverture réelle — l'ordre déterministe par `work_item_id`
+  ascendant — a été comblée par un nouveau test dans
+  `tests/test_mvp_manager_lean_feature_flow.py`).
 - **Mistral / Vibe (2026-09-18) : ✅ VALIDATED.** La limite de commit
   automatique (Vibe ne committait pas ses changements) est résolue par
   une consigne de gouvernance Git générique (non spécifique à un
@@ -506,6 +511,36 @@ l'état courant.
   (`require_required_gates`/`require_review`) trouvée et corrigée dans
   le script pilote jetable (jamais dans le code produit de
   l'orchestrateur) : `docs/reports/morpion-computer-turn-regression-2026-09-18.md` §27-28.
+- **2026-09-18 — GOVERNED_FULL REMOVED avant la première release
+  publique.** Décision utilisateur explicite. Raison : superseded par
+  `LEAN_FEATURE_FLOW` (DEV A → DEV B corrective review → QA déterministe
+  → merge → tag) ; étapes dupliquées (Reviewer indépendant en lecture
+  seule, QA Test Authoring isolée, Final QA séparée) ; complexité
+  inutile ; aucun besoin produit actuel ; KISS/YAGNI. `WorkflowMode`
+  lui-même a été supprimé (un seul mode restant, plus de branche morte).
+  `src/orchestrator/review.py` supprimé en entier ; les fragments
+  isolés-worktree devenus orphelins (`_IsolatedGitWorktree`,
+  `IsolatedReviewWorkspace`, `IsolatedQAWorkspace`,
+  `assert_review_target`, `worktree_add`/`worktree_remove`) retirés de
+  `git_governance.py` ; la sous-orchestration QA Test Authoring
+  (`InternalQATestAuthor`, promotion isolée) retirée de
+  `internal_qa_engine.py` ; capacité `code_review` retirée de
+  `config/workers.yaml` (plus aucun chemin supporté ne la matche).
+  `WorkItemStatus.REVIEWING`/`QAPhase.TEST_AUTHORING` restent dans leurs
+  enums, volontairement, uniquement pour décoder un état SQLite
+  historique existant — plus jamais atteints par le code actuel.
+  `ReleaseManager`/`ActivityReport` n'exigent plus de `ReviewRecord` pour
+  qu'une release passe (`reviews`/`review_count` restent honnêtement
+  vides). Deux scripts (`scripts/run_external_project_pilot.py`,
+  `scripts/self_dogfood_full_pipeline_real.py`) avaient le même défaut de
+  policy `GitGovernancePolicy` déjà trouvé lors de WI-11
+  (`require_review`/`require_required_gates` non désactivés en mode
+  lean) — corrigé dans les deux. Suite offline : 1189 → 983 PASS,
+  uniquement des tests validant exclusivement le pipeline supprimé ;
+  aucune régression de couverture du chemin Lean (une lacune réelle —
+  ordre déterministe par `work_item_id` ascendant, auparavant testée
+  seulement via le fichier supprimé — comblée par un nouveau test).
+  `MVP_SPEC.yaml` inchangé (aucune AC n'exige `GOVERNED_FULL`).
 - **Next : POST-MVP 0.1 EXPERIMENT / DISCOVERY.** Pas encore un MVP 0.2 —
   décision à prendre avec l'utilisateur. Axe (1) — pilote Lean frais
   (Roman Numerals) — **fait, `PASS`**. Axe (2) — Mistral/Vibe — **fait,

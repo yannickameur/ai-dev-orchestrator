@@ -1,9 +1,9 @@
 """Tests for RecoveryCoordinator (Phase 1 / Slice 11b).
 
 All tests are offline: real sqlite3 files under pytest's ``tmp_path``
-(ExecutionStore/HandoffStore/ProjectStateStore/ReviewStore), an injectable
-clock, no network, no subprocess, no Claude/Codex/Ralph invocation, no
-real sleep anywhere here.
+(ExecutionStore/HandoffStore/ProjectStateStore), an injectable clock, no
+network, no subprocess, no Claude/Codex/Ralph invocation, no real sleep
+anywhere here.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from orchestrator.execution_store import ExecutionStatus, ExecutionStore
 from orchestrator.handoff import HandoffStore
 from orchestrator.project_state import ProjectStateStore, WorkItemStatus
 from orchestrator.recovery import RECOVERY_NEXT_ACTION, RECOVERY_OPEN_ISSUE, RecoveryCoordinator
-from orchestrator.review import ReviewFinding, ReviewRecord, ReviewStatus, ReviewStore
 
 UTC_NOW = datetime(2026, 9, 12, 18, 0, tzinfo=timezone.utc)
 
@@ -33,7 +32,7 @@ def _seed(project_store: ProjectStateStore, tmp_path: Path) -> None:
     project_store.create_work_item(work_item_id="wi-a", mvp_id="mvp-1", title="A")
 
 
-def _coordinator(execution_store, handoff_store, project_store, review_store=None) -> RecoveryCoordinator:
+def _coordinator(execution_store, handoff_store, project_store) -> RecoveryCoordinator:
     counter = {"n": 0}
 
     def id_factory() -> str:
@@ -41,7 +40,7 @@ def _coordinator(execution_store, handoff_store, project_store, review_store=Non
         return f"recovery-id-{counter['n']}"
 
     return RecoveryCoordinator(
-        execution_store, handoff_store, project_store, review_store,
+        execution_store, handoff_store, project_store,
         clock=lambda: UTC_NOW, id_factory=id_factory,
     )
 
@@ -267,46 +266,17 @@ class TestRecoveryHandoff:
         )
         project_store.refresh_readiness("mvp-1")
         project_store.mark_work_item_running("wi-a")
-        project_store.mark_work_item_reviewing("wi-a")
         execution_store.create(
-            execution_id="exec-review", task_id="wi-a", worker_id="codex_dev_01",
-            provider="openai", backend="codex", model="terra", role="reviewer",
-        )
+            execution_id="exec-dev-b", task_id="wi-a", worker_id="codex_dev_01",
+            provider="openai", backend="codex", model="terra", role="developer",
+        )  # orphaned mid-DEV-B
 
         coordinator = _coordinator(execution_store, handoff_store, project_store)
         coordinator.reconcile_work_item(project_id="proj-1", mvp_id="mvp-1", work_item=project_store.get_work_item("wi-a"))
 
         new_handoff = handoff_store.latest_for_work_item("wi-a")
-        assert new_handoff.execution_id == "exec-review"
+        assert new_handoff.execution_id == "exec-dev-b"
         assert new_handoff.test_results == "quality_gate=PASSED (unit-tests=passed)"
-
-    def test_recovery_handoff_folds_in_previous_review_findings(self, tmp_path: Path) -> None:
-        execution_store, handoff_store, project_store = _stores(tmp_path)
-        _seed(project_store, tmp_path)
-        review_store = ReviewStore(":memory:", clock=lambda: UTC_NOW)
-        review_store.record(
-            ReviewRecord(
-                review_id="review-1", project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
-                author_execution_id="exec-dev", author_worker_id="claude_dev_01",
-                reviewer_execution_id="exec-review-1", reviewer_worker_id="codex_dev_01",
-                reviewer_provider="openai", reviewer_model="terra",
-                started_at=UTC_NOW, finished_at=UTC_NOW, status=ReviewStatus.REJECTED,
-                findings=(ReviewFinding(finding_id="f1", summary="off by one", severity="major"),),
-            )
-        )
-        project_store.refresh_readiness("mvp-1")
-        project_store.mark_work_item_running("wi-a")
-        execution_store.create(
-            execution_id="exec-rework", task_id="wi-a", worker_id="claude_dev_01",
-            provider="anthropic", backend="claude_code", model="sonnet", role="developer",
-        )
-
-        coordinator = _coordinator(execution_store, handoff_store, project_store, review_store)
-        coordinator.reconcile_work_item(project_id="proj-1", mvp_id="mvp-1", work_item=project_store.get_work_item("wi-a"))
-
-        handoff = handoff_store.latest_for_work_item("wi-a")
-        assert "off by one" in handoff.open_issues
-        assert RECOVERY_OPEN_ISSUE in handoff.open_issues
 
     def test_no_call_to_the_interrupted_worker_needed(self, tmp_path: Path) -> None:
         # RecoveryCoordinator builds everything from persisted stores —
@@ -315,42 +285,3 @@ class TestRecoveryHandoff:
         coordinator = _coordinator(execution_store, handoff_store, project_store)
         assert not hasattr(coordinator, "_worker_selector")
         assert not hasattr(coordinator, "_execution_engine")
-
-
-class TestReviewPhaseRecovery:
-    def test_orphaned_reviewing_work_item_is_marked_recovery_required(self, tmp_path: Path) -> None:
-        execution_store, handoff_store, project_store = _stores(tmp_path)
-        _seed(project_store, tmp_path)
-        project_store.refresh_readiness("mvp-1")
-        project_store.mark_work_item_running("wi-a")
-        project_store.mark_work_item_reviewing("wi-a")
-        execution_store.create(
-            execution_id="exec-review", task_id="wi-a", worker_id="codex_dev_01",
-            provider="openai", backend="codex", model="terra", role="reviewer",
-        )  # orphaned mid-review
-
-        coordinator = _coordinator(execution_store, handoff_store, project_store)
-        updated = coordinator.reconcile_work_item(project_id="proj-1", mvp_id="mvp-1", work_item=project_store.get_work_item("wi-a"))
-
-        assert updated is not None
-        assert updated.status is WorkItemStatus.RECOVERY_REQUIRED
-        assert updated.status is not WorkItemStatus.COMPLETED
-        assert execution_store.get("exec-review").status is ExecutionStatus.RECOVERY_REQUIRED
-
-    def test_reviewing_work_item_only_considers_reviewer_role_executions(self, tmp_path: Path) -> None:
-        execution_store, handoff_store, project_store = _stores(tmp_path)
-        _seed(project_store, tmp_path)
-        project_store.refresh_readiness("mvp-1")
-        project_store.mark_work_item_running("wi-a")
-        execution_store.create(
-            execution_id="exec-dev", task_id="wi-a", worker_id="claude_dev_01",
-            provider="anthropic", backend="claude_code", model="sonnet", role="developer",
-        )
-        execution_store.mark_succeeded("exec-dev")
-        project_store.mark_work_item_reviewing("wi-a")
-        # No reviewer-role execution recorded at all yet — nothing to reconcile.
-
-        coordinator = _coordinator(execution_store, handoff_store, project_store)
-        updated = coordinator.reconcile_work_item(project_id="proj-1", mvp_id="mvp-1", work_item=project_store.get_work_item("wi-a"))
-
-        assert updated is None

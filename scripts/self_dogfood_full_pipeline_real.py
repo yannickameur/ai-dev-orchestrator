@@ -75,7 +75,6 @@ from orchestrator.qa import QAPhase, QAPolicy, QARequest, QARunStore, QAVerdictS
 from orchestrator.quota_manager import ProviderProbeError, QuotaManager, QuotaPolicy  # noqa: E402
 from orchestrator.ralph_execution_engine import RalphExecutionEngine  # noqa: E402
 from orchestrator.realization_report import RealizationReportService, RealizationReportStore, write_html  # noqa: E402
-from orchestrator.review import ReviewPolicy, ReviewStore  # noqa: E402
 from orchestrator.validation import QualityGateRunner, ValidationCommand, ValidationKind, ValidationStore  # noqa: E402
 from orchestrator.worker_registry import WorkerRegistry  # noqa: E402
 from orchestrator.worker_selector import WorkerSelector  # noqa: E402
@@ -238,7 +237,6 @@ def main() -> int:
     decision_store = AdaptiveExecutionDecisionStore(ctx_dir / "decisions.sqlite3", clock=_utcnow)
     gate_validation_store = ValidationStore(ctx_dir / "validation_gate.sqlite3", clock=_utcnow)
     qa_validation_store = ValidationStore(ctx_dir / "validation_qa.sqlite3", clock=_utcnow)
-    review_store = ReviewStore(ctx_dir / "review.sqlite3", clock=_utcnow)
     qa_run_store = QARunStore(ctx_dir / "qa_runs.sqlite3", clock=_utcnow)
     git_store = GitWorkItemStore(ctx_dir / "git_governance.sqlite3", clock=_utcnow)
     report_store = RealizationReportStore(ctx_dir / "reports.sqlite3", clock=_utcnow)
@@ -260,17 +258,23 @@ def main() -> int:
     recommendation_service = ExecutionRecommendationService(rec_store, worker_selector, execution_engine, clock=_utcnow)
     adaptive_selector = AdaptiveExecutionSelector(decision_store, recommendation_service, worker_selector, clock=_utcnow)
 
-    gate_runner = QualityGateRunner(gate_validation_store, clock=_utcnow)
     qa_gate_runner = QualityGateRunner(qa_validation_store, clock=_utcnow)
     qa_engine = InternalQAEngine(validation_store=qa_validation_store, gate_runner=qa_gate_runner, clock=_utcnow)
 
+    # require_review/require_required_gates default to True but this
+    # MVPManager wires neither a quality_gate_runner nor a review_store
+    # (LEAN_FEATURE_FLOW — GOVERNED_FULL was removed before the first
+    # public release, see ROADMAP.md's dated removal entry) — left at
+    # default, merge eligibility could never be satisfied. See
+    # scripts/run_external_project_pilot.py's identical fix.
     git_service = GitGovernanceService(
-        git_store, policy=GitGovernancePolicy(auto_merge=True, base_branch="main"), clock=_utcnow,
+        git_store,
+        policy=GitGovernancePolicy(auto_merge=True, base_branch="main", require_review=False, require_required_gates=False),
+        clock=_utcnow,
     )
 
     manager = MVPManager(
         project_store, handoff_store, worker_selector, execution_engine,
-        quality_gate_runner=gate_runner, review_store=review_store, review_policy=ReviewPolicy(),
         execution_store=exec_store, adaptive_execution_selector=adaptive_selector,
         validation_store=gate_validation_store, git_governance_service=git_service,
         qa_engine=qa_engine, qa_policy=QAPolicy(), qa_run_store=qa_run_store,
@@ -397,7 +401,7 @@ def main() -> int:
 
     _cleanup(
         project_store, handoff_store, exec_store, rec_store, decision_store, gate_validation_store,
-        qa_validation_store, review_store, qa_run_store, git_store, report_store, neg_validation_store,
+        qa_validation_store, qa_run_store, git_store, report_store, neg_validation_store,
         neg_qa_run_store,
     )
     if not args.keep_workspace:

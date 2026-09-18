@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""External project pilot harness (NOT committed): drives a real,
-approved SPEC.md/ROADMAP.md through the real ai-dev-orchestrator
-MVPManager against a REAL external project workspace — never a
+"""External project pilot harness: drives a real, approved
+SPEC.md/ROADMAP.md through the real ai-dev-orchestrator MVPManager
+(LEAN_FEATURE_FLOW — the only WorkItem execution pipeline this project
+implements) against a REAL external project workspace — never a
 disposable /tmp copy, never a synthetic defect, never a negative
 control (those only make sense for self-dogfood on this control plane
 itself).
@@ -15,11 +16,11 @@ here.
 This harness is intentionally thin: it only turns an approved
 Project/MVP/WorkItem decomposition (mirroring the target repo's own
 ROADMAP.md, never re-decomposed here) into calls against the REAL,
-already-existing MVPManager/WorkerSelector/AdaptiveExecutionSelector/
-RalphExecutionEngine/GitGovernanceService/InternalQAEngine/
-QualityGateRunner. It never reimplements any of them, and never writes a
-single line of the target project's own source itself — all real code
-changes are produced exclusively by the real workers Ralph launches.
+already-existing MVPManager/WorkerSelector/RalphExecutionEngine/
+GitGovernanceService/InternalQAEngine/QualityGateRunner. It never
+reimplements any of them, and never writes a single line of the target
+project's own source itself — all real code changes are produced
+exclusively by the real workers Ralph launches.
 
 NEVER run this via pytest. Run explicitly:
 
@@ -45,16 +46,11 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from orchestrator.adaptive_execution import AdaptiveExecutionDecisionStore, AdaptiveExecutionSelector  # noqa: E402
-from orchestrator.complexity_estimation import (  # noqa: E402
-    ExecutionRecommendationService,
-    ExecutionRecommendationStore,
-)
 from orchestrator.execution_store import ExecutionStore  # noqa: E402
 from orchestrator.git_governance import GitGovernancePolicy, GitGovernanceService, GitWorkItemStatus, GitWorkItemStore  # noqa: E402
 from orchestrator.handoff import HandoffStore  # noqa: E402
 from orchestrator.internal_qa_engine import InternalQAEngine  # noqa: E402
-from orchestrator.mvp_manager import MVPManager, WorkflowMode  # noqa: E402
+from orchestrator.mvp_manager import MVPManager  # noqa: E402
 from orchestrator.project_state import ProjectStateStore, WorkItemStatus  # noqa: E402
 from orchestrator.providers.claude_code_adapter import ClaudeCodeAdapter  # noqa: E402
 from orchestrator.providers.codex_adapter import CodexAdapter  # noqa: E402
@@ -62,7 +58,6 @@ from orchestrator.qa import QAPolicy, QARunStore  # noqa: E402
 from orchestrator.quota_manager import ProviderProbeError, QuotaManager, QuotaPolicy  # noqa: E402
 from orchestrator.ralph_execution_engine import RalphExecutionEngine  # noqa: E402
 from orchestrator.realization_report import RealizationReportService, RealizationReportStore, write_html  # noqa: E402
-from orchestrator.review import ReviewPolicy, ReviewStore  # noqa: E402
 from orchestrator.validation import QualityGateRunner, ValidationCommand, ValidationKind, ValidationStore  # noqa: E402
 from orchestrator.wait import WaitStore  # noqa: E402
 from orchestrator.worker_registry import WorkerRegistry  # noqa: E402
@@ -190,12 +185,6 @@ def main() -> int:
     parser.add_argument("--check-quota-only", action="store_true")
     parser.add_argument("--max-cycles", type=int, default=MAX_CYCLES)
     parser.add_argument("--ctx-dir", type=str, default=None, help="Reuse an existing store directory to resume.")
-    parser.add_argument(
-        "--workflow-mode", choices=["lean", "governed_full"], default="lean",
-        help="lean (default, no special config): DEV A -> DEV B corrective review -> single QA -> merge -> tag. "
-             "governed_full: the original, heavier pipeline (adaptive estimation, isolated QA authoring/promotion, "
-             "isolated review, separate Final QA) — kept for comparison only.",
-    )
     args = parser.parse_args()
 
     if args.check_quota_only:
@@ -267,61 +256,30 @@ def main() -> int:
     qa_engine = InternalQAEngine(validation_store=qa_validation_store, gate_runner=qa_gate_runner, clock=_utcnow)
 
     # require_review/require_required_gates default to True in
-    # GitGovernancePolicy — correct for governed_full (which wires a real
-    # quality_gate_runner + review_store below) but WRONG for the default
-    # lean mode, which wires neither (the QA phase's own deterministic
-    # commands ARE the gate; DEV B's corrective review replaces review) —
-    # left at their default, merge eligibility can never be satisfied no
-    # matter how many real QA commands pass. Exactly the wiring
-    # tests/test_mvp_manager_lean_feature_flow.py's own fixture uses for
-    # LEAN_FEATURE_FLOW. Found via a real external-project pilot
-    # (Morpion Web 3D WI-11): a WorkItem reached COMPLETED with a real QA
-    # PASS but its git record stayed IN_PROGRESS forever.
-    _lean = args.workflow_mode != "governed_full"
+    # GitGovernancePolicy but LEAN_FEATURE_FLOW (the only workflow
+    # MVPManager implements — GOVERNED_FULL was removed before the first
+    # public release, see ROADMAP.md's dated removal entry) wires neither
+    # a quality_gate_runner nor a review_store (the QA phase's own
+    # deterministic commands ARE the gate; DEV B's corrective review
+    # replaces independent review) — left at their default, merge
+    # eligibility can never be satisfied no matter how many real QA
+    # commands pass. Exactly the wiring
+    # tests/test_mvp_manager_lean_feature_flow.py's own fixture uses.
+    # Found via a real external-project pilot (Morpion Web 3D WI-11): a
+    # WorkItem reached COMPLETED with a real QA PASS but its git record
+    # stayed IN_PROGRESS forever.
     git_service = GitGovernanceService(
         git_store,
-        policy=GitGovernancePolicy(
-            auto_merge=True, base_branch="main",
-            require_review=not _lean, require_required_gates=not _lean,
-        ),
+        policy=GitGovernancePolicy(auto_merge=True, base_branch="main", require_review=False, require_required_gates=False),
         clock=_utcnow,
     )
 
-    rec_store = decision_store = gate_validation_store = review_store = None
-    if args.workflow_mode == "governed_full":
-        # The original, heavier pipeline — kept ONLY for explicit
-        # comparison; requires its own extra stores/wiring that
-        # LEAN_FEATURE_FLOW (the default, below) never needs at all.
-        rec_store = ExecutionRecommendationStore(ctx_dir / "recommendations.sqlite3", clock=_utcnow)
-        decision_store = AdaptiveExecutionDecisionStore(ctx_dir / "decisions.sqlite3", clock=_utcnow)
-        gate_validation_store = ValidationStore(ctx_dir / "validation_gate.sqlite3", clock=_utcnow)
-        gate_validation_store.set_project_commands(PROJECT_ID, [targeted_command])
-        review_store = ReviewStore(ctx_dir / "review.sqlite3", clock=_utcnow)
-        recommendation_service = ExecutionRecommendationService(rec_store, worker_selector, execution_engine, clock=_utcnow)
-        adaptive_selector = AdaptiveExecutionSelector(decision_store, recommendation_service, worker_selector, clock=_utcnow)
-        gate_runner = QualityGateRunner(gate_validation_store, clock=_utcnow)
-        manager = MVPManager(
-            project_store, handoff_store, worker_selector, execution_engine,
-            quality_gate_runner=gate_runner, review_store=review_store, review_policy=ReviewPolicy(),
-            wait_store=wait_store, execution_store=exec_store, adaptive_execution_selector=adaptive_selector,
-            validation_store=gate_validation_store, git_governance_service=git_service,
-            qa_engine=qa_engine, qa_policy=QAPolicy(), qa_run_store=qa_run_store,
-            workflow_mode=WorkflowMode.GOVERNED_FULL,
-            clock=_utcnow,
-        )
-    else:
-        # LEAN_FEATURE_FLOW is MVPManager's own default (no
-        # workflow_mode= needed) — this branch deliberately configures
-        # NOTHING governed_full-specific: no adaptive_execution_selector
-        # (no complexity estimation), no separate quality_gate_runner (the
-        # QA phase's own deterministic pytest run IS the gate), no
-        # review_store (DEV B's corrective review replaces it).
-        manager = MVPManager(
-            project_store, handoff_store, worker_selector, execution_engine,
-            wait_store=wait_store, execution_store=exec_store, git_governance_service=git_service,
-            qa_engine=qa_engine, qa_policy=QAPolicy(), qa_run_store=qa_run_store,
-            clock=_utcnow,
-        )
+    manager = MVPManager(
+        project_store, handoff_store, worker_selector, execution_engine,
+        wait_store=wait_store, execution_store=exec_store, git_governance_service=git_service,
+        qa_engine=qa_engine, qa_policy=QAPolicy(), qa_run_store=qa_run_store,
+        clock=_utcnow,
+    )
 
     if project_store.list_work_items(MVP_ID) == []:
         try:
@@ -368,8 +326,7 @@ def main() -> int:
 
     report_service = RealizationReportService(
         project_store, exec_store, handoff_store, report_store,
-        validation_store=gate_validation_store or qa_validation_store,
-        recommendation_store=rec_store, decision_store=decision_store, review_store=review_store,
+        validation_store=qa_validation_store,
         git_work_item_store=git_store, qa_run_store=qa_run_store, clock=_utcnow,
     )
     for wi in final_items:

@@ -30,13 +30,13 @@ from orchestrator.complexity_estimation import (
     ExecutionRecommendationStore,
     InvalidRecommendationPayloadError,
     NoReliableRecommendationError,
+    ReviewFinding,
     compute_task_fingerprint,
 )
 from orchestrator import complexity_estimation as complexity_estimation_module
 from orchestrator.execution_store import ExecutionRecord, ExecutionStatus
 from orchestrator.handoff import HandoffRecord
 from orchestrator.ralph_execution_engine import ExecutionResult, RalphEvent, RalphLaunchError
-from orchestrator.review import ReviewFinding
 from orchestrator.worker_selector import (
     ExecutionProfile,
     NoEligibleWorkerError,

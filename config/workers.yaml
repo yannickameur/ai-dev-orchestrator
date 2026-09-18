@@ -36,7 +36,6 @@ workers:
 
     capabilities:
       - development
-      - code_review
       - release_planning
       - roadmap_synthesis
       - complexity_estimation
@@ -79,7 +78,6 @@ workers:
 
     capabilities:
       - development
-      - code_review
       - release_planning
       - roadmap_synthesis
       - complexity_estimation
@@ -113,7 +111,6 @@ workers:
 
     capabilities:
       - development
-      - code_review
       - release_planning
       - roadmap_synthesis
       - complexity_estimation
@@ -150,7 +147,6 @@ workers:
 
     capabilities:
       - development
-      - code_review
       - release_planning
       - roadmap_synthesis
       - complexity_estimation
@@ -183,8 +179,8 @@ workers:
   # (100/90): this adds capacity/provider diversity, it never silently
   # displaces an already-validated primary. Only `development` is granted
   # — the spike only produced execution evidence for development-shaped
-  # work (autonomous file edit + test run); qa_testing/code_review/
-  # release_planning/roadmap_synthesis are not granted without evidence.
+  # work (autonomous file edit + test run); qa_testing/release_planning/
+  # roadmap_synthesis are not granted without evidence.
   # `quota_windows` for this provider are always empty (EXECUTION_PROBE_ONLY,
   # see MistralVibeAdapter) — both workers below share that same
   # provider-level signal, never an independent quota each.

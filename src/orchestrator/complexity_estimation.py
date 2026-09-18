@@ -97,7 +97,6 @@ from orchestrator.ralph_execution_engine import (
     RalphExecutionEngine,
     RalphExecutionEngineError,
 )
-from orchestrator.review import ReviewFinding
 from orchestrator.worker_selector import QualityTier, Worker, WorkerSelectionRequest, WorkerSelector
 
 Clock = Callable[[], datetime]
@@ -144,15 +143,48 @@ def _as_tuple_of_str(values: Sequence[str], *, field_name: str) -> tuple[str, ..
 
 
 @dataclass(frozen=True, slots=True)
+class ReviewFinding:
+    """One reviewer-reported issue, previously defined in the removed
+    ``orchestrator.review`` module (the independent-review pipeline,
+    removed before the first public release — see ROADMAP.md's dated
+    removal entry) and kept here as a small, self-contained type: a
+    re-estimation pre-flight's ``review_findings`` input is a generic
+    concept, independent of which review mechanism (if any) produced it.
+    ``severity`` is deliberately a free-form label (e.g.
+    "blocker"/"major"/"minor"/"info"), not a rigid enum — advisory,
+    human/LLM-facing text only.
+    """
+
+    finding_id: str
+    summary: str
+    severity: str = "unknown"
+    detail: str | None = None
+    file_path: str | None = None
+    line: int | None = None
+    category: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_non_empty_str(self.finding_id, field_name="ReviewFinding.finding_id")
+        _require_non_empty_str(self.summary, field_name="ReviewFinding.summary")
+        _require_non_empty_str(self.severity, field_name="ReviewFinding.severity")
+        for name in ("detail", "file_path", "category"):
+            value = getattr(self, name)
+            if value is not None:
+                _require_non_empty_str(value, field_name=f"ReviewFinding.{name}")
+        if self.line is not None and (not isinstance(self.line, int) or isinstance(self.line, bool)):
+            raise TypeError(f"ReviewFinding.line must be an int or None, got {type(self.line)!r}")
+
+
+@dataclass(frozen=True, slots=True)
 class ComplexityEstimationRequest:
     """Only the facts a pre-flight needs — nothing speculative.
 
     ``role`` reuses this codebase's existing plain-string role convention
-    (``mvp_manager.DEFAULT_WORK_ITEM_ROLE``/``REVIEWER_ROLE``,
+    (``mvp_manager.DEFAULT_WORK_ITEM_ROLE``,
     ``planning.PLANNER_ROLE``/``SYNTHESIZER_ROLE``) — never a new,
     parallel taxonomy. The same WorkItem estimated for a different role
-    (e.g. development vs. code_review) is a different request and, by
-    design, produces a different fingerprint/recommendation.
+    is a different request and, by design, produces a different
+    fingerprint/recommendation.
     """
 
     project_id: str

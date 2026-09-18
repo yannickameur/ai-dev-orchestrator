@@ -16,15 +16,19 @@ implemented and tested (`tests/test_qa.py`, `tests/test_qa_knowledge.py`,
 Plays the same role for Slice 22/23/24 that `docs/GIT_GOVERNANCE.md` plays
 for Slice 20.
 
-**Scope note (2026-09-17):** the QA Test Authoring / Final QA Verification
-wiring into `MVPManager` described below (§"Slice 24") is specific to
-`WorkflowMode.GOVERNED_FULL` (now `DEPRECATED`/`REMOVAL_CANDIDATE` — see
-`ROADMAP.md`, "Worker pool" / "Lean Feature Flow"). The default workflow,
-`LEAN_FEATURE_FLOW`, reuses only the underlying provider-independent
-primitives this document defines (`QAEngine`, `evaluate_qa_verdict`,
-`QAPhase.FINAL_VERIFICATION`) directly — a single, deterministic,
-read-only QA call with no separate QA Test Authoring phase and no worker
-selection for QA at all. See `ROADMAP.md` for the Lean QA integration.
+**Scope note (updated 2026-09-18):** the QA Test Authoring / Final QA
+Verification wiring into `MVPManager` described below (§"Slice 24") was
+specific to `WorkflowMode.GOVERNED_FULL`, which was **removed** before
+the first public release (see `ROADMAP.md`'s dated removal entry) —
+`InternalQATestAuthor` and the rest of that orchestration no longer exist
+in `src/orchestrator/internal_qa_engine.py`. `LEAN_FEATURE_FLOW` — the
+only workflow this project implements now — reuses only the underlying
+provider-independent primitives this document defines (`QAEngine`,
+`evaluate_qa_verdict`, `QAPhase.FINAL_VERIFICATION`, `InternalQAEngine`'s
+own core) directly — a single, deterministic, read-only QA call with no
+separate QA Test Authoring phase and no worker selection for QA at all.
+See `ROADMAP.md` for the Lean QA integration. The rest of this document
+below is kept as historical design record for the removed pipeline.
 
 ## Why this exists
 

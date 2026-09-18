@@ -65,23 +65,28 @@ def _as_tuple_of_str(values: Iterable[str], *, field_name: str) -> tuple[str, ..
 class WorkItemStatus(str, Enum):
     """Minimal WorkItem lifecycle.
 
-    PLANNED/READY/RUNNING/REVIEWING/NEEDS_REWORK/WAITING are non-terminal.
-    REVIEWING and NEEDS_REWORK were added in Slice 9 for independent
-    review + bounded rework: REVIEWING is the transient state while a
-    review execution is in flight; NEEDS_REWORK means a review rejected
-    the work and a bounded number of rework cycles remain — it is
-    directly eligible for a new development execution (no dependency
-    re-check needed, since the WorkItem was already READY once).
+    PLANNED/READY/RUNNING/NEEDS_REWORK/WAITING are non-terminal.
+    NEEDS_REWORK means QA (LEAN_FEATURE_FLOW's deterministic gate) failed
+    with attempts remaining — it is directly eligible for a new
+    development execution (no dependency re-check needed, since the
+    WorkItem was already READY once).
+
+    REVIEWING existed historically for the independent read-only Reviewer
+    phase of the now-removed ``GOVERNED_FULL`` pipeline (see ROADMAP.md's
+    dated removal entry) and is kept in this enum ONLY so a value
+    persisted by that old pipeline still decodes correctly from an
+    existing SQLite store — no current code path ever transitions a
+    WorkItem into REVIEWING.
 
     WAITING was added in Slice 11: an orchestration decision (never a
     provider fact) meaning no eligible worker could be selected right now
     but a plausible next retry moment is known (see
     ``orchestrator.wait.WaitRecord``, which also records *which* phase —
-    development, rework, or review — was interrupted). A WAITING WorkItem
-    is neither COMPLETED nor FAILED: its dependents never become READY
+    development or rework — was interrupted). A WAITING WorkItem is
+    neither COMPLETED nor FAILED: its dependents never become READY
     (``refresh_readiness`` only promotes on COMPLETED dependencies).
-    Resuming always re-enters READY/NEEDS_REWORK/REVIEWING — the exact
-    state it was waiting to re-attempt — never resumes "in place".
+    Resuming always re-enters READY/NEEDS_REWORK — the exact state it was
+    waiting to re-attempt — never resumes "in place".
 
     RECOVERY_REQUIRED was also added in Slice 11, and is deliberately
     distinct from WAITING: WAITING means "no eligible worker exists, but a
@@ -92,13 +97,15 @@ class WorkItemStatus(str, Enum):
     involved at all (see ``orchestrator.recovery.RecoveryCoordinator``,
     which also ensures a durable recovery handoff exists before this
     transition). It is immediately, unconditionally re-orchestrable (no
-    "eligible_at" to wait out): resuming re-enters RUNNING or REVIEWING —
-    always via a **new** execution, never the interrupted/orphaned one.
+    "eligible_at" to wait out): resuming re-enters RUNNING — always via a
+    **new** execution, never the interrupted/orphaned one.
     """
 
     PLANNED = "planned"
     READY = "ready"
     RUNNING = "running"
+    #: Historical/decode-only — see class docstring. Never entered by
+    #: current code.
     REVIEWING = "reviewing"
     NEEDS_REWORK = "needs_rework"
     WAITING = "waiting"
@@ -130,23 +137,16 @@ _WORK_ITEM_TRANSITIONS: dict[WorkItemStatus, frozenset[WorkItemStatus]] = {
             WorkItemStatus.FAILED,
             WorkItemStatus.REVIEWING,
             WorkItemStatus.RECOVERY_REQUIRED,
-            # Slice 24 (QA Test Authoring runs while status is still
-            # RUNNING, right after a successful DEVELOPMENT/REWORK
-            # execution, before quality gates/review): a QA-authoring
-            # worker-selection failure diagnosable as quota is a WAITING
-            # transition exactly like the pre-existing READY/NEEDS_REWORK
-            # ones; a QA verdict of FAIL(requires_coding_agent) is a
-            # NEEDS_REWORK transition exactly like a review rejection;
-            # anything else unrecoverable (e.g. an unauthorized
-            # protected-test mutation, or max_qa_cycles exhausted) is
-            # BLOCKED — the same three terminal-ish outcomes already used
-            # elsewhere in this state machine, only newly reachable from
-            # RUNNING too.
             WorkItemStatus.WAITING,
             WorkItemStatus.NEEDS_REWORK,
             WorkItemStatus.BLOCKED,
         }
     ),
+    # RUNNING -> REVIEWING and everything below that still mentions
+    # REVIEWING exist only so a WorkItem already sitting in REVIEWING in
+    # an existing SQLite store (from the removed GOVERNED_FULL pipeline —
+    # see class docstring) can still be transitioned out of it correctly.
+    # No current code path enters REVIEWING.
     WorkItemStatus.REVIEWING: frozenset(
         {
             WorkItemStatus.COMPLETED,
@@ -159,12 +159,8 @@ _WORK_ITEM_TRANSITIONS: dict[WorkItemStatus, frozenset[WorkItemStatus]] = {
     WorkItemStatus.NEEDS_REWORK: frozenset({WorkItemStatus.RUNNING, WorkItemStatus.WAITING}),
     # WAITING only ever resumes into the exact state it was waiting to
     # re-attempt (READY/NEEDS_REWORK for a new development-side selection,
-    # REVIEWING for a new reviewer-side selection, RUNNING for a new
-    # QA-authoring-side selection — Slice 24: development already
-    # succeeded before a QA_AUTHORING wait was recorded, so resuming never
-    # re-runs development, only re-enters RUNNING to retry QA authoring
-    # onward) or gives up to BLOCKED when no reliable retry moment remains
-    # — never "in place".
+    # RUNNING for LEAN_FEATURE_FLOW's own DEV B review) or gives up to
+    # BLOCKED when no reliable retry moment remains — never "in place".
     WorkItemStatus.WAITING: frozenset(
         {
             WorkItemStatus.READY, WorkItemStatus.NEEDS_REWORK, WorkItemStatus.REVIEWING,
@@ -173,11 +169,9 @@ _WORK_ITEM_TRANSITIONS: dict[WorkItemStatus, frozenset[WorkItemStatus]] = {
     ),
     # RECOVERY_REQUIRED has no deadline to wait out (unlike WAITING): it is
     # immediately re-orchestrable, always via a *new* execution — resuming
-    # re-enters RUNNING (development/rework side) or REVIEWING (review
-    # side), whichever phase the orphaned/interrupted execution belonged
-    # to (see RecoveryCoordinator). BLOCKED is only a defensive escape
-    # hatch for an invariant violation (e.g. no recovery handoff found),
-    # never the expected path.
+    # always re-enters RUNNING (see RecoveryCoordinator). BLOCKED is only
+    # a defensive escape hatch for an invariant violation (e.g. no
+    # recovery handoff found), never the expected path.
     WorkItemStatus.RECOVERY_REQUIRED: frozenset(
         {WorkItemStatus.RUNNING, WorkItemStatus.REVIEWING, WorkItemStatus.BLOCKED}
     ),
@@ -684,6 +678,12 @@ class ProjectStateStore:
         return self._transition_work_item(work_item_id, WorkItemStatus.FAILED)
 
     def mark_work_item_reviewing(self, work_item_id: str) -> WorkItem:
+        """Historical/decode-support transition only — see
+        ``WorkItemStatus.REVIEWING``'s own docstring. No current
+        orchestration code path calls this; kept as a plain state-machine
+        primitive so a WorkItem that reached REVIEWING under the removed
+        GOVERNED_FULL pipeline (or a test reconstructing that scenario)
+        can still be transitioned out of it correctly."""
         return self._transition_work_item(work_item_id, WorkItemStatus.REVIEWING)
 
     def mark_work_item_needs_rework(self, work_item_id: str) -> WorkItem:

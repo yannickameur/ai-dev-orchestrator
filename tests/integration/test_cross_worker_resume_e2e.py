@@ -63,9 +63,9 @@ from orchestrator.mvp_manager import DEFAULT_WORK_ITEM_ROLE, MVPManager
 from orchestrator.project_state import ProjectStateStore, WorkItemStatus
 from orchestrator.providers.adapter import ProviderAdapter
 from orchestrator.providers.contracts import ProviderAvailability, ProviderState, UnavailabilityReason
+from orchestrator.qa import QAPolicy, QARunStore, QAResult
 from orchestrator.quota_manager import QuotaManager, QuotaPolicy
 from orchestrator.ralph_execution_engine import RalphExecutionEngine
-from orchestrator.validation import QualityGateRunner, ValidationCommand, ValidationKind, ValidationStore
 from orchestrator.worker_selector import ExecutionProfile, QualityTier, Worker, WorkerSelector
 
 RALPH_SPIKE_SOURCE = Path.home() / "projects" / "ralph-spike"
@@ -191,6 +191,20 @@ def _worker_b() -> Worker:
     )
 
 
+def _worker_c() -> Worker:
+    """A second worker on Worker B's own provider — mirrors this
+    project's real worker-pool shape (>= 2 independent workers per
+    participating provider, config/workers.yaml). Under
+    LEAN_FEATURE_FLOW, Worker B (resumed as the developer) needs a
+    genuinely independent DEV B; lower priority than Worker B so it is
+    never chosen over Worker B for the developer role itself, only for
+    DEV B once Worker B is excluded as author."""
+    return Worker.with_single_profile(
+        worker_id="worker-c-codex-like", display_name="Carol (E2E)", provider=PROVIDER_B, backend="codex",
+        model="model-c-standard", capabilities=frozenset({"development"}), priority=80,
+    )
+
+
 @dataclass(frozen=True)
 class PhaseOneFacts:
     """Everything Phase 2 needs — paths and ids only, never a live Python
@@ -300,6 +314,26 @@ def _run_phase_one(tmp_path: Path) -> PhaseOneFacts:
     return facts
 
 
+class _AlwaysPassQAEngine:
+    """Minimal ``QAEngine`` Protocol fake for this E2E scenario — no
+    LLM/Ralph execution. Real deterministic QA behavior (bounded retry,
+    verdict computation) is already exhaustively covered by
+    ``tests/test_mvp_manager_lean_feature_flow.py`` and ``tests/test_qa.py``;
+    this file's own scope is cross-worker cold-resume + adaptive
+    selection, so QA here only needs to genuinely run and PASS."""
+
+    engine_id = "fake-qa-e2e"
+
+    def run(self, request) -> QAResult:
+        return QAResult(
+            engine_id=self.engine_id, observed_head_sha=request.head_sha,
+            started_at=UTC_T2, finished_at=UTC_T2,
+            tests_selected=("test_review_candidate.py",), tests_executed=("test_review_candidate.py",),
+            passed_count=1, failed_count=0,
+            regressions=(), requires_coding_agent=False, failure_classifications=(),
+        )
+
+
 @dataclass(frozen=True)
 class PhaseTwoResult:
     work_item_status: WorkItemStatus
@@ -315,7 +349,7 @@ class PhaseTwoResult:
     handoff_ids: list[str]
     dev_b_instructions: str
     git_sha_final: str
-    gate_passed: bool
+    qa_passed: bool
     workspace: Path
 
 
@@ -327,22 +361,21 @@ def _run_phase_two(facts: PhaseOneFacts) -> PhaseTwoResult:
     handoff_store = HandoffStore(facts.handoff_db, clock=lambda: UTC_T2)
     recommendation_store = ExecutionRecommendationStore(facts.recommendation_db, clock=lambda: UTC_T2)
     decision_store = AdaptiveExecutionDecisionStore(facts.decision_db, clock=lambda: UTC_T2)
-    validation_store = ValidationStore(facts.tmp_path / "validation.sqlite3", clock=lambda: UTC_T2)
-    validation_store.set_project_commands(
-        PROJECT_ID,
-        [ValidationCommand(validation_id="mini-project-tests", kind=ValidationKind.UNIT_TEST, argv=(sys.executable, "test_review_candidate.py"))],
-    )
-    gate_runner = QualityGateRunner(validation_store, clock=lambda: UTC_T2, id_factory=lambda: "gate-e2e")
+    qa_run_store = QARunStore(facts.tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_T2)
 
-    worker_a, worker_b = _worker_a(), _worker_b()
+    worker_a, worker_b, worker_c = _worker_a(), _worker_b(), _worker_c()
     # Worker A's provider is now out of quota — a realistic reason its
     # process could have been killed in the first place. Never a fake
-    # "no capable profile" situation: Worker B genuinely has one.
+    # "no capable profile" situation: Worker B genuinely has one. Worker
+    # C shares Worker B's own provider (real product worker-pool shape)
+    # and exists only so LEAN_FEATURE_FLOW's own DEV B has a genuinely
+    # independent developer available once Worker B is excluded as
+    # author for that role.
     quota_manager = QuotaManager(
         {PROVIDER_A: _FakeAdapter(available=False), PROVIDER_B: _FakeAdapter(available=True)},
         QuotaPolicy(state_ttl=timedelta(hours=1)), clock=lambda: UTC_T2,
     )
-    worker_selector = WorkerSelector([worker_a, worker_b], quota_manager)
+    worker_selector = WorkerSelector([worker_a, worker_b, worker_c], quota_manager)
 
     def _mutate_fix(cwd: Path) -> None:
         (cwd / "review_candidate.py").write_text(FIXED_ADD_CONTENT)
@@ -351,6 +384,10 @@ def _run_phase_two(facts: PhaseOneFacts) -> PhaseTwoResult:
     runner = _ScriptedFileMutatingRunner([
         {"topic": "execution.profile_recommended", "payload": _STANDARD_TIER_PAYLOAD},
         {"topic": "work.completed", "payload": "done", "mutate": _mutate_fix},
+        # LEAN_FEATURE_FLOW's own DEV B corrective review (Worker C) —
+        # the fix Worker B already committed is genuinely fine, so DEV B
+        # makes no further change.
+        {"topic": "work.completed", "payload": "done"},
     ])
     execution_engine = RalphExecutionEngine(execution_store, subprocess_runner=runner, clock=lambda: UTC_T2)
     recommendation_service = ExecutionRecommendationService(
@@ -368,8 +405,8 @@ def _run_phase_two(facts: PhaseOneFacts) -> PhaseTwoResult:
 
     manager = MVPManager(
         project_store, handoff_store, worker_selector, execution_engine,
-        quality_gate_runner=gate_runner, execution_store=execution_store,
-        adaptive_execution_selector=adaptive_selector,
+        execution_store=execution_store, adaptive_execution_selector=adaptive_selector,
+        qa_engine=_AlwaysPassQAEngine(), qa_policy=QAPolicy(required_invariant_ids=("e2e-qa-check",)), qa_run_store=qa_run_store,
         clock=lambda: UTC_T2, id_factory=_mgr_id_factory,
     )
 
@@ -377,13 +414,19 @@ def _run_phase_two(facts: PhaseOneFacts) -> PhaseTwoResult:
     assert result is not None
 
     # The second scripted RalphExecutionEngine call in this phase is
-    # Worker B's development attempt (the first is the estimator's).
+    # Worker B's (resumed) development attempt (the first is the
+    # estimator's, the third is DEV B/Worker C's corrective review).
     dev_b_instructions = runner.calls[1][3]
 
     decisions = decision_store.list_for_work_item(WORK_ITEM_ID)
     decision_b = next(d for d in decisions if d.decision_id != facts.decision_id_a)
 
-    execution_b = execution_store.get(result.handoff.execution_id) if result.handoff and result.handoff.execution_id else None
+    # Worker B's own execution record — never read off the final
+    # handoff, which now belongs to the QA phase (QA is not a Ralph
+    # execution and has no ExecutionRecord of its own).
+    execution_b = next(
+        (e for e in execution_store.list_for_task(WORK_ITEM_ID) if e.worker_id == WORKER_B_ID), None,
+    )
     git_sha_final = _run_git(facts.workspace, "rev-parse", "HEAD")
 
     outcome = PhaseTwoResult(
@@ -397,7 +440,7 @@ def _run_phase_two(facts: PhaseOneFacts) -> PhaseTwoResult:
         handoff_ids=[h.handoff_id for h in handoff_store.list_for_work_item(WORK_ITEM_ID)],
         dev_b_instructions=dev_b_instructions,
         git_sha_final=git_sha_final,
-        gate_passed=result.gate_result.passed if result.gate_result else False,
+        qa_passed=project_store.get_work_item(WORK_ITEM_ID).status is WorkItemStatus.COMPLETED,
         workspace=facts.workspace,
     )
 
@@ -406,7 +449,7 @@ def _run_phase_two(facts: PhaseOneFacts) -> PhaseTwoResult:
     handoff_store.close()
     recommendation_store.close()
     decision_store.close()
-    validation_store.close()
+    qa_run_store.close()
 
     return outcome
 
@@ -447,7 +490,7 @@ class TestCrossWorkerColdResumeE2E:
         # --- final state on disk: real code, real green tests -----------
         assert (result.workspace / "review_candidate.py").read_text() == FIXED_ADD_CONTENT
         assert (result.workspace / "test_review_candidate.py").read_text() == TEST_FILE_CONTENT
-        assert result.gate_passed is True
+        assert result.qa_passed is True
 
         final = subprocess.run(
             [sys.executable, "test_review_candidate.py"], cwd=str(result.workspace),

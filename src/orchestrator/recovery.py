@@ -12,7 +12,7 @@ are recognized:
   (never silently treated as SUCCEEDED, never blindly relaunched);
 - an ``ExecutionRecord`` already ``INTERRUPTED`` (e.g. a timeout handled by
   ``RalphExecutionEngine`` itself, in the same or a previous process) whose
-  owning WorkItem never got moved out of RUNNING/REVIEWING before a crash.
+  owning WorkItem never got moved out of RUNNING before a crash.
 
 Either way, the interrupted/orphaned execution is NEVER mutated back
 toward ``RUNNING`` and NEVER relaunched — it stays exactly where it is
@@ -25,10 +25,10 @@ on the interrupted worker for anything, including a summary.
 
 This is pure bookkeeping: no worker selection, no execution launch, no
 polling loop, no Claude/Codex/Ralph/subprocess call anywhere here. It only
-reads ``ExecutionStore``/``HandoffStore``/``ReviewStore`` and writes
-``ExecutionStore`` (existing ``mark_recovery_required``) and
-``HandoffStore``/``ProjectStateStore`` (existing primitives) — no new
-storage engine, no duplicated WorkerSelector/QuotaManager logic.
+reads ``ExecutionStore``/``HandoffStore`` and writes ``ExecutionStore``
+(existing ``mark_recovery_required``) and ``HandoffStore``/
+``ProjectStateStore`` (existing primitives) — no new storage engine, no
+duplicated WorkerSelector/QuotaManager logic.
 """
 
 from __future__ import annotations
@@ -40,18 +40,11 @@ from typing import Callable
 from orchestrator.execution_store import ExecutionRecord, ExecutionStatus, ExecutionStore
 from orchestrator.handoff import HandoffRecord, HandoffStore
 from orchestrator.project_state import ProjectStateStore, WorkItem, WorkItemStatus
-from orchestrator.review import ReviewStore
 
 Clock = Callable[[], datetime]
 IdFactory = Callable[[], str]
 
 DEVELOPER_ROLE = "developer"
-REVIEWER_ROLE = "reviewer"
-#: Slice 24: a QA Test Authoring execution also runs while the WorkItem is
-#: RUNNING (after development, before gates/review) — an orphaned/
-#: interrupted QA-authoring execution must be reconciled exactly like a
-#: development one, never silently ignored.
-QA_TESTING_ROLE = "qa_testing"
 
 RECOVERY_OPEN_ISSUE = "execution interrupted / recovery required"
 RECOVERY_NEXT_ACTION = "continue work from persisted state"
@@ -59,10 +52,6 @@ RECOVERY_NEXT_ACTION = "continue work from persisted state"
 
 def _default_id_factory() -> str:
     return uuid.uuid4().hex
-
-
-def _summarize_findings(findings) -> str:
-    return "; ".join(f"[{f.severity}] {f.summary}" for f in findings)
 
 
 class RecoveryCoordinator:
@@ -73,7 +62,6 @@ class RecoveryCoordinator:
         execution_store: ExecutionStore,
         handoff_store: HandoffStore,
         project_state_store: ProjectStateStore,
-        review_store: ReviewStore | None = None,
         *,
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
@@ -81,12 +69,11 @@ class RecoveryCoordinator:
         self._execution_store = execution_store
         self._handoff_store = handoff_store
         self._project_state_store = project_state_store
-        self._review_store = review_store
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or _default_id_factory
 
     def reconcile_mvp(self, mvp_id: str) -> list[WorkItem]:
-        """Reconciles every RUNNING/REVIEWING WorkItem of this MVP, if needed.
+        """Reconciles every RUNNING WorkItem of this MVP, if needed.
 
         Cheap and synchronous (no execution launched here) — safe to call
         at the start of every orchestration pass. Returns the WorkItems
@@ -107,23 +94,13 @@ class RecoveryCoordinator:
         """Reconciles one WorkItem if it is stuck behind an orphaned/interrupted execution.
 
         Returns the updated (RECOVERY_REQUIRED) WorkItem, or ``None`` if
-        nothing needed reconciling (not RUNNING/REVIEWING, or its last
-        matching execution already reached a genuine terminal outcome).
+        nothing needed reconciling (not RUNNING, or its last matching
+        execution already reached a genuine terminal outcome).
         """
-        if work_item.status not in (WorkItemStatus.RUNNING, WorkItemStatus.REVIEWING):
+        if work_item.status is not WorkItemStatus.RUNNING:
             return None
 
-        # RUNNING covers both a development/rework execution and a QA Test
-        # Authoring one (Slice 24) — only one of them is ever legitimately
-        # in flight for a given WorkItem at a time (the state machine is
-        # mutually exclusive), so matching either role and taking the last
-        # one is exactly as precise as matching a single role, never a
-        # broader heuristic.
-        role_filter = (
-            frozenset({REVIEWER_ROLE}) if work_item.status is WorkItemStatus.REVIEWING
-            else frozenset({DEVELOPER_ROLE, QA_TESTING_ROLE})
-        )
-        relevant = [e for e in self._execution_store.list_for_task(work_item.work_item_id) if e.role in role_filter]
+        relevant = [e for e in self._execution_store.list_for_task(work_item.work_item_id) if e.role == DEVELOPER_ROLE]
         if not relevant:
             return None
         last = relevant[-1]
@@ -162,20 +139,15 @@ class RecoveryCoordinator:
 
         Never calls the interrupted worker for a summary: built entirely
         from persisted facts (the execution record itself, the last
-        pre-existing handoff for its quality-gate result, the last review
-        for its findings if relevant). Idempotent — calling this again for
-        the same execution reuses the handoff already created for it
-        rather than duplicating it.
+        pre-existing handoff for its quality-gate result). Idempotent —
+        calling this again for the same execution reuses the handoff
+        already created for it rather than duplicating it.
         """
         existing = self._handoff_store.latest_for_work_item(work_item.work_item_id)
         if existing is not None and existing.execution_id == execution.execution_id:
             return existing
 
         open_issues = RECOVERY_OPEN_ISSUE
-        if self._review_store is not None:
-            previous_review = self._review_store.latest_for_work_item(work_item.work_item_id)
-            if previous_review is not None and previous_review.findings:
-                open_issues += f"; previous review findings: {_summarize_findings(previous_review.findings)}"
 
         return self._handoff_store.create(
             handoff_id=self._id_factory(),
