@@ -2488,22 +2488,57 @@ de risques déjà identifiées dans `MVP_SPEC.yaml` / section risques ci-dessous
   Git/Ralph) ; tokens `NOT_AVAILABLE` (télémétrie Ralph à zéro, déjà connue
   peu fiable). Rapport complet :
   `docs/reports/roman-numerals-lean-pilot-2026-09-17.md`.
+- **Implémentation Mistral Vibe (2026-09-18) — statut `🧪 SPIKE`, pas
+  `VALIDATED`.** Suite de l'étude de faisabilité (`docs/VIBE_SPIKE.md`,
+  2026-09-17) : plus petite implémentation justifiée par l'étude —
+  `MistralVibeAdapter` (`src/orchestrator/providers/mistral_vibe_adapter.py`,
+  `EXECUTION_PROBE_ONLY`, aucun `reset_at` fabriqué), mapping
+  `RalphExecutionEngine` (backend `vibe` → mode solo Ralph `custom`,
+  `hats.yml` omis pour ce seul backend, chemin natif claude/codex
+  inchangé et testé en non-régression), pont dédié
+  `src/orchestrator/vibe_ralph_bridge.py`, `config/workers.yaml` (+2
+  workers `milo`/`juno`, capacité `development` uniquement, priorité 60 —
+  sous le pool Anthropic/OpenAI déjà validé, jamais un défaut silencieux).
+  `WorkerSelector`/`WorkerRegistry`/`QuotaManager` non modifiés. 30 tests
+  offline ajoutés (1188 tests offline PASS au total, contre 1158 avant).
+  **Smoke réel `RalphExecutionEngine → Vibe` : PASS**, après une seule
+  reprise corrective légitime (bug d'implémentation réel découvert par un
+  log de debug Ralph : l'argument final passé à un backend `custom` est
+  une phrase complète contenant le chemin du fichier de prompt, pas un
+  chemin nu comme l'étude l'avait caractérisé — corrigé
+  déterministiquement dans le pont, jamais une deuxième tentative pour un
+  comportement modèle/quota). **Limite confirmée par preuve réelle**
+  (pas seulement suspectée par l'étude) : Vibe ne committe pas ses
+  changements automatiquement (`git_sha_before == git_sha_after` malgré
+  un changement de code réel et vérifié). Validation réelle à deux
+  workers explicitement `NOT_RUN` (pas `BLOCKED_BY_PROVIDER_CAPACITY` —
+  la capacité n'était pas en cause) : une deuxième exécution réelle
+  n'aurait pas produit de preuve propre tant que la gestion des commits
+  Vibe n'est pas tranchée par une décision produit. Détail complet,
+  critères d'acceptation restants pour `VALIDATED` : `docs/VIBE_SPIKE.md`
+  §19. Image d'architecture ajoutée au README
+  (`docs/images/Architecture_orchestration_IA_multi-agents.png`).
 - **Next : POST-MVP 0.1 EXPERIMENT / DISCOVERY.** Pas encore un MVP 0.2 —
   décision à prendre avec l'utilisateur. Axe (1) — pilote Lean frais
-  (Roman Numerals) — **fait, PASS** (voir ci-dessus). Axes restants,
-  **proposés, non démarrés**, non ordonnés entre eux : (2) étude de
-  faisabilité Mistral/Vibe comme provider supplémentaire ; (3) étude
-  build-vs-reuse Mammouth AI ; (4) étude de l'écosystème des workers/
-  providers gratuits ou à coût marginal nul ; (5) échelle de difficulté
-  progressive des projets de validation (dont un futur pilote de niveau
-  supérieur à Roman Numerals). CLI/productisation reste une option future,
-  non requise pour démarrer ces axes. Toutes les Slices 21-24 du cycle QA
-  sont maintenant `DONE` (Slice 24 : `ACCEPTANCE_DONE`) — cette session ne
-  décide toujours pas seule si un POC QA externe ou la Slice 25 (Advanced
-  QA / External E2E, restée conditionnelle) sont réellement utiles — voir
-  `docs/QA_GOVERNANCE.md` et `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`.
-  OmniRoute reste une qualification future optionnelle, hors roadmap
-  principale — voir `docs/OMNIROUTE_ARBITRATION.md`.
+  (Roman Numerals) — **fait, PASS**. Axe (2) — Mistral/Vibe — **étude +
+  implémentation faites, reste `🧪 SPIKE`** : décision produit requise sur
+  la gestion des commits Vibe avant de viser `VALIDATED` (voir
+  ci-dessus). Axes restants, **proposés, non démarrés**, non ordonnés
+  entre eux : (3) étude build-vs-reuse Mammouth AI ; (4) étude de
+  l'écosystème des workers/providers gratuits ou à coût marginal nul ;
+  (5) échelle de difficulté progressive des projets de validation (dont
+  un futur pilote de niveau supérieur à Roman Numerals). Le pilote Morpion
+  Web 3D (WI-0..WI-5 complétés, WI-6 en attente de quota — voir
+  `docs/reports/morpion-web-3d-lean-pilot-2026-09-17.md`) reste en pause,
+  à reprendre après décision utilisateur. CLI/productisation reste une
+  option future, non requise pour démarrer ces axes. Toutes les
+  Slices 21-24 du cycle QA sont maintenant `DONE` (Slice 24 :
+  `ACCEPTANCE_DONE`) — cette session ne décide toujours pas seule si un
+  POC QA externe ou la Slice 25 (Advanced QA / External E2E, restée
+  conditionnelle) sont réellement utiles — voir `docs/QA_GOVERNANCE.md`
+  et `docs/QA_BUILD_VS_ADOPT_ARBITRATION.md`. OmniRoute reste une
+  qualification future optionnelle, hors roadmap principale — voir
+  `docs/OMNIROUTE_ARBITRATION.md`.
 
 ## Comment reprendre ce projet à froid
 

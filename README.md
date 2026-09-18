@@ -119,6 +119,8 @@ synthèse multi-agent → approbation optimiste 20 min → MVP suivant), et
 « Chemin nominal actuel » (même fichier) pour ce qui s'exécute réellement
 aujourd'hui par WorkItem.
 
+![Architecture d'orchestration IA multi-agents](docs/images/Architecture_orchestration_IA_multi-agents.png)
+
 ## AI / Providers supportés
 
 L'orchestrateur ne connaît que des `Worker` déclaratifs
@@ -138,7 +140,7 @@ n'est qu'une chaîne opaque pour `WorkerSelector`. Statuts possibles :
 |---|---|---|
 | Anthropic | Claude Code | ✅ VALIDATED |
 | OpenAI | Codex CLI | ✅ VALIDATED |
-| Mistral | Vibe | 🧪 SPIKE — techniquement viable, non intégré ; voir [docs/VIBE_SPIKE.md](docs/VIBE_SPIKE.md) |
+| Mistral | Vibe | 🧪 SPIKE — `MistralVibeAdapter`/mapping `RalphExecutionEngine` implémentés et testés offline ; smoke réel `RalphExecutionEngine → Vibe` PASS (édition de fichier + verdict métier corrects), mais Vibe ne committe pas ses changements automatiquement (limite confirmée, pas encore résolue) — reste non `VALIDATED` tant que ce point n'est pas tranché ; voir [docs/VIBE_SPIKE.md](docs/VIBE_SPIKE.md) |
 | Local | Ollama | 🔎 STUDY |
 | Mammouth AI | Hub/transport multi-provider (candidat, pas un modèle/provider de plus) | 🔎 STUDY |
 
@@ -151,8 +153,9 @@ différent est **préféré**, jamais requis ; un repli sur un second worker
 du même provider est **valide** ; plusieurs workers d'un même provider
 **partagent le même quota provider** (voir « Sélection des workers et
 fallback provider » ci-dessus). Actuel : `alice`/`bob` (anthropic),
-`victor`/`oscar` (openai). Mistral : à définir après une éventuelle
-intégration (voir `docs/VIBE_SPIKE.md`).
+`victor`/`oscar` (openai), `milo`/`juno` (mistral — configurés, capacité
+`development` uniquement, statut 🧪 SPIKE tant que le point de gouvernance
+Git ci-dessus n'est pas résolu ; voir `docs/VIBE_SPIKE.md`).
 
 ### Ajouter un provider
 

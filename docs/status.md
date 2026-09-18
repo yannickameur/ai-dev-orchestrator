@@ -1,6 +1,6 @@
 # Status
 
-Dernière mise à jour : Pilote d'acceptance réel Roman Numerals — PASS (2026-09-17).
+Dernière mise à jour : Support Mistral Vibe (implémentation, 🧪 SPIKE) (2026-09-18).
 
 ## État actuel (résumé factuel)
 
@@ -13,22 +13,38 @@ Dernière mise à jour : Pilote d'acceptance réel Roman Numerals — PASS (2026
 - **QA** : déterministe / non-LLM (`QAPhase.FINAL_VERIFICATION`, aucun
   `WorkerSelector`, aucun agent IA) ; jusqu'à 3 tentatives QA au total,
   puis `HUMAN_REVIEW_REQUIRED`.
-- **Worker pool** (`config/workers.yaml`) : 4 workers, 2 par provider —
-  `alice`/`bob` = anthropic, `victor`/`oscar` = openai.
+- **Worker pool** (`config/workers.yaml`) : 6 workers, 3 providers —
+  `alice`/`bob` (anthropic), `victor`/`oscar` (openai), `milo`/`juno`
+  (mistral, `development` uniquement, priorité 60, statut 🧪 SPIKE).
 - **GOVERNED_FULL** : `DEPRECATED` / `REMOVAL_CANDIDATE` (reste
   sélectionnable explicitement, tests verts, non enrichi).
 - **Slice 24** : `ACCEPTANCE_DONE` (2026-09-16) — voir détail ci-dessous.
-- **Tests offline** : 1158 PASS.
+- **Tests offline** : 1188 PASS (1158 avant + 30 nouveaux, support Mistral Vibe).
+- **Mistral / Vibe (2026-09-18)** : implémentation post-MVP 0.1 —
+  `MistralVibeAdapter` + mapping `RalphExecutionEngine` (backend solo
+  Ralph `custom`) + `config/workers.yaml`, testés offline. Smoke réel
+  `RalphExecutionEngine → Vibe` **PASS** (édition de fichier + verdict
+  métier corrects) après correction d'un bug d'implémentation réel
+  (format d'argument Ralph mal supposé). **Limite confirmée par preuve
+  réelle : Vibe ne committe pas ses changements automatiquement**
+  (`git_sha_before == git_sha_after` malgré un changement de code réel et
+  vérifié) — reste 🧪 SPIKE, pas `VALIDATED`. Validation réelle à deux
+  workers non lancée (bloquée par cette limite, pas par le quota — voir
+  `docs/VIBE_SPIKE.md` §19).
 - **Pilote externe Roman Numerals (2026-09-17)** : `PASS` — premier
   pilote réel post-clôture MVP 0.1, repli same-provider observé pour de
   vrai (openai en quota épuisé au moment du run). Détail : voir
   `docs/reports/roman-numerals-lean-pilot-2026-09-17.md` et l'entrée
   datée ci-dessous.
 - **Mars Rover (pilote externe)** : en pause, aucun pilote actif.
+- **Morpion Web 3D** : en pause (WI-0..WI-5 complétés, WI-6 en attente de
+  quota) — non repris cette session, la validation Mistral devait d'abord
+  être menée indépendamment.
 - **Slice active** : aucune.
 - **Next** : POST-MVP 0.1 EXPERIMENT / DISCOVERY — axe (1) Roman Numerals
-  fait (PASS) ; axes (2)-(5) proposés, non démarrés — voir `ROADMAP.md`,
-  « Next ».
+  fait (PASS) ; axe (2) Mistral/Vibe implémenté (🧪 SPIKE, limite de
+  commit à trancher) ; axes (3)-(5) proposés, non démarrés — voir
+  `ROADMAP.md`, « Next ».
 
 Le détail daté ci-dessous fait foi pour l'historique ; ce résumé reflète
 l'état courant.
@@ -376,20 +392,56 @@ l'état courant.
   unique, non vérifiable indépendamment), tokens `NOT_AVAILABLE`
   (télémétrie Ralph à zéro, déjà connue peu fiable). Rapport complet :
   `docs/reports/roman-numerals-lean-pilot-2026-09-17.md`.
+- **Pilote externe Morpion Web 3D (2026-09-17, non détaillé ici) et étude
+  de faisabilité Mistral Vibe (2026-09-17) : voir `docs/VIBE_SPIKE.md`
+  pour la revue complète.** Ces deux sessions n'ont volontairement pas mis
+  à jour ce fichier (portée limitée à l'audit/l'étude) — voir l'entrée
+  suivante pour la première mise à jour réelle de statut Mistral.
+- **Implémentation Mistral Vibe (2026-09-18) : 🧪 SPIKE, pas
+  `VALIDATED`.** Suite directe de `docs/VIBE_SPIKE.md` — implémentation
+  la plus petite justifiée par l'étude : `MistralVibeAdapter`
+  (`EXECUTION_PROBE_ONLY`, aucun `reset_at` fabriqué, classification
+  auth/rate-limit best-effort explicitement documentée comme fragile),
+  mapping `RalphExecutionEngine` (backend `vibe` → solo Ralph `custom`,
+  hats.yml omis pour ce backend, natifs claude/codex inchangés,
+  régression testée), pont `src/orchestrator/vibe_ralph_bridge.py`,
+  `config/workers.yaml` (+2 workers `milo`/`juno`, `development`
+  uniquement, priorité 60 — sous le pool validé, jamais un défaut
+  silencieux). `WorkerSelector`/`WorkerRegistry`/`QuotaManager` non
+  modifiés (aucun nom de provider/worker câblé en dur, vérifié par test).
+  30 tests offline ajoutés, 1188 tests offline PASS au total (1158 avant).
+  **Smoke réel `RalphExecutionEngine → Vibe` : PASS** après une seule
+  reprise corrective (bug d'implémentation réel — l'argument final passé
+  par Ralph à un backend `custom` est une phrase complète contenant le
+  chemin, pas un chemin nu comme le spike l'avait supposé — corrigé
+  déterministiquement, jamais une deuxième tentative pour un comportement
+  modèle/quota). **Limite confirmée par preuve réelle, pas seulement
+  suspectée** : Vibe ne committe pas ses changements automatiquement
+  (`git_sha_before == git_sha_after` malgré un changement de code réel et
+  vérifié par import Python). Validation réelle à deux workers **non
+  lancée** — explicitement `NOT_RUN`, pas `BLOCKED_BY_PROVIDER_CAPACITY`
+  (la capacité n'était pas la limite ici) : une deuxième exécution réelle
+  n'aurait pas produit de preuve propre tant que ce point de gouvernance
+  Git n'est pas tranché. Détail complet, y compris les critères
+  d'acceptation restants pour `VALIDATED` : `docs/VIBE_SPIKE.md` §19.
+  Image d'architecture ajoutée au README
+  (`docs/images/Architecture_orchestration_IA_multi-agents.png`).
 - **Next : POST-MVP 0.1 EXPERIMENT / DISCOVERY.** Pas encore un MVP 0.2 —
   décision à prendre avec l'utilisateur. Axe (1) — pilote Lean frais
-  (Roman Numerals) — **fait, `PASS`** (voir ci-dessus). Axes restants,
-  **proposés, non démarrés**, non ordonnés entre eux : (2) étude de
-  faisabilité Mistral/Vibe ; (3) étude build-vs-reuse Mammouth AI ;
-  (4) étude de l'écosystème des workers/providers gratuits/coût marginal
-  nul ; (5) échelle de difficulté progressive des projets de validation
-  (dont un futur pilote de niveau supérieur à Roman Numerals).
-  CLI/productisation reste une option future, non requise pour démarrer
-  ces axes. Toutes les Slices 21-24 du cycle QA sont maintenant `DONE`
-  (Slice 24 : `ACCEPTANCE_DONE`) — cette session ne décide pas seule si un
-  POC QA externe ou la Slice 25 (conditionnelle) sont réellement utiles.
-  OmniRoute reste une qualification future optionnelle, hors roadmap
-  principale (voir
+  (Roman Numerals) — **fait, `PASS`**. Axe (2) — Mistral/Vibe — **spike +
+  implémentation faits, reste 🧪 SPIKE** : décision produit requise sur la
+  gestion des commits Vibe avant de pouvoir viser `VALIDATED` (voir
+  ci-dessus). Axes restants, **proposés, non démarrés**, non ordonnés
+  entre eux : (3) étude build-vs-reuse Mammouth AI ; (4) étude de
+  l'écosystème des workers/providers gratuits/coût marginal nul ;
+  (5) échelle de difficulté progressive des projets de validation.
+  Morpion Web 3D (WI-6..WI-8) reste en pause, à reprendre après décision
+  utilisateur. CLI/productisation reste une option future, non requise
+  pour démarrer ces axes. Toutes les Slices 21-24 du cycle QA sont
+  maintenant `DONE` (Slice 24 : `ACCEPTANCE_DONE`) — cette session ne
+  décide pas seule si un POC QA externe ou la Slice 25 (conditionnelle)
+  sont réellement utiles. OmniRoute reste une qualification future
+  optionnelle, hors roadmap principale (voir
   `docs/OMNIROUTE_ARBITRATION.md`).
 
 Détail complet des slices, de la vision cible et du découpage incrémental :
