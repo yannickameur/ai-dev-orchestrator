@@ -19,9 +19,11 @@ Dernière mise à jour : Mistral Vibe ✅ VALIDATED + reprise Morpion Web 3D mul
 - **GOVERNED_FULL** : `DEPRECATED` / `REMOVAL_CANDIDATE` (reste
   sélectionnable explicitement, tests verts, non enrichi).
 - **Slice 24** : `ACCEPTANCE_DONE` (2026-09-16) — voir détail ci-dessous.
-- **Tests offline** : 1188 PASS (inchangé — la résolution de gouvernance
-  Git de commit ci-dessous n'a ajouté aucun nouveau test, uniquement une
-  consigne générique dans les instructions déjà testées).
+- **Tests offline** : 1189 PASS (état courant — +1 depuis les entrées
+  historiques mentionnant 1188 : un test de régression a été ajouté à
+  `tests/test_mvp_manager_lean_feature_flow.py` lors de la préparation de
+  la première release publique, pour le défaut de policy
+  `GitGovernancePolicy` trouvé dans `scripts/run_external_project_pilot.py`).
 - **Mistral / Vibe (2026-09-18) : ✅ VALIDATED.** La limite de commit
   automatique (Vibe ne committait pas ses changements) est résolue par
   une consigne de gouvernance Git générique (non spécifique à un
@@ -39,10 +41,12 @@ Dernière mise à jour : Mistral Vibe ✅ VALIDATED + reprise Morpion Web 3D mul
   `docs/reports/roman-numerals-lean-pilot-2026-09-17.md` et l'entrée
   datée ci-dessous.
 - **Mars Rover (pilote externe)** : en pause, aucun pilote actif.
-- **Morpion Web 3D** : `DONE` (2026-09-18) — WI-0..WI-8 tous complétés et
-  mergés, repris depuis l'état `WAITING` durable de WI-6 sans aucune
-  reconstruction manuelle (récupération durable inter-invocation
-  vérifiée réelle). Détail : `docs/reports/morpion-vibe-continuation-2026-09-18.md`.
+- **Morpion Web 3D** : `DONE` (2026-09-18) — WI-0..WI-8 complétés/mergés ;
+  WI-9 `FAILED` avant QA (candidat préservé, jamais mergé) ; WI-10
+  `LOST_RUNTIME_STATE_AFTER_REBOOT` ; WI-11 `DONE`/`MERGED` (correction
+  gouvernée finale). `main` cible final :
+  `593c615e66e6a2cb585fb465ded0185da46a3319`. Récit complet :
+  `examples/morpion-web-3d/README.md`.
 - **Slice active** : aucune.
 - **Next** : POST-MVP 0.1 EXPERIMENT / DISCOVERY — axe (1) Roman Numerals
   fait (PASS) ; axe (2) Mistral/Vibe fait (✅ VALIDATED) ; Morpion Web 3D
