@@ -47,8 +47,8 @@ Chronologie détaillée entièrement récupérable via `git log` et
 - Pilote externe Morpion Web 3D — `DONE` (2026-09-18), avec une
   régression navigateur découverte et corrigée après un acceptance
   initial incomplet (gap de couverture spécifique au projet, pas une
-  faille des primitives QA de l'orchestrateur) ; détail :
-  `docs/reports/morpion-computer-turn-regression-2026-09-18.md`.
+  faille des primitives QA de l'orchestrateur) ; récit complet public :
+  `examples/morpion-web-3d/README.md`.
 - `GOVERNED_FULL` retiré avant la première release publique
   (2026-09-18) — pipeline superseded par WorkItem Flow, complexité
   inutile, aucun besoin produit actuel (KISS/YAGNI).

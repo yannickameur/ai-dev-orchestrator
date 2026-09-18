@@ -9,10 +9,11 @@ conservent volontairement le raisonnement/le formalisme *tel qu'il a été
 pensé avant construction* (utile pour comprendre le "pourquoi") ; les
 annotations « Fait (Slice N) » / « Résolu par Slice N » insérées au fil de
 l'implémentation reflètent l'état final réellement construit et font
-autorité sur le texte d'étude environnant en cas de doute. Voir
-`ROADMAP.md`, section « Découpage incrémental », pour le détail
-slice-par-slice, et `ROADMAP.md`, section « Chemin nominal actuel », pour
-la note de statut courante ci-dessous.
+autorité sur le texte d'étude environnant en cas de doute. Le détail
+slice-par-slice n'est plus tenu dans `ROADMAP.md` (réécrit comme source
+de vérité fonctionnelle concise) — il reste récupérable via l'historique
+Git. Voir `ROADMAP.md`, section « Capacités optionnelles déjà
+construites », pour le statut courant de cette machinerie adaptative.
 
 **CURRENT STATUS (2026-09-17)** :
 - Slices 15-19 implémentées (Worker Registry, Execution Profiles, quality

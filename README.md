@@ -24,9 +24,10 @@ la seule parole d'un LLM.
 ## État du projet
 
 Voir [`docs/status.md`](docs/status.md) pour l'état factuel courant et
-[`ROADMAP.md`](ROADMAP.md) pour le détail complet (phases, architecture,
-vision cible, découpage incrémental — la source de vérité fonctionnelle
-de ce projet).
+[`ROADMAP.md`](ROADMAP.md) pour le détail complet (vision, état actuel
+du produit, architecture, WorkItem Flow, invariants, validations réelles
+et propositions à voter — la source de vérité fonctionnelle de ce
+projet).
 
 **MVP 0.1 : `DONE`** (contrat d'acceptation dans
 [`MVP_SPEC.yaml`](MVP_SPEC.yaml)). Gouvernance Git/PR/merge, QA gouvernée,
@@ -114,22 +115,21 @@ Provider Adapters (probe() → ProviderState)
 
 ![Architecture d'orchestration IA multi-agents](docs/images/Architecture_orchestration_IA_multi-agents.png)
 
-Voir « Vision cible du produit » dans `ROADMAP.md` pour le cycle long
-terme complet, et « Chemin nominal actuel » pour ce qui s'exécute
-réellement aujourd'hui par WorkItem.
+Voir `ROADMAP.md` — vision, état actuel du produit, architecture,
+WorkItem Flow, invariants, validations réelles et propositions à voter —
+pour la source de vérité fonctionnelle complète.
 
-## Providers supportés
+## Providers intégrés
 
 | Provider | CLI/Backend | Statut |
 |---|---|---|
 | Anthropic | Claude Code | ✅ VALIDATED |
 | OpenAI | Codex CLI | ✅ VALIDATED |
 | Mistral | Vibe | ✅ VALIDATED — voir [`docs/VIBE_SPIKE.md`](docs/VIBE_SPIKE.md). Son signal de disponibilité reste `EXECUTION_PROBE_ONLY` (pas de fenêtre de quota observable), jamais fabriqué en pourcentage |
-| Local | Ollama | 🔎 STUDY |
 
-(✅ VALIDATED = intégré ET validé par une exécution réelle ; 🔎 STUDY =
-candidat identifié, non intégré. Détail complet et pool de workers
-actuel : `ROADMAP.md`/`docs/status.md`.)
+Les providers locaux, dont Ollama, font partie des propositions à voter
+dans `ROADMAP.md` (section « Propositions à voter ») — ce ne sont ni un
+travail approuvé, ni un travail en cours.
 
 ## Démarrage rapide
 
@@ -228,7 +228,7 @@ Voir [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Documentation
 
-- [ROADMAP.md](ROADMAP.md) — phases, architecture, vision cible, source de vérité
+- [ROADMAP.md](ROADMAP.md) — vision, architecture, WorkItem Flow, propositions à voter — source de vérité fonctionnelle
 - [docs/status.md](docs/status.md) — état factuel courant, court
 - [MVP_SPEC.yaml](MVP_SPEC.yaml) — critères d'acceptation mesurables du MVP 0.1
 - [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md) — étude des projets comparables

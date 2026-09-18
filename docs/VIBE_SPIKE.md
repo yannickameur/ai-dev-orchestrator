@@ -1,5 +1,13 @@
 # VIBE_SPIKE.md — Mistral Vibe feasibility spike (2026-09-18)
 
+**CURRENT STATUS:** Mistral/Vibe was subsequently implemented and
+validated in real governed WorkItem execution on 2026-09-18. Sections
+1-18 below preserve the original spike's chronology as written at the
+time (including its "proposal only, nothing implemented" framing, which
+was accurate then, not now) ; §§19-20 contain the implementation and
+validation follow-up. Current status: ✅ `VALIDATED` — see
+[`docs/status.md`](status.md) and `ROADMAP.md` for the current summary.
+
 REUSE-FIRST feasibility spike. No product code was written or modified —
 see § "What NOT to build" and the commit for this study. Every claim below
 is tagged `VERIFIED` (observed directly in this session, on this machine),
@@ -553,5 +561,7 @@ evidence (structural independence with two Mistral identities was
 already proven offline in §19's `TestMistralProviderIntegration`, just
 never exercised as a real live execution pair).
 
-Full report:
-[docs/reports/morpion-vibe-continuation-2026-09-18.md](reports/morpion-vibe-continuation-2026-09-18.md).
+Full public case study:
+[examples/morpion-web-3d/README.md](../examples/morpion-web-3d/README.md);
+see also [`docs/status.md`](status.md) and [`ROADMAP.md`](../ROADMAP.md)
+for the current, summarized state of this validation.
