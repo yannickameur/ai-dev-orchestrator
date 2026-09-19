@@ -377,12 +377,26 @@ class TestShippedExampleConfig:
     def test_config_workers_yaml_loads(self) -> None:
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
         assert {w.worker_id for w in registry.all_workers()} == {
-            "alice", "bob", "victor", "oscar", "milo", "juno",
+            "alice", "bob", "victor", "oscar", "milo", "juno", "dana", "kai",
         }
 
     def test_config_workers_yaml_workers_are_enabled(self) -> None:
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
         assert len(registry.enabled_workers()) == 6
+
+    def test_config_workers_yaml_deepseek_and_kimi_are_disabled_by_default(self) -> None:
+        """DeepSeek (billed) and Kimi (subscription) both require a real
+        API key this repository's own CI/dev machines do not have, and
+        neither has real execution evidence yet (unlike Mistral/Vibe — see
+        docs/VIBE_SPIKE.md) — so neither is enabled by default. Adding
+        them must never make the orchestrator require a key it doesn't
+        need; see orchestrator.providers.deepseek_adapter/kimi_adapter."""
+        registry = WorkerRegistry.load(Path("config/workers.yaml"))
+        dana, kai = registry.get("dana"), registry.get("kai")
+        assert dana.enabled is False
+        assert dana.provider == "deepseek"
+        assert kai.enabled is False
+        assert kai.provider == "kimi"
 
     def test_config_workers_yaml_worker_pool_is_at_least_two_per_provider(self) -> None:
         """Worker pool fallback (2026-09-17): >= 2 independent workers per

@@ -13,6 +13,9 @@ Claude, no network) to exercise the real subprocess-timeout wrapper.
 from __future__ import annotations
 
 import asyncio
+import functools
+import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -297,3 +300,82 @@ class TestDefaultSubprocessRunnerTimeout:
             _default_subprocess_runner(["true"], timeout=5.0)
         )
         assert exit_code == 0
+
+    def test_env_kwarg_is_visible_to_the_subprocess(self) -> None:
+        # Real subprocess (python3 -c ...), no Claude/network — proves the
+        # new `env` kwarg actually reaches the child process, the mechanism
+        # DeepSeek/Kimi reuse (ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY).
+        env = {**os.environ, "AIDO_TEST_PROBE_VAR": "hello-from-env"}
+        exit_code, stdout, _ = asyncio.run(
+            _default_subprocess_runner(
+                [sys.executable, "-c", "import os,sys; sys.stdout.write(os.environ.get('AIDO_TEST_PROBE_VAR',''))"],
+                timeout=5.0,
+                env=env,
+            )
+        )
+        assert exit_code == 0
+        assert stdout == b"hello-from-env"
+
+    def test_env_none_still_inherits_the_process_environment(self) -> None:
+        # env=None (the default) must remain equivalent to not passing env
+        # at all — real Anthropic usage must see no behavior change.
+        exit_code, stdout, _ = asyncio.run(
+            _default_subprocess_runner(
+                [sys.executable, "-c", "import os,sys; sys.stdout.write('yes' if 'PATH' in os.environ else 'no')"],
+                timeout=5.0,
+            )
+        )
+        assert exit_code == 0
+        assert stdout == b"yes"
+
+
+class TestProviderNameAndExtraEnvReuse:
+    """provider_name/extra_env — the seam DeepSeek/Kimi reuse instead of a
+    second, independent adapter (see module docstring, "Reuse beyond real
+    Anthropic")."""
+
+    def test_default_provider_name_is_anthropic(self) -> None:
+        adapter = ClaudeCodeAdapter()
+        assert adapter._run_subprocess is _default_subprocess_runner
+        assert adapter._provider_name == "anthropic"
+
+    def test_custom_provider_name_reaches_probed_state(self) -> None:
+        fixture_bytes = (FIXTURES_DIR / "claude_stream_allowed.jsonl").read_bytes()
+
+        async def fake_runner(args, timeout):
+            return 0, fixture_bytes, b""
+
+        adapter = ClaudeCodeAdapter(
+            provider_name="deepseek", subprocess_runner=fake_runner, clock=lambda: UTC_NOW
+        )
+
+        state = asyncio.run(adapter.probe())
+
+        assert state.provider == "deepseek"
+
+    def test_extra_env_is_overlaid_onto_the_default_runner(self) -> None:
+        adapter = ClaudeCodeAdapter(
+            extra_env={"ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic", "ANTHROPIC_API_KEY": "sk-test"}
+        )
+
+        assert isinstance(adapter._run_subprocess, functools.partial)
+        assert adapter._run_subprocess.func is _default_subprocess_runner
+        merged_env = adapter._run_subprocess.keywords["env"]
+        assert merged_env["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com/anthropic"
+        assert merged_env["ANTHROPIC_API_KEY"] == "sk-test"
+        # Overlaid onto (not replacing) the ambient environment.
+        assert merged_env.get("PATH") == os.environ.get("PATH")
+
+    def test_empty_extra_env_behaves_like_no_extra_env(self) -> None:
+        adapter = ClaudeCodeAdapter(extra_env={})
+        assert adapter._run_subprocess is _default_subprocess_runner
+
+    def test_explicit_subprocess_runner_takes_priority_over_extra_env(self) -> None:
+        async def fake_runner(args, timeout):
+            return 0, b'{"type": "result", "is_error": false, "result": "ok"}\n', b""
+
+        adapter = ClaudeCodeAdapter(
+            subprocess_runner=fake_runner, extra_env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
+
+        assert adapter._run_subprocess is fake_runner

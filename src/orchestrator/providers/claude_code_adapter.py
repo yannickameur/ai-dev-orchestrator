@@ -38,14 +38,33 @@ Design notes:
   and nothing in this slice consumes them, so keeping ``ProviderState`` free
   of them avoids contaminating the generic contract with Claude-specific
   fields for no consumer.
+
+Reuse beyond real Anthropic (``provider_name``/``extra_env``, added when
+DeepSeek/Kimi were integrated — see ``orchestrator.providers.deepseek_adapter``/
+``kimi_adapter``): DeepSeek's and Kimi's own documentation both describe
+their "coding" offering as this exact same ``claude`` binary redirected, via
+``ANTHROPIC_BASE_URL``/``ANTHROPIC_API_KEY``, at an Anthropic-compatible
+endpoint they operate — not a distinct CLI or wire protocol. So a second,
+independent HTTP adapter would duplicate this module's subprocess/
+stream-json machinery for no reason; instead, ``provider_name`` lets a
+caller label the resulting ``ProviderState`` correctly, and ``extra_env``
+lets a caller overlay the redirect variables onto the subprocess environment
+without touching the default (real Anthropic, no overlay) code path at all.
+A probe against one of these compatible endpoints naturally has no
+``rate_limit_event`` in its stream (that telemetry is an Anthropic-specific
+extension neither DeepSeek nor Kimi's compatible endpoint is known to emit)
+and therefore falls back to ``_availability_from_result_fallback`` below —
+an existing code path, not a new one.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime, timezone
-from typing import Awaitable, Callable, Sequence
+from functools import partial
+from typing import Awaitable, Callable, Mapping, Sequence
 
 from orchestrator.providers.adapter import ProviderAdapter
 from orchestrator.providers.contracts import (
@@ -87,12 +106,13 @@ class ClaudeStreamParseError(ClaudeProbeError):
 
 
 async def _default_subprocess_runner(
-    args: Sequence[str], timeout: float
+    args: Sequence[str], timeout: float, *, env: Mapping[str, str] | None = None
 ) -> tuple[int, bytes, bytes]:
     process = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
@@ -117,12 +137,31 @@ class ClaudeCodeAdapter(ProviderAdapter):
         claude_binary: str = "claude",
         subprocess_runner: SubprocessRunner | None = None,
         clock: Clock | None = None,
+        provider_name: str = PROVIDER_NAME,
+        extra_env: Mapping[str, str] | None = None,
     ) -> None:
+        """``provider_name``/``extra_env`` (both optional, default to real
+        Anthropic behavior unchanged) let a caller reuse this adapter for an
+        Anthropic-compatible provider reached through the same ``claude``
+        binary — see the module docstring's "Reuse beyond real Anthropic"
+        section. ``extra_env`` is overlaid onto the current process
+        environment once, at construction time (never re-read per probe);
+        it is ignored when an explicit ``subprocess_runner`` is supplied,
+        since a caller providing its own runner already owns the
+        environment a probe subprocess sees.
+        """
         self._model = model
         self._prompt = prompt
         self._timeout_seconds = timeout_seconds
         self._claude_binary = claude_binary
-        self._run_subprocess = subprocess_runner or _default_subprocess_runner
+        self._provider_name = provider_name
+        if subprocess_runner is not None:
+            self._run_subprocess = subprocess_runner
+        elif extra_env:
+            merged_env = {**os.environ, **extra_env}
+            self._run_subprocess = partial(_default_subprocess_runner, env=merged_env)
+        else:
+            self._run_subprocess = _default_subprocess_runner
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     async def probe(self) -> ProviderState:
@@ -141,14 +180,20 @@ class ClaudeCodeAdapter(ProviderAdapter):
         if exit_code != 0:
             raise ClaudeProcessError(exit_code, stderr.decode("utf-8", errors="replace"))
         lines = stdout.decode("utf-8", errors="replace").splitlines()
-        return parse_claude_stream(lines, observed_at=observed_at)
+        return parse_claude_stream(lines, observed_at=observed_at, provider=self._provider_name)
 
 
-def parse_claude_stream(lines: Sequence[str], *, observed_at: datetime) -> ProviderState:
+def parse_claude_stream(
+    lines: Sequence[str], *, observed_at: datetime, provider: str = PROVIDER_NAME
+) -> ProviderState:
     """Parse Claude Code's stream-json lines into a normalized ProviderState.
 
     Pure function, no subprocess/network involved — used both by
     :meth:`ClaudeCodeAdapter.probe` and directly by offline tests.
+    ``provider`` defaults to real Anthropic (``PROVIDER_NAME``); a caller
+    reusing this parser for an Anthropic-compatible provider (DeepSeek,
+    Kimi) passes its own provider name so the resulting ``ProviderState``
+    is labeled correctly.
     """
     events = _parse_json_lines(lines)
 
@@ -174,7 +219,7 @@ def parse_claude_stream(lines: Sequence[str], *, observed_at: datetime) -> Provi
         quota_windows = ()
 
     return ProviderState(
-        provider=PROVIDER_NAME,
+        provider=provider,
         availability=availability,
         observed_at=observed_at,
         quota_windows=quota_windows,

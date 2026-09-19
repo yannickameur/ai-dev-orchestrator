@@ -221,3 +221,61 @@ workers:
         quality_tier: STANDARD
         model: vibe-default
         cost_rank: 20
+
+  # DeepSeek — added alongside Kimi to bring the provider count to 5
+  # (see ROADMAP.md, "Providers et workers"). Reached through the same
+  # `claude` binary as the anthropic workers above, redirected at
+  # DeepSeek's Anthropic-compatible endpoint — see
+  # orchestrator.providers.deepseek_adapter. `enabled: false`: DeepSeek is
+  # billed per token (unlike the subscription CLIs above) and reaching it
+  # requires a real DEEPSEEK_API_KEY this machine does not have; unlike
+  # Mistral/Vibe, no real spike evidence of a successful execution exists
+  # yet either. Flip to `true` only after both a real DEEPSEEK_API_KEY is
+  # configured and a real execution has been validated (mirrors how
+  # Mistral/Vibe was onboarded — see docs/VIBE_SPIKE.md). Only
+  # `development` is granted, for the same reason: no evidence yet for any
+  # other capability.
+  - worker_id: dana
+    display_name: Dana
+    enabled: false
+    provider: deepseek
+    backend: claude_code
+    priority: 60
+
+    capabilities:
+      - development
+
+    default_profile_id: standard
+    estimator_profile_id: standard
+
+    profiles:
+      standard:
+        quality_tier: STANDARD
+        model: deepseek-flash
+        cost_rank: 20
+
+  # Kimi (Kimi Code) — see orchestrator.providers.kimi_adapter. Reached
+  # through the same `claude` binary, redirected at Kimi's
+  # Anthropic-compatible endpoint. `enabled: false` for the same reason as
+  # `dana` above: requires a real KIMI_API_KEY (Kimi Code subscription)
+  # this machine does not have, and no real execution evidence exists yet.
+  # Flip to `true` only after both a real KIMI_API_KEY is configured and a
+  # real execution has been validated.
+  - worker_id: kai
+    display_name: Kai
+    enabled: false
+    provider: kimi
+    backend: claude_code
+    priority: 60
+
+    capabilities:
+      - development
+
+    default_profile_id: standard
+    estimator_profile_id: standard
+
+    profiles:
+      standard:
+        quality_tier: STANDARD
+        model: kimi-for-coding
+        cost_rank: 20

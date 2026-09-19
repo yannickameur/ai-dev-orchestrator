@@ -41,14 +41,18 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - **v0.1.1** — **PUBLIÉE**, première release publique open source.
 - **MVP 0.1** : `DONE` (contrat d'acceptation : `MVP_SPEC.yaml` v4).
 - **Phase 1** : `DONE`.
-- Suite de tests offline : **1105 PASS** (1097 avant + 8 pour le correctif
-  read-only de `aido status` — voir §11 et docs/status.md pour le détail).
+- Suite de tests offline : **1135 PASS** (1105 avant + 30 pour l'intégration
+  DeepSeek/Kimi — voir §13, sous-section P3, et docs/status.md pour le
+  détail).
 - **P12 (format de configuration de projet public + mode de permission
   d'exécution des workers) : `DONE`** — voir §10 et `docs/PROJECT_CONFIG.md`.
   **P1 (CLI publique `aido`) : `DONE`** — `aido init/validate/run/status`,
-  voir §10. Cycle productisation/onboarding terminé. Aucun développement
-  actif en cours — voir §13, « Cycle produit approuvé », pour la suite
-  proposée (P4 étude, puis P3).
+  voir §10. Cycle productisation/onboarding terminé.
+- **P3 (DeepSeek + Kimi comme providers de premier niveau) : `DONE`**
+  (2026-09-19) — voir §7 et §13. **P4 (étude Mammouth) : RETIRÉ** sur
+  décision explicite de l'utilisateur (2026-09-19) — jamais étudié, jamais
+  intégré, aucune dépendance gateway/agrégateur multi-modèles introduite.
+  Aucun développement actif en cours.
 
 ## 3. Ce qui existe aujourd'hui
 
@@ -65,6 +69,13 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - Adaptateur Codex CLI (OpenAI).
 - Adaptateur Mistral/Vibe — honnêtement limité à `EXECUTION_PROBE_ONLY`
   (aucune fenêtre de quota observable pour ce provider ; jamais fabriquée).
+- Adaptateurs DeepSeek et Kimi — jamais un second client HTTP indépendant :
+  les deux réutilisent l'adaptateur Claude Code existant (même binaire
+  `claude`, redirigé via `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` vers leur
+  point de terminaison compatible Anthropic — voir
+  `orchestrator.providers.deepseek_adapter`/`kimi_adapter`). Désactivés par
+  défaut dans `config/workers.yaml` (`dana`/`kai`) — clé API requise, aucune
+  preuve d'exécution réelle encore obtenue ; voir §7.
 - `RalphExecutionEngine` — chaque exécution passe par le vrai CLI `ralph`,
   jamais un appel direct à un provider.
 - État durable Execution/Handoff/Wait/Recovery — reprise après
@@ -239,9 +250,15 @@ tableau, jamais supposé).
 | `oscar` | openai | codex | 90 | (identiques à victor) | ✅ VALIDATED |
 | `milo` | mistral | vibe | 60 | development uniquement | ✅ VALIDATED |
 | `juno` | mistral | vibe | 60 | development uniquement | ✅ VALIDATED |
+| `dana` | deepseek | claude_code | 60 | development uniquement | `enabled: false` — clé requise, non validé |
+| `kai` | kimi | claude_code | 60 | development uniquement | `enabled: false` — clé requise, non validé |
 
-6 workers, 3 providers. Chaque provider participant a au moins 2 workers
-indépendants (`DEV_B.worker_id != DEV_A.worker_id` reste toujours
+8 workers déclarés, **5 providers de premier niveau** (anthropic, openai,
+mistral, deepseek, kimi — tous résolus par la même table explicite,
+`orchestrator.project_runtime._PROVIDER_ADAPTER_FACTORIES`, jamais une
+hiérarchie métier codée en dur entre eux). 6 workers **activés** par
+défaut, 3 providers activés par défaut ; chaque provider activé a au moins
+2 workers indépendants (`DEV_B.worker_id != DEV_A.worker_id` reste toujours
 satisfiable sans dépendre de l'autre provider).
 
 Mistral/Vibe : capacité volontairement limitée à `development` (le spike
@@ -249,6 +266,30 @@ n'a produit de preuve d'exécution réelle que pour ce type de travail —
 voir `docs/VIBE_SPIKE.md`) ; son signal de disponibilité est
 `EXECUTION_PROBE_ONLY` (pas de fenêtre de quota observable), toujours
 rapporté honnêtement comme `unknown`, jamais fabriqué en pourcentage.
+
+**DeepSeek et Kimi (2026-09-19)** : intégrés à la même profondeur
+architecturale que les trois providers existants (même contrat
+`ProviderAdapter`/`ProviderState`, même table de résolution), mais
+`dana`/`kai` restent `enabled: false` dans le fichier livré :
+- Les deux nécessitent une vraie clé API (`DEEPSEEK_API_KEY`/`KIMI_API_KEY`,
+  jamais committée, jamais de valeur par défaut) — contrairement à
+  Claude Code/Codex/Vibe dont l'authentification reste entièrement au CLI,
+  déjà connecté en dehors de ce projet. L'absence de ces clés ne doit
+  jamais empêcher les trois autres providers de fonctionner — voir
+  `orchestrator.providers.deepseek_adapter`/`kimi_adapter` et
+  `ProjectRuntime.ProviderConfigurationError` (erreur contrôlée, jamais une
+  traceback brute).
+- DeepSeek est facturé à la consommation (PAYG) — son intégration ne rend
+  jamais son usage obligatoire, exactement comme demandé ; ce n'est donc
+  pas, à la lettre, un provider « à coût marginal nul » comme le formulait
+  la proposition P3 d'origine (voir §13) — activé sur décision utilisateur
+  explicite malgré ce coût, pas par réinterprétation silencieuse de P3.
+- Kimi est utilisé via **Kimi Code** (offre par abonnement/quota) plutôt
+  qu'un accès PAYG générique, sur demande explicite.
+- Ni l'un ni l'autre n'a encore de preuve d'exécution réelle (pas de spike
+  équivalent à `docs/VIBE_SPIKE.md`) — `enabled: true` est un futur pas
+  explicite, après configuration d'une vraie clé et validation réelle,
+  jamais une bascule automatique de cette session.
 
 Ollama n'est **pas** un provider actuel — voir §13, proposition P2.
 
@@ -371,6 +412,11 @@ explicitement par un appelant :
   tests unitaires existants) ; correction finale gouvernée mergée. SHA
   cible final : `593c615e66e6a2cb585fb465ded0185da46a3319`. Récit complet
   public : `examples/morpion-web-3d/README.md`.
+- **DeepSeek / Kimi** — `NOT VALIDATED`. Architecture/tests offline
+  complets (§7, §13) ; aucune exécution réelle n'a eu lieu — ni clé API
+  (`DEEPSEEK_API_KEY`/`KIMI_API_KEY`) configurée sur une machine de ce
+  projet, ni spike équivalent à `docs/VIBE_SPIKE.md`. `dana`/`kai` restent
+  `enabled: false` jusqu'à cette validation.
 
 La chronologie forensique détaillée (exécutions individuelles, durées,
 diagnostics pas-à-pas) est récupérable via l'historique Git et les
@@ -395,6 +441,11 @@ Jalons majeurs seulement — pas de journal Slice par Slice :
   workers project-controlled — implémenté (2026-09-19).
 - P1 — CLI publique `aido` (`init`/`validate`/`run`/`status`) —
   implémenté, cycle productisation/onboarding `DONE` (2026-09-19).
+- P3 — DeepSeek + Kimi intégrés comme providers de premier niveau, en
+  réutilisant l'adaptateur Claude Code existant (redirection
+  `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`), désactivés par défaut faute de
+  clé/preuve d'exécution réelle ; P4 (étude Mammouth) retiré de la roadmap
+  sur décision utilisateur (2026-09-19).
 
 Chronologie détaillée : historique Git (`git log`) et docs techniques
 (`docs/status.md`, `docs/QA_GOVERNANCE.md`, `docs/GIT_GOVERNANCE.md`,
@@ -406,10 +457,12 @@ Chronologie détaillée : historique Git (`git log`) et docs techniques
 La plupart des lignes ci-dessous restent `À VOTER` — aucun ordre n'implique
 une priorité pour elles, et aucun WorkItem n'est créé pour une proposition
 `À VOTER` tant qu'elle n'a pas été explicitement votée par l'utilisateur.
-P1, P12, P3 et P4 font exception : ce sont des décisions utilisateur déjà
-explicitement approuvées (2026-09-18), documentées ci-dessous. Cette
-approbation ne crée encore aucun WorkItem d'implémentation — c'est un
-changement de statut roadmap, pas un déclenchement d'exécution.
+P1, P12 et P3 font exception : ce sont des décisions utilisateur déjà
+explicitement approuvées et, pour P3, implémentées (2026-09-18/19),
+documentées ci-dessous. P4 (étude Mammouth) a été explicitement **retiré**
+par l'utilisateur le 2026-09-19, avant d'avoir jamais été démarré — jamais
+étudié, jamais intégré, aucune dépendance gateway/agrégateur multi-modèles
+introduite.
 
 ### Cycle produit approuvé — `DONE`
 
@@ -445,6 +498,69 @@ mainteneur — **implémenté**, voir ci-dessous.
   scénario complet DEV A → DEV B → QA déterministe → merge gouverné →
   `COMPLETED`, une reprise multi-process après `WAITING`, et la preuve
   qu'aucun appel provider ne se produit pour `init`/`validate`/`status`.
+
+### P3 — DeepSeek + Kimi — `DONE` (2026-09-19)
+
+**Résultat** : DeepSeek et Kimi sont désormais des providers de premier
+niveau au même sens architectural que Claude/Codex/Mistral — même contrat
+`ProviderAdapter`/`ProviderState`, même table de résolution
+(`orchestrator.project_runtime._PROVIDER_ADAPTER_FACTORIES`), aucune
+hiérarchie métier codée en dur entre les cinq. Voir §7 pour le détail
+complet (workers `dana`/`kai`, `enabled: false` par défaut, raisons).
+
+**Décision d'architecture (REUSE FIRST)** : ni DeepSeek ni Kimi n'ont reçu
+un second adaptateur HTTP indépendant. Les deux exposent officiellement un
+point de terminaison compatible Anthropic
+(`https://api.deepseek.com/anthropic`, `https://api.kimi.ai/coding/`)
+documenté comme étant le binaire `claude` existant, simplement redirigé via
+`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` — donc `ClaudeCodeAdapter` a été
+étendu avec deux paramètres optionnels rétrocompatibles
+(`provider_name`, `extra_env`, défaut = comportement Anthropic réel
+inchangé) au lieu d'être dupliqué. `orchestrator.providers.deepseek_adapter`/
+`kimi_adapter` sont de fines fabriques qui lisent
+`DEEPSEEK_API_KEY`/`KIMI_API_KEY` (+ `..._BASE_URL`/`..._MODEL` optionnels)
+depuis l'environnement process et construisent un `ClaudeCodeAdapter`
+configuré — jamais une clé committée, jamais de valeur par défaut pour la
+clé.
+
+**Écart assumé par rapport au prompt d'origine** : le prompt demandait des
+variables `DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL`/`DEEPSEEK_MODEL` (et
+l'équivalent Kimi) comme si ces providers étaient atteints par un client
+HTTP direct. L'inspection de l'architecture existante (tous les adaptateurs
+actuels — Claude Code, Codex, Vibe — pilotent un CLI déjà authentifié par
+subprocess, jamais un client HTTP à clé) et la documentation officielle de
+DeepSeek/Kimi elles-mêmes (leur propre intégration recommandée est
+précisément « rediriger Claude Code ») ont montré que ces mêmes noms de
+variables s'appliquent naturellement au mécanisme de redirection du CLI
+existant, sans écart de nommage ni architecture parallèle.
+
+**Erreur contrôlée** : une clé manquante ne lève jamais une exception brute
+— `DeepSeekConfigError`/`KimiConfigError` (sous-classes de la nouvelle
+`orchestrator.providers.adapter.ProviderConfigError`), interceptées par
+`ProjectRuntime._resolve_provider_adapters` et re-levées comme
+`ProviderConfigurationError` (`ProjectRuntimeError`), avec le même
+traitement propre côté CLI que `UnsupportedProviderError`. Ceci ne se
+produit que si un worker **activé** requiert effectivement ce provider —
+jamais pour un provider simplement configuré mais inutilisé.
+
+**Tests** : `tests/providers/test_deepseek_adapter.py`,
+`tests/providers/test_kimi_adapter.py`, extensions de
+`tests/providers/test_claude_code_adapter.py` (réutilisation
+`provider_name`/`extra_env`) et de `tests/test_project_runtime.py`
+(composition réelle, clé absente/présente, non-régression des autres
+providers). Aucun appel réseau/CLI réel ; `env` est toujours une mapping
+explicite dans les tests, jamais l'environnement process réel de la
+machine de test. Suite complète : voir §2/`docs/status.md` pour le compte
+à jour.
+
+**Non fait, explicitement** : `dana`/`kai` ne sont pas activés par défaut
+(pas de clé, pas de preuve d'exécution réelle) ; aucun rôle métier rigide
+(planner/developer/qa/reviewer/...) n'a été codé — ce dépôt exprime déjà
+les rôles comme des capacités (`development`, `qa_testing`,
+`release_planning`, `roadmap_synthesis`, `complexity_estimation`) sur
+`Worker`, pas comme une énumération de rôles séparée ; DeepSeek/Kimi n'ont
+reçu que `development`, à l'identique de l'onboarding Mistral/Vibe, faute
+de preuve pour les autres capacités.
 
 #### Mode de permission d'exécution des workers — implémenté
 
@@ -496,14 +612,15 @@ Invariants respectés par l'implémentation (`RalphExecutionEngine`,
 
 ### Ordre approuvé
 
-1. P12 (`DONE`) puis P1 (`DONE`) — ce cycle, terminé.
-2. P4 — **prochaine étude**, sous REUSE FIRST : étudier d'abord Mammouth
-   AI, déterminer ce qui est réellement réutilisable, puis décider si une
-   intégration provider/worker est justifiée par la preuve. L'approbation
-   de P4 n'est PAS une approbation d'intégrer Mammouth AI — seulement
-   d'en faire l'étude. Pas encore démarrée.
-3. Intégrations provider/worker supplémentaires sous P3, justifiées par
-   l'étude P4 et/ou d'autres preuves — pas avant l'étape 2.
+1. P12 (`DONE`) puis P1 (`DONE`) — cycle productisation/onboarding,
+   terminé.
+2. P3 (`DONE`, 2026-09-19) — DeepSeek + Kimi intégrés comme providers de
+   premier niveau (voir sous-section P3 ci-dessus et §7). P4 (étude
+   Mammouth), qui aurait normalement précédé de nouvelles intégrations
+   provider, a été **retiré explicitement par l'utilisateur avant d'avoir
+   jamais démarré** (2026-09-19) — l'utilisateur a directement approuvé
+   DeepSeek/Kimi sans passer par cette étude, ce qui rend l'étape
+   auparavant prévue sans objet, pas seulement sautée.
 
 ### Table des propositions
 
@@ -511,8 +628,8 @@ Invariants respectés par l'implémentation (`RalphExecutionEngine`,
 |----|-------------|------------------------------|--------|
 | P1 | CLI / productisation | Le projet doit-il exposer une CLI publique pour qu'un utilisateur n'ait plus besoin d'un harnais Python ? | **`DONE` — voir §3/§10, `README.md`** |
 | P2 | Ollama / provider local | Un provider gratuit/local est-il assez utile pour justifier un adaptateur ? | À VOTER |
-| P3 | Providers supplémentaires à coût marginal nul | Quels autres providers gratuits/par abonnement devraient rejoindre le pool ? | **APPROUVÉ — APRÈS P4** |
-| P4 | Étude build-vs-reuse Mammouth AI | Offre-t-il des capacités multi-provider utiles à réutiliser plutôt qu'à construire ? | **APPROUVÉ — PROCHAINE ÉTUDE** |
+| P3 | Providers supplémentaires | Quels autres providers devraient rejoindre le pool ? Étendu par décision utilisateur explicite (2026-09-19) au-delà du cadre d'origine « coût marginal nul » : DeepSeek (facturé à la consommation) et Kimi (abonnement Kimi Code) | **`DONE` (2026-09-19) — DeepSeek + Kimi, voir §7 et la sous-section P3 ci-dessus** |
+| P4 | Étude build-vs-reuse Mammouth AI | Offre-t-il des capacités multi-provider utiles à réutiliser plutôt qu'à construire ? | **RETIRÉ (2026-09-19)** — décision utilisateur explicite, jamais démarré ; DeepSeek/Kimi (P3) ont été approuvés et intégrés directement, sans cette étude ; aucune dépendance gateway/agrégateur multi-modèles introduite |
 | P5 | Projets de validation externes progressifs | Continuer à valider sur des projets réels plus complexes ? | À VOTER |
 | P6 | Workflow GitHub distant complet | Étendre la gouvernance Git locale actuelle à un vrai push/PR/statut CI distant ? | À VOTER |
 | P7 | Orchestration multi-projets | Une instance d'orchestrateur gérant plusieurs projets isolés ? | À VOTER |
@@ -525,7 +642,6 @@ Invariants respectés par l'implémentation (`RalphExecutionEngine`,
 Les propositions encore `À VOTER` restent non planifiées ; aucun ordre entre
 elles n'est impliqué. La prochaine étape pour celles-ci, si l'utilisateur le
 décide, est un vote explicite proposition par proposition — pas une
-sélection automatique par cette session ni une future session. P12 et P1
-sont `DONE`. Pour P4, la prochaine étape est l'étude elle-même — pas
-encore démarrée par ce changement de documentation. Pour P3, la prochaine
-étape reste après P4.
+sélection automatique par cette session ni une future session. P12, P1 et
+P3 sont `DONE`. P4 est `RETIRÉ` — jamais démarré, jamais réutilisable comme
+prérequis implicite d'une future proposition sans un nouveau vote explicite.

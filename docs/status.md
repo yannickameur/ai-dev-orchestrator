@@ -14,12 +14,15 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
 - **Workflow** : WorkItem Flow — le seul workflow d'exécution de WorkItem
   implémenté (`GOVERNED_FULL` retiré avant la première release publique,
   2026-09-18 ; `WorkflowMode` lui-même supprimé, un seul mode restant).
-- **Providers/workers** (`config/workers.yaml`, source de vérité) : 6
-  workers, 3 providers — `alice`/`bob` (anthropic/claude_code),
-  `victor`/`oscar` (openai/codex), `milo`/`juno` (mistral/vibe,
-  `development` uniquement).
-- **Tests offline** : 1105 PASS (1097 avant + 8 pour le correctif
-  read-only de `aido status` — snapshot
+- **Providers/workers** (`config/workers.yaml`, source de vérité) : 8
+  workers déclarés (6 activés), **5 providers de premier niveau** —
+  `alice`/`bob` (anthropic/claude_code), `victor`/`oscar` (openai/codex),
+  `milo`/`juno` (mistral/vibe, `development` uniquement), `dana`/`kai`
+  (deepseek/kimi via `claude_code` redirigé, `development` uniquement,
+  **`enabled: false`** — clé API requise, pas encore de preuve
+  d'exécution réelle ; voir `ROADMAP.md` §7/§13).
+- **Tests offline** : 1135 PASS (1105 avant + 30 pour l'intégration
+  DeepSeek/Kimi — snapshot
   courant, voir §11 de `ROADMAP.md` pour la méthode de comptage ; ce
   nombre n'est pas un invariant permanent).
 - **Roman Numerals** (pilote externe) : `PASS`.
@@ -33,11 +36,12 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   besoin de harnais Python pour l'usage normal ; `aido run` est aussi la
   reprise. Cycle productisation/onboarding terminé.
 - **Développement actif** : aucun.
-- **Prochaine étape approuvée** : P4 — étude build-vs-reuse Mammouth AI
-  (première étape, sous REUSE FIRST ; pas encore une approbation
-  d'intégration). P3 (providers/workers supplémentaires) reste approuvé
-  pour après P4. Aucun WorkItem d'implémentation de P4 créé à ce jour —
-  voir `ROADMAP.md` §13. Toutes les autres propositions restent `À VOTER`.
+- **P3 (DeepSeek + Kimi comme providers de premier niveau)** : `DONE`
+  (2026-09-19) — voir `ROADMAP.md` §7/§13. **P4 (étude build-vs-reuse
+  Mammouth AI)** : **RETIRÉ** sur décision explicite de l'utilisateur
+  (2026-09-19), jamais démarré, jamais intégré — aucune dépendance
+  gateway/agrégateur multi-modèles. Toutes les autres propositions restent
+  `À VOTER`.
 
 ## Historique synthétique
 
@@ -87,5 +91,12 @@ Chronologie détaillée entièrement récupérable via `git log` et
   multi-process après `WAITING`, via des adaptateurs providers et un
   subprocess Ralph faux — jamais de vrai Claude/Codex/Vibe/Ralph
   (2026-09-19). Cycle productisation/onboarding (P1 + P12) `DONE`.
+- P3 — DeepSeek et Kimi intégrés comme providers de premier niveau, en
+  réutilisant `ClaudeCodeAdapter` (redirection
+  `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` documentée officiellement par
+  les deux providers), jamais un second client HTTP ; workers `dana`/`kai`
+  ajoutés à `config/workers.yaml`, désactivés par défaut (clé API requise,
+  pas encore de preuve d'exécution réelle) ; P4 (étude Mammouth) retiré de
+  la roadmap sur décision utilisateur (2026-09-19) — voir `ROADMAP.md` §7/§13.
 
 Ce fichier reste court et factuel — pas de duplication de `ROADMAP.md`.

@@ -21,6 +21,7 @@ from orchestrator.project_config import ProjectConfig
 from orchestrator.project_runtime import (
     ConfigRuntimeConflictError,
     ProjectRuntime,
+    ProviderConfigurationError,
     UnsupportedProviderError,
 )
 from orchestrator.project_state import WorkItemStatus
@@ -187,6 +188,35 @@ class TestOpenAndClose:
         store.close()
 
 
+REGISTRY_DEEPSEEK_WORKER = dedent(
+    """
+    workers:
+      - worker_id: dana
+        display_name: Dana
+        enabled: true
+        provider: deepseek
+        backend: claude_code
+        capabilities: [development]
+        profiles:
+          standard: {quality_tier: STANDARD, model: deepseek-flash}
+    """
+)
+
+REGISTRY_KIMI_WORKER = dedent(
+    """
+    workers:
+      - worker_id: kai
+        display_name: Kai
+        enabled: true
+        provider: kimi
+        backend: claude_code
+        capabilities: [development]
+        profiles:
+          standard: {quality_tier: STANDARD, model: kimi-for-coding}
+    """
+)
+
+
 class TestProviderComposition:
     def test_only_providers_of_enabled_workers_are_resolved(self, tmp_path: Path) -> None:
         registry = dedent(
@@ -216,6 +246,65 @@ class TestProviderComposition:
             assert rt.manager is not None
         # No probe was made just by opening.
         assert fake.probe_calls == 0
+
+    def test_deepseek_provider_resolves_when_api_key_is_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+        config = _write_project(tmp_path, registry=REGISTRY_DEEPSEEK_WORKER)
+        # provider_adapters intentionally omitted: exercises the real
+        # _PROVIDER_ADAPTER_FACTORIES table, not an injected fake.
+        with ProjectRuntime.open(config, clock=lambda: UTC_T0) as rt:
+            assert rt.manager is not None
+
+    def test_deepseek_provider_fails_closed_without_api_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+        config = _write_project(tmp_path, registry=REGISTRY_DEEPSEEK_WORKER)
+        with pytest.raises(ProviderConfigurationError, match="deepseek"):
+            ProjectRuntime.open(config, clock=lambda: UTC_T0)
+
+    def test_kimi_provider_resolves_when_api_key_is_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+        config = _write_project(tmp_path, registry=REGISTRY_KIMI_WORKER)
+        with ProjectRuntime.open(config, clock=lambda: UTC_T0) as rt:
+            assert rt.manager is not None
+
+    def test_kimi_provider_fails_closed_without_api_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("KIMI_API_KEY", raising=False)
+        config = _write_project(tmp_path, registry=REGISTRY_KIMI_WORKER)
+        with pytest.raises(ProviderConfigurationError, match="kimi"):
+            ProjectRuntime.open(config, clock=lambda: UTC_T0)
+
+    def test_missing_deepseek_key_does_not_affect_an_anthropic_only_project(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+        monkeypatch.delenv("KIMI_API_KEY", raising=False)
+        config = _write_project(tmp_path, registry=REGISTRY_TWO_WORKERS)
+        with ProjectRuntime.open(
+            config, clock=lambda: UTC_T0, provider_adapters={"anthropic": _FakeAdapter()}
+        ) as rt:
+            assert rt.manager is not None
+
+    def test_missing_key_failure_still_closes_partially_opened_stores(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+        config = _write_project(tmp_path, registry=REGISTRY_DEEPSEEK_WORKER, state_dir="state")
+        with pytest.raises(ProviderConfigurationError):
+            ProjectRuntime.open(config, clock=lambda: UTC_T0)
+
+        from orchestrator.project_runtime import STORE_FILENAMES
+        from orchestrator.project_state import ProjectStateStore
+
+        store = ProjectStateStore(config.project.state_dir / STORE_FILENAMES["project"], clock=lambda: UTC_T0)
+        store.close()
 
 
 class TestBootstrapIdempotency:
