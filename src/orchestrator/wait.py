@@ -207,14 +207,24 @@ def _decode_row(row: sqlite3.Row) -> WaitRecord:
 
 
 class WaitStore:
-    """Synchronous, sqlite3-backed store for durable WaitRecords."""
+    """Synchronous, sqlite3-backed store for durable WaitRecords.
 
-    def __init__(self, db_path: str | Path, *, clock: Clock | None = None) -> None:
+    ``read_only=True`` (``aido status``'s read path — see
+    ``orchestrator.project_runtime.ProjectStatusReader``) opens via a real
+    SQLite read-only URI connection, never runs ``CREATE TABLE``, and
+    never creates a missing database file.
+    """
+
+    def __init__(self, db_path: str | Path, *, clock: Clock | None = None, read_only: bool = False) -> None:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
-        self._conn = sqlite3.connect(str(db_path))
+        if read_only:
+            self._conn = sqlite3.connect(f"{Path(db_path).resolve().as_uri()}?mode=ro", uri=True)
+        else:
+            self._conn = sqlite3.connect(str(db_path))
         self._conn.row_factory = sqlite3.Row
-        with self._conn:
-            self._conn.execute(_CREATE_TABLE_SQL)
+        if not read_only:
+            with self._conn:
+                self._conn.execute(_CREATE_TABLE_SQL)
 
     def close(self) -> None:
         self._conn.close()

@@ -285,15 +285,29 @@ def _decode_row(row: sqlite3.Row) -> ExecutionRecord:
 
 
 class ExecutionStore:
-    """Synchronous, sqlite3-backed audit store for ExecutionRecord."""
+    """Synchronous, sqlite3-backed audit store for ExecutionRecord.
 
-    def __init__(self, db_path: str | Path, *, clock: Clock | None = None) -> None:
+    ``read_only=True`` (``aido status``'s read path — see
+    ``orchestrator.project_runtime.ProjectStatusReader``) opens via a real
+    SQLite read-only URI connection, never runs ``CREATE TABLE`` nor the
+    ``permission_mode`` migration, and never creates a missing database
+    file. A pre-P12 database opened this way keeps its real, historical
+    schema — ``_decode_row``'s existing ``"permission_mode" in row_keys``
+    check already decodes that honestly as ``None``, never a fabricated
+    ``"standard"``/``"unrestricted"``.
+    """
+
+    def __init__(self, db_path: str | Path, *, clock: Clock | None = None, read_only: bool = False) -> None:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
-        self._conn = sqlite3.connect(str(db_path))
+        if read_only:
+            self._conn = sqlite3.connect(f"{Path(db_path).resolve().as_uri()}?mode=ro", uri=True)
+        else:
+            self._conn = sqlite3.connect(str(db_path))
         self._conn.row_factory = sqlite3.Row
-        with self._conn:
-            self._conn.execute(_CREATE_TABLE_SQL)
-            self._ensure_permission_mode_column()
+        if not read_only:
+            with self._conn:
+                self._conn.execute(_CREATE_TABLE_SQL)
+                self._ensure_permission_mode_column()
 
     def _ensure_permission_mode_column(self) -> None:
         """Idempotent migration for a v0.1.1-era database created before

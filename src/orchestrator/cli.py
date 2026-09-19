@@ -50,7 +50,7 @@ from orchestrator.project_runtime import (
     ConfigRuntimeConflictError,
     ProjectRuntime,
     ProjectRuntimeError,
-    STORE_FILENAMES,
+    ProjectStatusReader,
 )
 from orchestrator.project_state import UnknownMVPError, WorkItemStatus
 from orchestrator.worker_registry import WorkerRegistryError
@@ -234,30 +234,25 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 # --- aido status -----------------------------------------------------------
 
 def _cmd_status(args: argparse.Namespace) -> int:
+    """STRICTLY READ-ONLY: never creates ``state_dir`` or any store file,
+    never runs ``CREATE TABLE``/a migration, never writes a row — see
+    ``ProjectStatusReader``. Never uses the write-capable
+    ``ProjectRuntime.open()`` composition (no QuotaManager/
+    ProviderAdapter/WorkerSelector/RalphExecutionEngine/InternalQAEngine/
+    GitGovernanceService are ever instantiated for this command)."""
     config = _load_config(args.config)
     if config is None:
         return 1
 
-    project_db = config.project.state_dir / STORE_FILENAMES["project"]
-    if not project_db.exists():
+    reader = ProjectStatusReader.open(config)
+    if reader is None:
         print("NOT_INITIALIZED")
         print("Run `aido run` to initialize and start this project.")
         return 0
 
     try:
-        runtime = ProjectRuntime.open(
-            config,
-            clock=getattr(args, "clock", None),
-            provider_adapters=getattr(args, "provider_adapters", None),
-            subprocess_runner=getattr(args, "subprocess_runner", None),
-        )
-    except ProjectRuntimeError as exc:
-        print(f"aido status: FAIL — {exc}", file=sys.stderr)
-        return 1
-
-    try:
         try:
-            project = runtime.project_store.get_project(config.project.id)
+            project = reader.project_store.get_project(config.project.id)
         except Exception:
             print("NOT_INITIALIZED")
             print("Run `aido run` to initialize and start this project.")
@@ -265,7 +260,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
         print(f"project: {project.project_id} ({project.name})")
         try:
-            mvp = runtime.project_store.get_mvp(config.mvp.id)
+            mvp = reader.project_store.get_mvp(config.mvp.id)
             print(f"mvp: {mvp.mvp_id} status={mvp.status.value}")
         except UnknownMVPError:
             print(f"mvp: {config.mvp.id} (not yet created)")
@@ -275,9 +270,9 @@ def _cmd_status(args: argparse.Namespace) -> int:
             return 0
 
         work_items = sorted(
-            runtime.project_store.list_work_items(config.mvp.id), key=lambda w: w.work_item_id
+            reader.project_store.list_work_items(config.mvp.id), key=lambda w: w.work_item_id
         )
-        waits = runtime.wait_store.list_for_mvp(config.mvp.id)
+        waits = reader.list_waits_for_mvp(config.mvp.id)
 
         counts = {status: 0 for status in WorkItemStatus}
         for wi in work_items:
@@ -287,7 +282,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
                 line += f" (blocked_reason={wi.blocked_reason})"
             print(line)
 
-            executions = runtime.execution_store.list_for_task(wi.work_item_id)
+            executions = reader.list_executions_for_work_item(wi.work_item_id)
             if executions:
                 last = executions[-1]
                 print(
@@ -309,7 +304,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
             print(f"  {status.value}: {counts[status]}")
         return 0
     finally:
-        runtime.close()
+        reader.close()
 
 
 # --- aido run --------------------------------------------------------------
