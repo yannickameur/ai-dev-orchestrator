@@ -1,6 +1,6 @@
 # Status
 
-Snapshot factuel court — mis à jour le 2026-09-18. Pas un journal ;
+Snapshot factuel court — mis à jour le 2026-09-19. Pas un journal ;
 l'historique détaillé daté (Slices, incidents, diagnostics) vit dans
 l'historique Git (`git log`) et dans les rapports sous `docs/reports/`.
 Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
@@ -18,7 +18,8 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   workers, 3 providers — `alice`/`bob` (anthropic/claude_code),
   `victor`/`oscar` (openai/codex), `milo`/`juno` (mistral/vibe,
   `development` uniquement).
-- **Tests offline** : 1097 PASS (1048 avant + 49 pour P1 — snapshot
+- **Tests offline** : 1105 PASS (1097 avant + 8 pour le correctif
+  read-only de `aido status` — snapshot
   courant, voir §11 de `ROADMAP.md` pour la méthode de comptage ; ce
   nombre n'est pas un invariant permanent).
 - **Roman Numerals** (pilote externe) : `PASS`.

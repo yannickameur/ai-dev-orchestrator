@@ -437,14 +437,28 @@ def _find_cycle_members(work_items: dict[str, WorkItem]) -> set[str]:
 
 
 class ProjectStateStore:
-    """Synchronous, sqlite3-backed store for Project/MVP/WorkItem state."""
+    """Synchronous, sqlite3-backed store for Project/MVP/WorkItem state.
 
-    def __init__(self, db_path: str | Path, *, clock: Clock | None = None) -> None:
+    ``read_only=True`` (``aido status``'s own read path — see
+    ``orchestrator.project_runtime.ProjectStatusReader``) opens the
+    database file via a real SQLite read-only URI connection
+    (``mode=ro``), never ``CREATE TABLE``/migrates anything, and never
+    creates a missing database file — SQLite itself raises rather than
+    silently creating one. Any write method invoked on a read-only
+    connection fails naturally (SQLite refuses the write at the driver
+    level). Normal, writable callers (``aido run``) are unaffected.
+    """
+
+    def __init__(self, db_path: str | Path, *, clock: Clock | None = None, read_only: bool = False) -> None:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
-        self._conn = sqlite3.connect(str(db_path))
+        if read_only:
+            self._conn = sqlite3.connect(f"{Path(db_path).resolve().as_uri()}?mode=ro", uri=True)
+        else:
+            self._conn = sqlite3.connect(str(db_path))
         self._conn.row_factory = sqlite3.Row
-        with self._conn:
-            self._conn.executescript(_CREATE_TABLES_SQL)
+        if not read_only:
+            with self._conn:
+                self._conn.executescript(_CREATE_TABLES_SQL)
 
     def close(self) -> None:
         self._conn.close()

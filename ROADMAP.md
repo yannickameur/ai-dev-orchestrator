@@ -41,8 +41,8 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - **v0.1.1** — **PUBLIÉE**, première release publique open source.
 - **MVP 0.1** : `DONE` (contrat d'acceptation : `MVP_SPEC.yaml` v4).
 - **Phase 1** : `DONE`.
-- Suite de tests offline : **1097 PASS** (1048 avant + 49 pour P1 — voir
-  §11 et docs/status.md pour le détail).
+- Suite de tests offline : **1105 PASS** (1097 avant + 8 pour le correctif
+  read-only de `aido status` — voir §11 et docs/status.md pour le détail).
 - **P12 (format de configuration de projet public + mode de permission
   d'exécution des workers) : `DONE`** — voir §10 et `docs/PROJECT_CONFIG.md`.
   **P1 (CLI publique `aido`) : `DONE`** — `aido init/validate/run/status`,

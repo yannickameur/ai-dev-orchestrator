@@ -311,3 +311,77 @@ class ProjectRuntime:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+
+@dataclass
+class ProjectStatusReader:
+    """``aido status``'s own, STRICTLY READ-ONLY view of a project's
+    persisted runtime state.
+
+    Deliberately not ``ProjectRuntime``: status needs none of
+    ``ProjectRuntime``'s write-capable composition (no state_dir
+    creation, no store CREATE TABLE/migration, no
+    ``validation_store.set_project_commands(...)`` synchronization, no
+    ``QuotaManager``/``ProviderAdapter``/``WorkerSelector``/
+    ``RalphExecutionEngine``/``InternalQAEngine``/``GitGovernanceService``
+    — none of those are needed to read already-persisted state). Opens
+    only the three stores status actually shows: project/MVP/WorkItems,
+    execution history, waits — never ``HandoffStore``/``ValidationStore``/
+    ``QARunStore``/``GitWorkItemStore``.
+
+    Every store is opened via a real SQLite read-only URI connection
+    (``read_only=True``) — never creates a missing database file (SQLite
+    itself raises), never runs a migration, and a write attempted through
+    one of these connections fails at the SQLite driver level, not merely
+    "by convention".
+    """
+
+    project_store: ProjectStateStore
+    execution_store: ExecutionStore
+    wait_store: WaitStore
+
+    @classmethod
+    def open(cls, config: ProjectConfig) -> "ProjectStatusReader | None":
+        """Returns ``None`` — never raises, never creates anything — when
+        this project's runtime state has never been initialized (no
+        ``state_dir``, or no ``project.sqlite3`` in it yet): the caller
+        reports ``NOT_INITIALIZED``. Missing ``executions.sqlite3``/
+        ``waits.sqlite3`` (should not normally happen once
+        ``project.sqlite3`` exists, since ``ProjectRuntime.open`` always
+        creates all three together) are tolerated as "nothing recorded
+        yet" rather than failing status."""
+        state_dir = config.project.state_dir
+        project_db = state_dir / STORE_FILENAMES["project"]
+        if not project_db.is_file():
+            return None
+
+        project_store = ProjectStateStore(project_db, read_only=True)
+
+        execution_db = state_dir / STORE_FILENAMES["executions"]
+        execution_store = (
+            ExecutionStore(execution_db, read_only=True) if execution_db.is_file() else None
+        )
+
+        wait_db = state_dir / STORE_FILENAMES["waits"]
+        wait_store = WaitStore(wait_db, read_only=True) if wait_db.is_file() else None
+
+        return cls(project_store=project_store, execution_store=execution_store, wait_store=wait_store)
+
+    def close(self) -> None:
+        self.project_store.close()
+        if self.execution_store is not None:
+            self.execution_store.close()
+        if self.wait_store is not None:
+            self.wait_store.close()
+
+    def list_executions_for_work_item(self, work_item_id: str) -> list:
+        return self.execution_store.list_for_task(work_item_id) if self.execution_store is not None else []
+
+    def list_waits_for_mvp(self, mvp_id: str) -> list:
+        return self.wait_store.list_for_mvp(mvp_id) if self.wait_store is not None else []
+
+    def __enter__(self) -> "ProjectStatusReader":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
