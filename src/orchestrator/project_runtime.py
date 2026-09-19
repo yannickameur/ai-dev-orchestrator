@@ -153,7 +153,7 @@ def resolve_provider_adapters(providers: set[str]) -> dict[str, ProviderAdapter]
     """Builds one real provider adapter per name in ``providers`` from the
     explicit factory table above. Public (P13, ROADMAP.md): also the
     primitive ``orchestrator.engine.OrchestratorEngine.probe_workers()``
-    reuses for an explicit, on-demand provider probe — never a second,
+    reuses for an explicit, on-demand provider probe, never a second,
     parallel way to resolve a provider adapter."""
     adapters: dict[str, ProviderAdapter] = {}
     for provider in sorted(providers):
