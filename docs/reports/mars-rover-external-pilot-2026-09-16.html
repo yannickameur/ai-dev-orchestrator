@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mars Rover external pilot — 2026-09-16</title>
+<style>
+body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; margin: 0; padding: 16px;
+       background: #f6f8fa; color: #1f2328; }
+.container { max-width: 1000px; margin: 0 auto; }
+h1 { font-size: 1.4em; margin-bottom: 4px; }
+h2 { font-size: 1.15em; margin-top: 32px; border-bottom: 1px solid #d0d7de; padding-bottom: 4px; }
+h3 { font-size: 1em; margin-top: 20px; }
+.status-badge { display: inline-block; padding: 4px 10px; border-radius: 6px; color: #fff; font-weight: 600; }
+.summary { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 12px 16px; margin: 12px 0; }
+table { border-collapse: collapse; width: 100%; margin: 8px 0 16px 0; background: #fff; }
+th, td { border: 1px solid #d0d7de; padding: 6px 8px; text-align: left; font-size: 0.85em; word-break: break-word; }
+th { background: #f6f8fa; }
+.meta { color: #57606a; font-size: 0.85em; }
+.refs { color: #57606a; font-size: 0.8em; }
+.empty { color: #57606a; font-style: italic; }
+.na { color: #9a6700; font-style: italic; }
+code { background: #eef1f4; padding: 1px 4px; border-radius: 3px; font-size: 0.9em; }
+.pass { color: #1a7f37; font-weight: 600; }
+.fail { color: #cf222e; font-weight: 600; }
+.blocked { color: #9a6700; font-weight: 600; }
+@media (max-width: 700px) { table, thead, tbody, th, td, tr { display: block; } th { display: none; }
+  td { border: none; padding: 2px 0; } td::before { content: attr(data-label) ": "; font-weight: 600; } }
+</style>
+</head>
+<body><div class="container">
+
+<h1>Mars Rover external pilot — MVP 1</h1>
+<p><span class="status-badge" style="background:#9a6700">INCOMPLETE</span> &nbsp; two real attempts, same real-agent behavior blocked by governance both times</p>
+<p class="meta">generated_at=2026-09-16T14:00:00Z (approx, from real store timestamps below) · target=~/projects/mars-rover-kata · control_plane=~/projects/ai-dev-orchestrator</p>
+
+<h2>1. Pilot Summary</h2>
+<table>
+<tr><th>Project</th><td>mars-rover-kata (external, real)</td></tr>
+<tr><th>Spec</th><td>~/projects/mars-rover-kata/SPEC.md (unmodified, approved)</td></tr>
+<tr><th>Roadmap</th><td>~/projects/mars-rover-kata/ROADMAP.md (unmodified, approved)</td></tr>
+<tr><th>Run id (this report)</th><td>mars-rover-pilot-run2-20260916T133957Z</td></tr>
+<tr><th>Prior run (superseded, evidence archived)</th><td>run1 (no id assigned — pre-dates the pilot_run_id convention), see ~/projects/pilot-evidence/mars-rover-run1-failed/</td></tr>
+<tr><th>Date</th><td>2026-09-16</td></tr>
+<tr><th>Global result</th><td class="blocked">INCOMPLETE</td></tr>
+<tr><th>Target HEAD before pilot (fresh baseline)</th><td><code>62538bd9abeabef4a790d7c5074ef5997e4a36be</code></td></tr>
+<tr><th>Target main HEAD at end of run2</th><td><code>62538bd9abeabef4a790d7c5074ef5997e4a36be</code> (unchanged — no merge ever happened)</td></tr>
+<tr><th>WorkItems</th><td>2 (WI-1, WI-2) — exactly as approved in ROADMAP.md, no redecomposition</td></tr>
+<tr><th>Merges completed</th><td>0</td></tr>
+<tr><th>Baseline pytest (fresh target, before pilot)</th><td>1 passed</td></tr>
+<tr><th>Latest real pytest result observed (Quality Gate, WI-1, mid-run)</th><td>34 passed (real venv, real subprocess, git_sha=<code>e58cf176</code>)</td></tr>
+</table>
+
+<h2>2. Product Result</h2>
+<p class="empty">No acceptance criterion can be certified PASS: WI-1 never reached an APPROVED review, Final QA Verification, or a governed merge — the SPEC.md Definition of Done requires all of these. The real Quality Gate did observe all 34 tests in the repository passing at the moment it ran (evidence below), which is consistent with WI-1's functional behaviour being correct, but this is evidence at the Quality Gate stage only, never a substitute for the missing review/Final QA/merge steps. No feature is presented as accepted that wasn't actually governed end to end.</p>
+<table>
+<tr><th>WorkItem</th><th>Criterion</th><th>Status</th><th>Evidence</th></tr>
+<tr><td>WI-1</td><td>(all 10 acceptance criteria from ROADMAP.md)</td><td class="blocked">UNVERIFIED (governance-blocked)</td><td>Quality Gate observed 34/34 tests passing at <code>e58cf176</code>, and QA Test Authoring returned verdict PASS — but WI-1 never reached independent review approval, Final QA Verification, or merge. Per SPEC.md's own Definition of Done, none of this counts as an accepted criterion.</td></tr>
+<tr><td>WI-2</td><td>(all 11 acceptance criteria from ROADMAP.md)</td><td class="blocked">NOT STARTED</td><td>WorkItem never left <code>planned</code>/moved straight to <code>blocked</code> (dependency on WI-1) — no development execution was ever dispatched for WI-2, in either attempt.</td></tr>
+</table>
+
+<h2>3. WorkItem Timeline (run2, all timestamps real, UTC)</h2>
+<h3>WI-1</h3>
+<table>
+<tr><th>Stage</th><th>Start</th><th>End</th><th>Duration</th><th>Worker</th><th>Provider/Model</th><th>Status</th><th>SHA before → after</th></tr>
+<tr><td>Dev complexity estimation</td><td>13:40:00.087</td><td>13:40:44.417</td><td>44.3s</td><td>alice</td><td>anthropic/claude_code (haiku)</td><td class="pass">succeeded</td><td><code>62538bd9</code> → <code>cfcde076</code> (noise)</td></tr>
+<tr><td>Development</td><td>13:40:44.441</td><td>13:41:57.372</td><td>72.9s</td><td>alice</td><td>anthropic/claude_code (haiku)</td><td class="pass">succeeded</td><td><code>cfcde076</code> → <code>482a49bc</code> (incl. real commit <code>932b1ec</code> "feat: implement WI-1 rover movement and rotation")</td></tr>
+<tr><td>QA complexity estimation</td><td>13:41:57.380</td><td>13:43:07.238</td><td>69.9s</td><td>alice</td><td>anthropic/claude_code (haiku)</td><td class="pass">succeeded</td><td><code>482a49bc</code> → <code>6fb4247a</code> (noise)</td></tr>
+<tr><td>QA Test Authoring</td><td>13:43:07.851</td><td>13:43:58.956</td><td>51.1s</td><td>victor</td><td>openai/codex (gpt-5.6-terra)</td><td class="pass">succeeded — verdict PASS</td><td><code>6fb4247a</code> → <code>e58cf176</code> (existing coverage judged sufficient — no new test committed, only Ralph housekeeping)</td></tr>
+<tr><td>Quality Gate</td><td>13:43:59.127</td><td>13:43:59.272</td><td>0.15s</td><td>—</td><td>QualityGateRunner (real subprocess)</td><td class="pass">passed — 34/34 tests</td><td>at <code>e58cf176</code></td></tr>
+<tr><td>Review complexity estimation</td><td>13:44:01.359</td><td>13:45:03.216</td><td>61.9s</td><td>alice</td><td>anthropic/claude_code (haiku)</td><td class="pass">succeeded</td><td><code>e58cf176</code> → <code>97a295bc</code> (noise)</td></tr>
+<tr><td>Independent Review</td><td>13:45:03.226</td><td>13:47:35.913</td><td>152.7s</td><td>victor</td><td>openai/codex (gpt-5.6-terra)</td><td class="blocked">execution failed (exit_code=2) — governance: workspace not read-only</td><td><code>97a295bc</code> → <code>97a295bc</code> (no commit — but real, uncommitted tracked edits left in the working tree, see §7)</td></tr>
+<tr><td>Final QA Verification</td><td colspan="6" class="empty">never reached</td></tr>
+<tr><td>Merge</td><td colspan="6" class="empty">never reached</td></tr>
+</table>
+<h3>WI-2</h3>
+<p class="empty">No executions of any kind — dependency on WI-1 never satisfied.</p>
+
+<h2>4. AI Usage</h2>
+<table>
+<tr><th>WorkItem</th><th>Stage</th><th>Worker</th><th>Model</th><th>Reasoning</th><th>Duration</th><th>Input tokens</th><th>Output tokens</th><th>Cache tokens</th><th>Thinking tokens</th><th>Usage availability</th></tr>
+<tr><td>WI-1</td><td>dev estimation</td><td>alice</td><td>haiku</td><td>(none)</td><td>44.3s</td><td colspan="4" class="na">NOT_AVAILABLE</td><td class="na">see reason below</td></tr>
+<tr><td>WI-1</td><td>development</td><td>alice</td><td>haiku</td><td>(none)</td><td>72.9s</td><td colspan="4" class="na">NOT_AVAILABLE</td><td class="na">see reason below</td></tr>
+<tr><td>WI-1</td><td>QA estimation</td><td>alice</td><td>haiku</td><td>(none)</td><td>69.9s</td><td colspan="4" class="na">NOT_AVAILABLE</td><td class="na">see reason below</td></tr>
+<tr><td>WI-1</td><td>QA Test Authoring</td><td>victor</td><td>gpt-5.6-terra</td><td>low</td><td>51.1s</td><td colspan="4" class="na">NOT_AVAILABLE</td><td class="na">see reason below</td></tr>
+<tr><td>WI-1</td><td>review estimation</td><td>alice</td><td>haiku</td><td>(none)</td><td>61.9s</td><td colspan="4" class="na">NOT_AVAILABLE</td><td class="na">see reason below</td></tr>
+<tr><td>WI-1</td><td>review</td><td>victor</td><td>gpt-5.6-terra</td><td>medium</td><td>152.7s</td><td colspan="4" class="na">NOT_AVAILABLE</td><td class="na">see reason below</td></tr>
+</table>
+<p><strong>reason (all rows)</strong>: <code>orchestrator.execution_store.ExecutionRecord</code> has no token-usage fields in this version of ai-dev-orchestrator (no <code>input_tokens</code>/<code>output_tokens</code>/<code>cache_*</code> columns exist at all — verified directly against the schema). Ralph's own raw <code>iteration.summary</code> events (read directly from <code>.ralph/events-*.jsonl</code> in the target repo) do carry token-shaped fields, but every single one, across every iteration of every execution in both pilot attempts, reports exactly <code>input_tokens=0, output_tokens=0, cache_read_tokens=0, cache_write_tokens=0, cost_usd=0.0</code> — a known-unreliable counter per explicit instruction for this pilot, never presented as verified real consumption. No value is estimated from text length, cost, duration, or quota percentage.</p>
+<h3>Aggregation by AI/model</h3>
+<table>
+<tr><th>Worker</th><th>Provider/model</th><th>Executions</th><th>Wall time (sum)</th><th>Token usage</th></tr>
+<tr><td>alice</td><td>anthropic/claude_code (haiku)</td><td>4</td><td>249.0s</td><td class="na">NOT_AVAILABLE (see reason above)</td></tr>
+<tr><td>victor</td><td>openai/codex (gpt-5.6-terra)</td><td>2</td><td>203.8s</td><td class="na">NOT_AVAILABLE (see reason above)</td></tr>
+</table>
+
+<h2>5. QA</h2>
+<table>
+<tr><th>Phase</th><th>WorkItem</th><th>Engine</th><th>Verdict</th><th>Reason</th></tr>
+<tr><td>test_authoring</td><td>WI-1</td><td>internal (real InternalQAEngine)</td><td class="pass">PASS</td><td>all mandatory QA evidence present and passing for the current head SHA</td></tr>
+<tr><td>final_verification</td><td>WI-1</td><td>—</td><td class="empty">never reached</td><td>WorkItem was BLOCKED at review, before Final QA Verification could start</td></tr>
+</table>
+<p>Tests added by QA Authoring: none — the worker judged existing coverage already sufficient for WI-1's scope and committed nothing beyond Ralph's own housekeeping. Quality Gate: 1 real run, 34/34 passed, real <code>.venv/bin/python -m pytest</code> subprocess, <code>shell=False</code>, at <code>e58cf176</code>. Regressions: none observed. Protected-test status: not applicable (no protected paths configured for this pilot).</p>
+
+<h2>6. Reviews</h2>
+<table>
+<tr><th>WorkItem</th><th>Reviewer</th><th>Reviewed SHA</th><th>Verdict</th><th>Findings</th><th>Duration</th><th>Read-only proof</th></tr>
+<tr><td>WI-1</td><td>victor (openai/codex)</td><td><code>97a295bc</code></td><td class="blocked">ERROR — governance violation (never a usable APPROVED/REJECTED)</td><td>none recorded — the verdict was never consulted once the workspace-integrity check found a violation</td><td>152.7s</td><td>Independently re-verified by <code>MVPManager._verify_workspace_matches</code> against real <code>git diff</code>/<code>git status</code> facts (never the worker's self-report) — found <code>src/mars_rover/__init__.py</code> and <code>tests/test_baseline.py</code> modified, uncommitted, real content (obstacle handling + a public <code>simulate()</code> function — WI-2's scope, explicitly out of bounds for WI-1's review, per the injected scope preamble). <code>git_sha_reviewed</code> stays bound to <code>97a295bc</code>, the SHA actually in front of the reviewer — never reattributed.</td></tr>
+</table>
+
+<h2>7. Git Governance</h2>
+<table>
+<tr><th>WorkItem</th><th>Work branch</th><th>Base SHA</th><th>Governed HEAD (at block time)</th><th>Merge eligibility</th><th>Merged SHA</th></tr>
+<tr><td>WI-1</td><td>work/wi-1</td><td><code>cfcde076</code></td><td><code>97a295bc</code></td><td>never computed — WorkItem BLOCKED before <code>_maybe_finalize_git</code></td><td>none</td></tr>
+<tr><td>WI-2</td><td>(never prepared)</td><td>—</td><td>—</td><td>—</td><td>none</td></tr>
+</table>
+<p>Working-tree cleanliness assertion (the fix under test in this pilot): <code>MVPManager._verify_workspace_matches(workspace, "97a295bc...")</code> found real, non-noise dirt (2 tracked files) — correctly refused to let the review's verdict be used, and the WorkItem was moved to <code>BLOCKED</code> instead of silently continuing toward merge (as happened, uncaught, in run1).</p>
+
+<h2>8. Rework / Wait / Recovery</h2>
+<table>
+<tr><th>Mechanism</th><th>Count</th><th>Reason(s)</th><th>Total duration</th></tr>
+<tr><td>Rework cycles</td><td>0</td><td>—</td><td>0s</td></tr>
+<tr><td>Quota waits</td><td>0</td><td>both providers stayed available throughout run2</td><td>0s</td></tr>
+<tr><td>Recovery (orphaned execution)</td><td>0</td><td>—</td><td>0s</td></tr>
+</table>
+<p>Quota was, however, the reason run2 itself could not start immediately after the governance fix was committed — the assistant session polled <code>reset_at</code> (never fixed-interval polling) and waited for both providers' 5h windows to reset before launching run2. That wait happened at the session/scheduling level, outside MVPManager's own WAIT mechanism (which was never triggered during run2 itself, since quota was available for its whole duration).</p>
+
+<h2>9. Scope Control</h2>
+<ul>
+<li>No wrap-around behaviour: not applicable — WI-1's own delivered code (<code>932b1ec</code>) implements only rotation/movement, no wrap-around, confirmed by reading the diff.</li>
+<li>No feature outside SPEC.md/ROADMAP.md by the <em>developer</em> or <em>QA author</em>: confirmed — the WI-1 development commit and the QA Test Authoring step both stayed within WI-1's scope.</li>
+<li>No feature outside spec by the <em>reviewer</em>: <span class="fail">VIOLATED, twice (run1 and run2)</span> — despite an explicit, injected instruction forbidding it, the real reviewer (victor/openai/codex) implemented obstacle handling and a public <code>simulate()</code> function (WI-2's scope) during WI-1's review, in both independent attempts.</li>
+<li>No external dependency added: confirmed — <code>pyproject.toml</code> untouched, only <code>pytest</code> installed.</li>
+<li>No solution recovered from the internet: cannot be proven by git facts alone, but the delivered WI-1 implementation is small, idiomatic, and consistent with a from-scratch solution; no worker instructions permitted or requested external lookup, and the harness itself never performed one.</li>
+<li>WI-2 never implemented during WI-1 by the <em>developer</em>: confirmed by git history — <code>932b1ec</code> only touches rover movement/rotation, no obstacle/simulate code. WI-2 scope only ever appeared via the reviewer's out-of-scope, uncommitted, blocked edits (§6) — never through a legitimate development execution, and never merged.</li>
+</ul>
+
+<h2>10. Incidents</h2>
+<ul>
+<li><strong>run2 incident</strong>: WI-1 review execution (victor/openai/codex, execution_id <code>3f6348ef0dc54bd4939fcd4617422c79</code>) left real, uncommitted, non-noise changes in <code>src/mars_rover/__init__.py</code> and <code>tests/test_baseline.py</code> (WI-2 scope, explicitly forbidden by the injected prompt). Correctly detected by <code>MVPManager._verify_workspace_matches</code> (new governance invariant) and converted to a graceful <code>BLOCKED</code> WorkItem state — no crash, no silent merge, no false PASS.</li>
+</ul>
+<p class="meta">Appendix — run1 (superseded): the same class of behavior (reviewer writing WI-2's obstacle/simulate code during WI-1's review) occurred, but at the time no governance check existed to catch it — the pipeline proceeded through a fabricated-looking "review approved" all the way to <code>merge()</code>, which then crashed with an unhandled <code>GitCommandError</code> on `git switch main` (uncommitted files would be overwritten). That crash is what led to the governance fix committed before run2 (commit <code>c8ad2837416a727ed35a7890e5ce1d3194a6e876</code>, "Harden read-only review and workspace SHA integrity"). Run1's raw metrics are archived separately in <code>~/projects/pilot-evidence/mars-rover-run1-failed/</code> and are never mixed into this report's counts.</p>
+
+<h2>11. Final Assessment</h2>
+<ul>
+<li><strong>Does the requested kata work?</strong> WI-1's functional code (rotation/movement) appears correct — the real Quality Gate observed 34/34 tests passing against it. This was never independently confirmed by an approved review or Final QA Verification, so it cannot be certified as accepted.</li>
+<li><strong>Are all acceptance criteria satisfied?</strong> No — see §2. Nothing is certified; WI-2 was never attempted.</li>
+<li><strong>Did the orchestrator complete both WorkItems?</strong> No — WI-1 BLOCKED before merge (both attempts); WI-2 never started (either attempt).</li>
+<li><strong>Was DEV/QA/REVIEW independence respected?</strong> Partially, exactly as the current policy allows: Developer=alice, QA=victor, Reviewer=victor — Developer≠QA and Developer≠Reviewer were both enforced (mandatory, never relaxed), but QA≠Reviewer was <em>not</em> the case here (victor played both roles). This is not a bug: <code>WorkerSelectionPolicy</code> only <em>prefers</em> a distinct provider/worker between QA and review, it does not require one — with only two real workers configured (alice, victor), QA and review ended up assigned to the same worker. Independent of that, the REVIEWER's real behavior (writing functional code during review) violated the read-only spirit of its own role twice, which is exactly what the new governance invariant now catches structurally rather than relying on the worker's own discipline.</li>
+<li><strong>Did the workflow need human intervention?</strong> Yes — after run1's crash, a human decision was required to diagnose, fix ai-dev-orchestrator's governance, and restart the target from scratch. After run2's graceful BLOCKED outcome, human decision is again required on how to proceed (see below) — the orchestrator itself never attempted a blind retry in either case.</li>
+<li><strong>Total time (run2)</strong>: ~7 minutes 36 seconds of active execution (sum of the 6 stages in §3) plus normal quota-wait time before the run started (not part of MVP execution time).</li>
+<li><strong>Quota wait time (inside MVPManager)</strong>: 0s in run2 (both providers stayed available throughout).</li>
+<li><strong>Rework cycles</strong>: 0.</li>
+<li><strong>Token metrics known</strong>: none — see §4's <code>NOT_AVAILABLE</code> reason.</li>
+<li><strong>Token metrics unavailable</strong>: all of them, for every execution, in both attempts — <code>ExecutionRecord</code> has no token fields, and Ralph's own reported counters are uniformly zero.</li>
+</ul>
+
+</div></body>
+</html>

@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mars Rover External Pilot — RUN5 Report</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; max-width: 980px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; line-height: 1.5; }
+  h1 { border-bottom: 3px solid #2c3e50; padding-bottom: .3rem; }
+  h2 { margin-top: 2.5rem; border-bottom: 1px solid #ccc; padding-bottom: .2rem; color: #2c3e50; }
+  h3 { margin-top: 1.5rem; color: #34495e; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { border: 1px solid #ccc; padding: .4rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #f0f2f5; }
+  code, .mono { font-family: "SF Mono", Consolas, monospace; font-size: .85em; background: #f4f4f4; padding: .1rem .3rem; border-radius: 3px; }
+  .pass { color: #1a7f37; font-weight: 600; }
+  .fail { color: #c0392b; font-weight: 600; }
+  .na { color: #888; }
+  .badge { display: inline-block; padding: .2rem .6rem; border-radius: 4px; font-weight: 700; }
+  .badge-pass { background: #d4f4dd; color: #1a7f37; }
+  ul { margin-top: .3rem; }
+  .note { background: #fff8e1; border-left: 4px solid #f4b400; padding: .6rem 1rem; margin: 1rem 0; }
+</style>
+</head>
+<body>
+
+<h1>Mars Rover External Pilot — RUN5 Report</h1>
+<p><strong>Date:</strong> 2026-09-16 &nbsp;|&nbsp; <strong>Control plane:</strong> <code>~/projects/ai-dev-orchestrator</code> &nbsp;|&nbsp; <strong>Target:</strong> <code>~/projects/mars-rover-kata</code></p>
+<p><strong>pilot_run_id:</strong> <code>mars-rover-pilot-run5-20260916T171602Z</code> &nbsp;|&nbsp; <strong>Store directory:</strong> <code>/tmp/ai-dev-orchestrator-mars-rover-pilot-run5-20260916T171602Z-k6_qskmu</code></p>
+<p><span class="badge badge-pass">MVP_1_PILOT_STATUS: PASS</span></p>
+
+<h2>1. Executive Summary</h2>
+<p>RUN5 is the first fully successful end-to-end run of the Mars Rover external pilot. Both WorkItems (WI-1: movement/rotation, WI-2: obstacles + public API) went through the complete governed pipeline — Development → Isolated QA Test Authoring → Quality Gate → Isolated Review → Final QA Verification → Governed Merge — and both reached <code>COMPLETED</code> / <code>MERGED</code>. The final product test suite passes (52/52). <code>main</code> stayed clean throughout, with zero Ralph runtime artifacts ever tracked. One legitimate OpenAI quota wait occurred during WI-2's QA authoring phase (resolved via reprobe + resume, never a blind retry). No orchestrator bug was found during this run. A post-run check against CodingDojo's official Mars Rover page confirms all officially stated requirements are met; CodingDojo publishes no official reference solution for this kata, so no solution-level comparison was possible.</p>
+
+<h2>2. Pilot Configuration</h2>
+<table>
+<tr><th>Item</th><th>Value</th></tr>
+<tr><td>Control plane</td><td><code>~/projects/ai-dev-orchestrator</code>, HEAD <code>8497ba160b811f4da5b9d748faa72ff9f5f18d89</code> ("Isolate and govern QA authoring changes")</td></tr>
+<tr><td>Target project</td><td><code>~/projects/mars-rover-kata</code> — recreated entirely from scratch for RUN5 (local clone/reset only, no network)</td></tr>
+<tr><td>Governance policy</td><td><code>GitGovernancePolicy(auto_merge=True, base_branch="main")</code></td></tr>
+<tr><td>Runtime exclusion</td><td><code>ensure_runtime_exclusion</code> installed before any execution; <code>.git/info/exclude</code> contains <code>.ralph/</code></td></tr>
+<tr><td>Workers</td><td>alice (anthropic/claude_code, developer + estimator) · victor (openai/codex, qa_testing + reviewer)</td></tr>
+<tr><td>Quality gate command</td><td><code>&lt;target&gt;/.venv/bin/python -m pytest</code></td></tr>
+<tr><td>Max cycles</td><td>40 (never approached — both WIs completed within a few cycles)</td></tr>
+</table>
+
+<h2>3. Product Baseline</h2>
+<table>
+<tr><th>Item</th><th>Value</th></tr>
+<tr><td>Baseline commit</td><td><code>62538bd9abeabef4a790d7c5074ef5997e4a36be</code> ("Initialize Mars Rover kata pilot")</td></tr>
+<tr><td>Pre-flight <code>git status --short</code></td><td>clean</td></tr>
+<tr><td>Pre-flight <code>git rev-parse HEAD</code></td><td><code>62538bd9abeabef4a790d7c5074ef5997e4a36be</code> — matches baseline</td></tr>
+<tr><td>Pre-flight <code>git ls-files -- '.ralph/*'</code></td><td>empty</td></tr>
+<tr><td>Fresh <code>.venv</code> baseline pytest</td><td><span class="pass">1 passed</span></td></tr>
+</table>
+
+<h2>4. WI-1 Timeline</h2>
+<table>
+<tr><th>Stage</th><th>Started (UTC)</th><th>Finished (UTC)</th><th>Duration</th></tr>
+<tr><td>Dev estimation</td><td>17:16:05.892</td><td>17:17:03.118</td><td>57.2s</td></tr>
+<tr><td>Development</td><td>17:17:03.140</td><td>17:18:37.016</td><td>93.9s</td></tr>
+<tr><td>QA estimation</td><td>17:18:40.228</td><td>17:19:48.577</td><td>68.3s</td></tr>
+<tr><td>Isolated QA authoring</td><td>17:19:48.588</td><td>17:21:23.016</td><td>94.4s</td></tr>
+<tr><td>QA promotion</td><td colspan="3">none — no promotable change (H2 == H1)</td></tr>
+<tr><td>Quality Gate</td><td>17:21:23.168</td><td>17:21:23.297</td><td>0.13s (37 tests passed)</td></tr>
+<tr><td>Review estimation</td><td>17:21:26.849</td><td>17:22:18.358</td><td>51.5s</td></tr>
+<tr><td>Isolated review</td><td>17:22:18.374</td><td>17:25:06.459</td><td>168.1s</td></tr>
+<tr><td>Final QA Verification</td><td>17:25:06.472</td><td>17:25:06.611</td><td>0.14s</td></tr>
+<tr><td>Merge</td><td colspan="2">17:25:06.643</td><td>—</td></tr>
+<tr><td><strong>Total WI-1</strong></td><td colspan="2"></td><td><strong>540.75s (9m00.75s)</strong></td></tr>
+</table>
+
+<h2>5. WI-1 Development</h2>
+<ul>
+<li>Worker: <strong>alice</strong> (anthropic / claude_code / haiku)</li>
+<li>execution_id: <code>7bd6e33b6b7a44938556712eb6cbd020</code></li>
+<li>git_sha_before: <code>62538bd9abeabef4a790d7c5074ef5997e4a36be</code> → git_sha_after: <code>4493e28d799cce59c5a0a7027f6798a88da41396</code></li>
+<li>Real commit "Implement WI-1: core rover movement and rotation" — <code>src/mars_rover/__init__.py</code>, <code>tests/test_baseline.py</code></li>
+</ul>
+
+<h2>6. WI-1 QA Authoring (isolated + governed)</h2>
+<ul>
+<li>Worker: <strong>victor</strong> (openai / codex / gpt-5.6-terra, reasoning_effort=low)</li>
+<li>execution_id: <code>4eca796f587041ae9a77193e35ef4ae7</code></li>
+<li>Isolated QA workspace: a disposable, detached <code>git worktree</code> at exactly <code>4493e28d...</code> (H1) — the worker never ran in the governed target directly.</li>
+<li>Real git facts inside isolation: no allowed or forbidden change beyond H1 — the developer's own commit already included adequate regression coverage; QA authoring found nothing further to add.</li>
+<li>Worker self-report vs. Git: no mismatch (self-report and real git facts agree: no additional test needed).</li>
+<li>Promotion decision: <strong>nothing to promote</strong> — target legitimately stays at H1, no artificial commit created.</li>
+<li>Governed SHA after QA authoring: <code>4493e28d799cce59c5a0a7027f6798a88da41396</code> (unchanged, H2 == H1)</li>
+</ul>
+
+<h2>7. WI-1 Quality Gate</h2>
+<p>Command <code>.venv/bin/python -m pytest</code> run against SHA <code>4493e28d...</code>: <span class="pass">PASSED</span> — 37 tests passed.</p>
+
+<h2>8. WI-1 Review</h2>
+<ul>
+<li>Reviewer: <strong>victor</strong> (openai / codex / gpt-5.6-terra, reasoning_effort=low) — independent from developer (alice)</li>
+<li>execution_id: <code>fed964e0d60b44a8b21b746e6c56a50b</code></li>
+<li>Ran in an isolated, disposable git worktree at <code>4493e28d...</code> — never the governed target directly.</li>
+<li>Verdict: <span class="pass">APPROVED</span>, findings: none.</li>
+<li><code>git_sha_reviewed</code>: <code>4493e28d799cce59c5a0a7027f6798a88da41396</code> — matches the exact SHA reviewed; no isolation violation, no target contamination.</li>
+</ul>
+
+<h2>9. WI-1 Final QA</h2>
+<p>Phase <code>final_verification</code>, expected_head_sha <code>4493e28d...</code>: verdict <span class="pass">PASS</span> ("all mandatory QA evidence present and passing for the current head SHA").</p>
+
+<h2>10. WI-1 Merge</h2>
+<p>Real <code>git merge --ff-only</code> of <code>work/wi-1</code> into <code>main</code>. <strong>merged_sha: <code>4493e28d799cce59c5a0a7027f6798a88da41396</code></strong>, matching <code>current_head_sha</code>.</p>
+<div class="note"><strong>Special verification (required, run3/4/5 regression check) — immediately after WI-1's merge, before WI-2 started:</strong>
+<ul>
+<li><code>git status --short</code>: <span class="pass">clean</span></li>
+<li><code>git ls-files -- '.ralph/*'</code>: <span class="pass">empty</span></li>
+<li><code>git diff --name-only</code>: empty</li>
+<li><code>git rev-parse HEAD</code> (main): <code>4493e28d799cce59c5a0a7027f6798a88da41396</code> — matches merged_sha exactly</li>
+</ul>
+This confirms the run3 (runtime-artifact contamination) and run4 (uncommitted QA authoring change) bugs remain fixed.</div>
+
+<h2>11. WI-2 Timeline</h2>
+<table>
+<tr><th>Stage</th><th>Started (UTC)</th><th>Finished (UTC)</th><th>Duration</th></tr>
+<tr><td>Dev estimation</td><td>17:25:09.701</td><td>17:25:59.149</td><td>49.4s</td></tr>
+<tr><td>Development</td><td>17:25:59.169</td><td>17:27:25.175</td><td>86.0s</td></tr>
+<tr><td>QA estimation (1st attempt)</td><td>17:27:28.390</td><td>17:28:19.350</td><td>51.0s</td></tr>
+<tr><td>WAIT (QA_AUTHORING, quota_reset, openai)</td><td>17:28:19.351 (created)</td><td>20:02:27.374 (resolved)</td><td>2h34m08.0s wall-clock (no compute — see §21)</td></tr>
+<tr><td>QA estimation (resumed)</td><td>20:02:30.345</td><td>20:03:29.876</td><td>59.5s</td></tr>
+<tr><td>Isolated QA authoring</td><td>20:03:29.888</td><td>20:05:41.602</td><td>131.7s</td></tr>
+<tr><td>QA promotion</td><td colspan="3">none — no promotable change (H2 == H1)</td></tr>
+<tr><td>Quality Gate</td><td>20:05:41.760</td><td>20:05:41.893</td><td>0.13s (52 tests passed)</td></tr>
+<tr><td>Review estimation</td><td>20:05:45.355</td><td>20:07:00.237</td><td>74.9s</td></tr>
+<tr><td>Isolated review</td><td>20:07:00.251</td><td>20:09:58.778</td><td>178.5s</td></tr>
+<tr><td>Final QA Verification</td><td>20:09:58.792</td><td>20:09:58.933</td><td>0.14s</td></tr>
+<tr><td>Merge</td><td colspan="2">20:09:58.965</td><td>—</td></tr>
+<tr><td><strong>Total WI-2 (wall-clock, incl. wait)</strong></td><td colspan="2"></td><td><strong>2h44m49.3s</strong></td></tr>
+<tr><td><strong>Total WI-2 (compute-only, excl. wait)</strong></td><td colspan="2"></td><td><strong>641.2s (10m41.2s)</strong></td></tr>
+</table>
+
+<h2>12. WI-2 Development</h2>
+<ul>
+<li>Worker: <strong>alice</strong> (anthropic / claude_code / haiku)</li>
+<li>execution_id: <code>51811cb23ae445419e3339c617c334ad</code></li>
+<li>git_sha_before: <code>4493e28d799cce59c5a0a7027f6798a88da41396</code> → git_sha_after: <code>6bb935f3bb12f0c66426e838f0d6aad134e12871</code></li>
+<li>Real commit "Implement WI-2: obstacles and public simulator API" — obstacle checking, <code>simulate(start, obstacles, commands)</code> public API, regression tests.</li>
+</ul>
+
+<h2>13. WI-2 QA Authoring (isolated + governed)</h2>
+<ul>
+<li>Worker: <strong>victor</strong> (openai / codex / gpt-5.6-terra, reasoning_effort=low)</li>
+<li>execution_id: <code>e8a70cbd648540859b1cf56b17f510fd</code></li>
+<li>Isolated QA workspace: disposable detached worktree at exactly <code>6bb935f...</code> (H1).</li>
+<li>Real git facts inside isolation: no allowed/forbidden change — the developer's own WI-2 commit already covered obstacle handling and command-sequencing regressions per the acceptance criteria.</li>
+<li>Worker self-report vs. Git: no mismatch.</li>
+<li>Promotion decision: nothing to promote; governed SHA unchanged.</li>
+<li>Governed SHA after QA authoring: <code>6bb935f3bb12f0c66426e838f0d6aad134e12871</code> (H2 == H1)</li>
+</ul>
+
+<h2>14. WI-2 Quality Gate</h2>
+<p>Command <code>.venv/bin/python -m pytest</code> run against SHA <code>6bb935f...</code>: <span class="pass">PASSED</span> — 52 tests passed.</p>
+
+<h2>15. WI-2 Review</h2>
+<ul>
+<li>Reviewer: <strong>victor</strong> (openai / codex / gpt-5.6-terra, reasoning_effort=medium) — independent from developer (alice)</li>
+<li>execution_id: <code>eb8a64d4489540d59b0b0297d3ed4f4c</code></li>
+<li>Ran isolated at <code>6bb935f...</code>.</li>
+<li>Verdict: <span class="pass">APPROVED</span>, findings: none.</li>
+<li><code>git_sha_reviewed</code>: <code>6bb935f3bb12f0c66426e838f0d6aad134e12871</code> — exact match, no isolation violation.</li>
+</ul>
+
+<h2>16. WI-2 Final QA</h2>
+<p>Phase <code>final_verification</code>, expected_head_sha <code>6bb935f...</code>: verdict <span class="pass">PASS</span>.</p>
+
+<h2>17. WI-2 Merge</h2>
+<p>Real <code>git merge --ff-only</code> of <code>work/wi-2</code> into <code>main</code>. <strong>merged_sha: <code>6bb935f3bb12f0c66426e838f0d6aad134e12871</code></strong>, matching <code>current_head_sha</code>.</p>
+
+<h2>18. Final Product Test Results</h2>
+<p><code>.venv/bin/python -m pytest -v</code> on the final governed <code>main</code> (<code>6bb935f3bb12f0c66426e838f0d6aad134e12871</code>): <span class="pass">52 passed</span> in 0.03s. <code>git status --short</code>: clean. <code>git ls-files -- '.ralph/*'</code>: empty.</p>
+
+<h2>19. Scope Control</h2>
+<ul>
+<li>Only <code>src/mars_rover/__init__.py</code> and <code>tests/test_baseline.py</code> were ever modified as real product content across both WorkItems (confirmed via <code>git show --stat</code> on both commits) — plus the pre-existing <code>SPEC.md</code>/<code>ROADMAP.md</code>/<code>pyproject.toml</code>, untouched.</li>
+<li>No CLI, no HTTP API framework, no database/persistence, no UI, no extra dependency, no wrap-around behavior — matches SPEC.md's explicit constraints.</li>
+<li>Worker instructions for every role (developer/QA/reviewer) carried an explicit strict-scope preamble forbidding web search, external kata solutions, and out-of-WorkItem scope; this was enforced structurally (WI-2 depends on WI-1, evaluated only after WI-1 merged) and no violation was observed in either commit's diff.</li>
+<li>No web/network access occurred at any point <em>during</em> development, QA authoring, or review — the only web access in this entire run5 (§24) happened strictly after both merges, HEAD capture, and Final QA were complete.</li>
+</ul>
+
+<h2>20. Git Governance</h2>
+<table>
+<tr><th>Item</th><th>WI-1</th><th>WI-2</th></tr>
+<tr><td>work_branch</td><td><code>work/wi-1</code></td><td><code>work/wi-2</code></td></tr>
+<tr><td>base_sha</td><td><code>62538bd9...</code></td><td><code>4493e28d...</code></td></tr>
+<tr><td>current_head_sha</td><td><code>4493e28d...</code></td><td><code>6bb935f3...</code></td></tr>
+<tr><td>status</td><td>merged</td><td>merged</td></tr>
+<tr><td>merged_sha</td><td><code>4493e28d799cce59c5a0a7027f6798a88da41396</code></td><td><code>6bb935f3bb12f0c66426e838f0d6aad134e12871</code></td></tr>
+</table>
+<p>Runtime exclusion (<code>.git/info/exclude</code> containing <code>.ralph/</code>) remained installed and effective throughout; <code>git ls-files -- '.ralph/*'</code> was empty at every checkpoint (baseline, post-WI-1-merge, final).</p>
+
+<h2>21. Wait / Recovery / Rework</h2>
+<ul>
+<li><strong>Reworks: 0</strong> — both WorkItems completed on their first development/QA/review attempt.</li>
+<li><strong>Recovery events: 0</strong> — no orphaned/crashed execution needed reconciliation.</li>
+<li><strong>Waits: 1</strong> — WI-2, phase <code>qa_authoring</code>, reason <code>quota_reset</code> (openai), created <code>2026-09-16T17:28:19.351Z</code>, eligible_at <code>2026-09-16T19:58:14Z</code>, resolved <code>2026-09-16T20:02:27.374Z</code> ("deadline reached — re-attempting QA authoring worker selection"). Handled via a scheduled, read-only reprobe (cron-equivalent wakeup) and a resume of the <em>same</em> run via <code>--ctx-dir</code> — never a blind poll, never a fresh restart.</li>
+</ul>
+
+<h2>22. Timing Analysis</h2>
+<table>
+<tr><th>Metric</th><th>Value</th></tr>
+<tr><td>Total WI-1</td><td>540.75s (9m00.75s)</td></tr>
+<tr><td>Total WI-2 (wall-clock, incl. wait)</td><td>2h44m49.3s</td></tr>
+<tr><td>Total WI-2 (compute-only, excl. wait)</td><td>641.2s (10m41.2s)</td></tr>
+<tr><td>Total MVP (wall-clock, incl. wait)</td><td>2h53m53.1s</td></tr>
+<tr><td>Total MVP (compute-only, excl. wait)</td><td>1181.99s (19m41.99s)</td></tr>
+<tr><td>Total wait time</td><td>2h34m08.0s (9248.0s)</td></tr>
+</table>
+
+<h2>23. AI Usage / Tokens</h2>
+<p><strong>TOKEN_USAGE = NOT_AVAILABLE</strong> for every execution in this run.</p>
+<p>Factual reason: this version of <code>ai-dev-orchestrator</code>'s <code>ExecutionRecord</code> has no token-usage fields at all. Ralph's own raw <code>iteration.summary</code> events do carry token-shaped fields (<code>input_tokens</code>, <code>output_tokens</code>, <code>cache_read_tokens</code>, <code>cache_write_tokens</code>, <code>cost_usd</code>), but every single one of these was observed as exactly <code>0</code>/<code>0.0</code> across every iteration inspected in this run (e.g. WI-1's development iteration: <code>{"cache_read_tokens":0,"cache_write_tokens":0,"context_pct":0,"context_tokens":0,"cost_usd":0.0,"input_tokens":0,"num_turns":0,"output_tokens":0}</code>) — a known-unreliable counter, never substituted here for real consumption. No quota-percentage, duration, text-length, or list-price estimate was used as a stand-in.</p>
+<p>Workers/models actually used (real, from <code>ExecutionRecord</code>):</p>
+<table>
+<tr><th>Role</th><th>WorkItem</th><th>Worker</th><th>Provider/Backend</th><th>Model</th><th>Reasoning effort</th></tr>
+<tr><td>developer</td><td>WI-1, WI-2</td><td>alice</td><td>anthropic / claude_code</td><td>haiku</td><td>—</td></tr>
+<tr><td>estimator</td><td>both (6x)</td><td>alice</td><td>anthropic / claude_code</td><td>haiku</td><td>—</td></tr>
+<tr><td>qa_testing</td><td>WI-1, WI-2</td><td>victor</td><td>openai / codex</td><td>gpt-5.6-terra</td><td>low</td></tr>
+<tr><td>reviewer</td><td>WI-1</td><td>victor</td><td>openai / codex</td><td>gpt-5.6-terra</td><td>low</td></tr>
+<tr><td>reviewer</td><td>WI-2</td><td>victor</td><td>openai / codex</td><td>gpt-5.6-terra</td><td>medium</td></tr>
+</table>
+
+<h2>24. CodingDojo Official Reference Check</h2>
+<table>
+<tr><th>Item</th><th>Value</th></tr>
+<tr><td>URL checked (kata page)</td><td><a href="https://codingdojo.org/kata/mars-rover/">https://codingdojo.org/kata/mars-rover/</a></td></tr>
+<tr><td>URL checked (solutions page)</td><td><a href="https://codingdojo.org/solution/">https://codingdojo.org/solution/</a></td></tr>
+<tr><td>Timestamp of check</td><td>2026-09-16, strictly after WI-2's merge, Final QA, and HEAD capture</td></tr>
+<tr><td>Official Mars Rover requirements page found</td><td>Yes</td></tr>
+<tr><td>Official Mars Rover <em>solution</em> found</td><td><strong>No</strong></td></tr>
+</table>
+<p><strong>"NO OFFICIAL MARS ROVER REFERENCE SOLUTION FOUND ON CODINGDOJO AT CHECK TIME"</strong> — the Solutions page (<code>codingdojo.org/solution/</code>) lists solutions for Diamond, FizzBuzz (+ Java/Smalltalk variants), Kata Roman Numerals (+ variants), a Groovy Bank kata, and a Bowling kata — no Mars Rover entry exists there.</p>
+<p><code>HEAD_BEFORE_WEB_COMPARISON = 6bb935f3bb12f0c66426e838f0d6aad134e12871</code> ; <code>HEAD_AFTER_WEB_COMPARISON = 6bb935f3bb12f0c66426e838f0d6aad134e12871</code> — <span class="pass">identical, working tree unchanged</span>. No code, test, SPEC.md, or ROADMAP.md was modified after this web check.</p>
+
+<h2>25. Official Requirements Comparison Matrix</h2>
+<table>
+<tr><th>#</th><th>Official Requirement (CodingDojo)</th><th>Local SPEC.md interpretation</th><th>Implemented?</th><th>Test evidence</th><th>Difference / note</th></tr>
+<tr><td>1</td><td>Starting point (x, y)</td><td>same</td><td class="pass">Yes</td><td><code>TestRoverInitialization</code></td><td>none</td></tr>
+<tr><td>2</td><td>Initial direction N/S/E/W</td><td>same, exactly 4 directions</td><td class="pass">Yes</td><td><code>TestValidDirections</code></td><td>none</td></tr>
+<tr><td>3</td><td>Map describing obstacle locations (format unspecified)</td><td>explicit <code>set</code> of <code>(x, y)</code> tuples</td><td class="pass">Yes</td><td><code>TestObstacles</code></td><td>local picked a concrete representation; official leaves it open</td></tr>
+<tr><td>4</td><td>List of commands (forward / turn right / turn left)</td><td>a string of single-character commands <code>F</code>/<code>L</code>/<code>R</code></td><td class="pass">Yes</td><td><code>TestSequentialCommands</code></td><td>string vs. list/array representation; functionally equivalent</td></tr>
+<tr><td>5</td><td>Move forward (⬆️)</td><td><code>F</code></td><td class="pass">Yes</td><td><code>TestMovement</code></td><td>symbol/letter naming only</td></tr>
+<tr><td>6</td><td>Turn right 90° (➡️)</td><td><code>R</code></td><td class="pass">Yes</td><td><code>TestRotations</code></td><td>naming only</td></tr>
+<tr><td>7</td><td>Turn left 90° (⬅️)</td><td><code>L</code></td><td class="pass">Yes</td><td><code>TestRotations</code></td><td>naming only</td></tr>
+<tr><td>8</td><td>Obstacle encountered → rover "does nothing"</td><td>that <code>F</code> has no movement effect; subsequent commands still run</td><td class="pass">Yes</td><td><code>TestObstacles</code> (incl. <code>test_blocked_movement_allows_subsequent_commands</code>, <code>test_turn_after_blocked_movement</code>)</td><td>official's "does nothing" is ambiguous (one command vs. whole sequence) — local resolves it as "only that command", a standard/common kata interpretation</td></tr>
+<tr><td>9</td><td>Result contains final position</td><td>same</td><td class="pass">Yes</td><td>throughout</td><td>none</td></tr>
+<tr><td>10</td><td>Result contains final direction</td><td>same</td><td class="pass">Yes</td><td>throughout</td><td>none</td></tr>
+</table>
+
+<h2>26. Official Solution Comparison</h2>
+<p><strong>No canonical solution available for comparison</strong> — CodingDojo publishes no official Mars Rover solution (§24), so no code/design/API-shape comparison against an official reference was possible or attempted. No third-party (non-CodingDojo) source was consulted, per the strict authorized-source restriction.</p>
+
+<h2>27. Local-Spec vs CodingDojo Differences</h2>
+<ul>
+<li><strong>Command representation:</strong> local uses letters <code>F</code>/<code>L</code>/<code>R</code> in a string; CodingDojo describes arrow-emoji commands in a list — a notational choice, not a behavioral one.</li>
+<li><strong>Obstacle "does nothing" interpretation:</strong> local SPEC.md explicitly states only the blocked <code>F</code> is voided and subsequent commands continue; CodingDojo's own wording is silent on this exact point.</li>
+<li><strong>Public API shape:</strong> <code>simulate(start, obstacles, commands) -> (x, y, direction)</code> is a local addition — CodingDojo does not mandate any particular function signature.</li>
+<li><strong>Explicit "no wrap-around" statement:</strong> local SPEC.md states this directly; CodingDojo is simply silent on map bounds (not implemented, but also never required).</li>
+<li><strong>Coordinate axis convention</strong> (N=y+1, E=x+1, etc.): pinned explicitly in local SPEC.md; CodingDojo does not specify an axis convention.</li>
+</ul>
+<p>None of these are presented as part of the official CodingDojo statement — they are local clarifications of points CodingDojo leaves open.</p>
+
+<h2>28. Extra / Missing Functionality</h2>
+<ul>
+<li><strong>Missing vs. official:</strong> none — every officially stated requirement (§25) is implemented and covered by a real, passing test.</li>
+<li><strong>Extra vs. official/local SPEC:</strong> none — no CLI, no HTTP API, no persistence, no UI, no extra commands, no framework, no unrequested dependency. File tree confirmed minimal: <code>src/mars_rover/__init__.py</code>, <code>tests/test_baseline.py</code>, plus pre-existing config/spec files.</li>
+<li><strong>Wrap-around:</strong> not implemented — matches both CodingDojo (silent) and local SPEC.md (explicitly excluded). Its absence is <em>not</em> a defect.</li>
+</ul>
+
+<h2>29. Incidents</h2>
+<p>None. No new orchestrator bug was found during RUN5. The one wait (§21) was a normal, correctly-governed quota exhaustion, resolved via the documented reprobe-and-resume mechanism — not an incident.</p>
+
+<h2>30. Final Assessment</h2>
+<table>
+<tr><th>Question</th><th>Answer</th></tr>
+<tr><td>A. Is the kata functional?</td><td class="pass">Yes — 52/52 tests pass on the final governed <code>main</code>.</td></tr>
+<tr><td>B. Were WI-1 and WI-2 realized by ai-dev-orchestrator?</td><td class="pass">Yes — both fully COMPLETED + MERGED through the real governed pipeline, no manual code.</td></tr>
+<tr><td>C. Are all local acceptance criteria satisfied?</td><td class="pass">Yes — all 10 (WI-1) + 11 (WI-2) ROADMAP.md criteria are implemented and tested.</td></tr>
+<tr><td>D. Are official CodingDojo requirements satisfied?</td><td class="pass">Yes — see comparison matrix (§25), 10/10.</td></tr>
+<tr><td>E. Does an official CodingDojo Mars Rover solution exist?</td><td><strong>No</strong> (checked 2026-09-16, post-run).</td></tr>
+<tr><td>F. If yes, differences?</td><td class="na">N/A — no official solution exists.</td></tr>
+<tr><td>G. If no, canonical comparison?</td><td>Confirmed: no canonical solution comparison was possible or invented (§26).</td></tr>
+<tr><td>H. Did we implement more than requested?</td><td>No — scope stayed strictly within SPEC.md/ROADMAP.md (§19, §28).</td></tr>
+<tr><td>I. Total duration?</td><td>2h53m53.1s wall-clock (19m41.99s compute-only, excl. the one quota wait).</td></tr>
+<tr><td>J. Duration per stage?</td><td>See §4 / §11 / §22.</td></tr>
+<tr><td>K. Number of reworks?</td><td>0</td></tr>
+<tr><td>L. Quota wait time?</td><td>2h34m08.0s (one wait, WI-2 QA authoring, openai)</td></tr>
+<tr><td>M. Workers/models actually used?</td><td>alice (anthropic/claude_code/haiku); victor (openai/codex/gpt-5.6-terra) — see §23</td></tr>
+<tr><td>N. Real tokens known?</td><td>No — <code>NOT_AVAILABLE</code> for every execution (§23), factual reason given, no substitute metric used.</td></tr>
+<tr><td>O. Human intervention during RUN5?</td><td>Only a read-only quota reprobe and a resume of the same run via <code>--ctx-dir</code> after the scheduled wait elapsed — no manual code, no manual governance override.</td></tr>
+<tr><td>P. Overall pilot result?</td><td><span class="badge badge-pass">PASS</span></td></tr>
+</table>
+
+</body>
+</html>
