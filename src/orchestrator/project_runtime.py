@@ -23,17 +23,17 @@ Provider composition (§7): the provider adapter for each provider actually
 required by the configured, *enabled* workers is resolved from a small,
 explicit table (``anthropic`` -> ``ClaudeCodeAdapter``, ``openai`` ->
 ``CodexAdapter``, ``mistral`` -> ``MistralVibeAdapter``, ``deepseek`` ->
-``build_deepseek_adapter``, ``kimi`` -> ``build_kimi_adapter``) — never
+``build_deepseek_adapter``, ``kimi`` -> ``build_kimi_adapter``), never
 generic reflection/plugin discovery. An enabled worker on a provider with no
 known adapter fails composition clearly, before any execution, rather than
 being silently dropped. DeepSeek/Kimi are the first two providers reached
 through an API key (read from the process environment, never stored/
 defaulted here or in ``config/workers.yaml``) rather than an
-already-authenticated CLI; a missing key surfaces as
-``ProviderConfigurationError`` — clean and controlled, exactly like
-``UnsupportedProviderError`` below — and, per the same "only providers of
-enabled workers are resolved" rule this table has always followed, never
-affects a project that does not enable a worker on that provider.
+already-authenticated CLI; a missing key surfaces as a clean, controlled
+``ProviderConfigurationError``, handled the same way as
+``UnsupportedProviderError`` below. Per the same "only providers of
+enabled workers are resolved" rule this table has always followed, it
+never affects a project that does not enable a worker on that provider.
 
 Execution permission policy (P12, §8): ``RalphExecutionEngine`` is always
 constructed with ``permission_mode=config.execution.permission_mode`` —
@@ -131,7 +131,7 @@ class UnsupportedProviderError(ProjectRuntimeError):
 
 class ProviderConfigurationError(ProjectRuntimeError):
     """Raised when a required provider adapter is known but could not be
-    constructed — currently only DeepSeek/Kimi, whose factories require an
+    constructed. Currently only DeepSeek/Kimi, whose factories require an
     API key read from the process environment (``DEEPSEEK_API_KEY``/
     ``KIMI_API_KEY``). Wraps the adapter factory's own
     ``ProviderConfigError`` with which provider was affected; only ever

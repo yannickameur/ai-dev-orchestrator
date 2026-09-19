@@ -1,6 +1,6 @@
 """Tests for the DeepSeek provider factory (build_deepseek_adapter).
 
-All offline: no network call, no real DeepSeek/Claude Code invocation —
+All offline: no network call, no real DeepSeek/Claude Code invocation.
 ``env`` is always an explicit mapping here, never the real process
 environment, so these tests never depend on (or leak) a real API key.
 """

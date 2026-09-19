@@ -302,9 +302,10 @@ class TestDefaultSubprocessRunnerTimeout:
         assert exit_code == 0
 
     def test_env_kwarg_is_visible_to_the_subprocess(self) -> None:
-        # Real subprocess (python3 -c ...), no Claude/network — proves the
-        # new `env` kwarg actually reaches the child process, the mechanism
-        # DeepSeek/Kimi reuse (ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY).
+        # Real subprocess (python3 -c ...), no Claude/network involved:
+        # proves the new `env` kwarg actually reaches the child process,
+        # the mechanism DeepSeek/Kimi reuse (ANTHROPIC_BASE_URL/
+        # ANTHROPIC_API_KEY).
         env = {**os.environ, "AIDO_TEST_PROBE_VAR": "hello-from-env"}
         exit_code, stdout, _ = asyncio.run(
             _default_subprocess_runner(
@@ -318,7 +319,7 @@ class TestDefaultSubprocessRunnerTimeout:
 
     def test_env_none_still_inherits_the_process_environment(self) -> None:
         # env=None (the default) must remain equivalent to not passing env
-        # at all — real Anthropic usage must see no behavior change.
+        # at all: real Anthropic usage must see no behavior change.
         exit_code, stdout, _ = asyncio.run(
             _default_subprocess_runner(
                 [sys.executable, "-c", "import os,sys; sys.stdout.write('yes' if 'PATH' in os.environ else 'no')"],
@@ -330,7 +331,7 @@ class TestDefaultSubprocessRunnerTimeout:
 
 
 class TestProviderNameAndExtraEnvReuse:
-    """provider_name/extra_env — the seam DeepSeek/Kimi reuse instead of a
+    """provider_name/extra_env: the seam DeepSeek/Kimi reuse instead of a
     second, independent adapter (see module docstring, "Reuse beyond real
     Anthropic")."""
 

@@ -15,14 +15,14 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   implémenté (`GOVERNED_FULL` retiré avant la première release publique,
   2026-09-18 ; `WorkflowMode` lui-même supprimé, un seul mode restant).
 - **Providers/workers** (`config/workers.yaml`, source de vérité) : 8
-  workers déclarés (6 activés), **5 providers de premier niveau** —
+  workers déclarés (6 activés), **5 providers de premier niveau** :
   `alice`/`bob` (anthropic/claude_code), `victor`/`oscar` (openai/codex),
   `milo`/`juno` (mistral/vibe, `development` uniquement), `dana`/`kai`
   (deepseek/kimi via `claude_code` redirigé, `development` uniquement,
-  **`enabled: false`** — clé API requise, pas encore de preuve
+  **`enabled: false`**, clé API requise, pas encore de preuve
   d'exécution réelle ; voir `ROADMAP.md` §7/§13).
 - **Tests offline** : 1135 PASS (1105 avant + 30 pour l'intégration
-  DeepSeek/Kimi — snapshot
+  DeepSeek/Kimi, snapshot
   courant, voir §11 de `ROADMAP.md` pour la méthode de comptage ; ce
   nombre n'est pas un invariant permanent).
 - **Roman Numerals** (pilote externe) : `PASS`.
@@ -36,12 +36,16 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   besoin de harnais Python pour l'usage normal ; `aido run` est aussi la
   reprise. Cycle productisation/onboarding terminé.
 - **Développement actif** : aucun.
-- **P3 (DeepSeek + Kimi comme providers de premier niveau)** : `DONE`
-  (2026-09-19) — voir `ROADMAP.md` §7/§13. **P4 (étude build-vs-reuse
-  Mammouth AI)** : **RETIRÉ** sur décision explicite de l'utilisateur
-  (2026-09-19), jamais démarré, jamais intégré — aucune dépendance
-  gateway/agrégateur multi-modèles. Toutes les autres propositions restent
-  `À VOTER`.
+- **5 providers implémentés, 3 validés, 2 en attente de validation réelle** :
+  Anthropic/OpenAI/Mistral `VALIDATED` ; DeepSeek/Kimi `IMPLEMENTED — REAL
+  VALIDATION PENDING`.
+- **P3 (DeepSeek + Kimi comme providers de premier niveau)** :
+  implémentation `DONE`, validation réelle `PENDING` (2026-09-19). Voir
+  `ROADMAP.md` §7/§13. **P4 (étude build-vs-reuse Mammouth AI)** :
+  `RETIRÉ`. Étude menée, agrégateur jugé d'intérêt économique/
+  architectural insuffisant face à l'intégration directe de providers
+  (décision utilisateur, 2026-09-19), aucune dépendance gateway/agrégateur
+  multi-modèles. Toutes les autres propositions restent `À VOTER`.
 
 ## Historique synthétique
 
@@ -91,12 +95,14 @@ Chronologie détaillée entièrement récupérable via `git log` et
   multi-process après `WAITING`, via des adaptateurs providers et un
   subprocess Ralph faux — jamais de vrai Claude/Codex/Vibe/Ralph
   (2026-09-19). Cycle productisation/onboarding (P1 + P12) `DONE`.
-- P3 — DeepSeek et Kimi intégrés comme providers de premier niveau, en
-  réutilisant `ClaudeCodeAdapter` (redirection
+- P4 (étude Mammouth) menée puis close `RETIRÉ` : agrégateur jugé d'intérêt
+  économique/architectural insuffisant face à l'intégration directe de
+  providers (décision utilisateur, 2026-09-19).
+- P3 : DeepSeek et Kimi intégrés comme providers de premier niveau, sur
+  cette base, en réutilisant `ClaudeCodeAdapter` (redirection
   `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` documentée officiellement par
-  les deux providers), jamais un second client HTTP ; workers `dana`/`kai`
+  les deux providers) plutôt qu'un second client HTTP ; workers `dana`/`kai`
   ajoutés à `config/workers.yaml`, désactivés par défaut (clé API requise,
-  pas encore de preuve d'exécution réelle) ; P4 (étude Mammouth) retiré de
-  la roadmap sur décision utilisateur (2026-09-19) — voir `ROADMAP.md` §7/§13.
+  pas encore de preuve d'exécution réelle). Voir `ROADMAP.md` §7/§13.
 
 Ce fichier reste court et factuel — pas de duplication de `ROADMAP.md`.

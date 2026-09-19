@@ -387,8 +387,8 @@ class TestShippedExampleConfig:
     def test_config_workers_yaml_deepseek_and_kimi_are_disabled_by_default(self) -> None:
         """DeepSeek (billed) and Kimi (subscription) both require a real
         API key this repository's own CI/dev machines do not have, and
-        neither has real execution evidence yet (unlike Mistral/Vibe — see
-        docs/VIBE_SPIKE.md) — so neither is enabled by default. Adding
+        neither has real execution evidence yet (unlike Mistral/Vibe: see
+        docs/VIBE_SPIKE.md), so neither is enabled by default. Adding
         them must never make the orchestrator require a key it doesn't
         need; see orchestrator.providers.deepseek_adapter/kimi_adapter."""
         registry = WorkerRegistry.load(Path("config/workers.yaml"))

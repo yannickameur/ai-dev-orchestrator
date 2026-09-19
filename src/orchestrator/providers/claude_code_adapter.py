@@ -40,21 +40,22 @@ Design notes:
   fields for no consumer.
 
 Reuse beyond real Anthropic (``provider_name``/``extra_env``, added when
-DeepSeek/Kimi were integrated — see ``orchestrator.providers.deepseek_adapter``/
+DeepSeek/Kimi were integrated; see ``orchestrator.providers.deepseek_adapter``/
 ``kimi_adapter``): DeepSeek's and Kimi's own documentation both describe
 their "coding" offering as this exact same ``claude`` binary redirected, via
 ``ANTHROPIC_BASE_URL``/``ANTHROPIC_API_KEY``, at an Anthropic-compatible
-endpoint they operate — not a distinct CLI or wire protocol. So a second,
+endpoint they operate, not a distinct CLI or wire protocol. A second,
 independent HTTP adapter would duplicate this module's subprocess/
 stream-json machinery for no reason; instead, ``provider_name`` lets a
 caller label the resulting ``ProviderState`` correctly, and ``extra_env``
 lets a caller overlay the redirect variables onto the subprocess environment
 without touching the default (real Anthropic, no overlay) code path at all.
-A probe against one of these compatible endpoints naturally has no
-``rate_limit_event`` in its stream (that telemetry is an Anthropic-specific
-extension neither DeepSeek nor Kimi's compatible endpoint is known to emit)
-and therefore falls back to ``_availability_from_result_fallback`` below —
-an existing code path, not a new one.
+A probe against one of these compatible endpoints has no
+``rate_limit_event`` in its stream, since that telemetry is an
+Anthropic-specific extension neither DeepSeek nor Kimi's compatible
+endpoint is known to emit, and falls back to
+``_availability_from_result_fallback`` below: an existing code path, not a
+new one.
 """
 
 from __future__ import annotations
@@ -143,10 +144,10 @@ class ClaudeCodeAdapter(ProviderAdapter):
         """``provider_name``/``extra_env`` (both optional, default to real
         Anthropic behavior unchanged) let a caller reuse this adapter for an
         Anthropic-compatible provider reached through the same ``claude``
-        binary — see the module docstring's "Reuse beyond real Anthropic"
+        binary; see the module docstring's "Reuse beyond real Anthropic"
         section. ``extra_env`` is overlaid onto the current process
-        environment once, at construction time (never re-read per probe);
-        it is ignored when an explicit ``subprocess_runner`` is supplied,
+        environment once, at construction time (never re-read per probe).
+        It is ignored when an explicit ``subprocess_runner`` is supplied,
         since a caller providing its own runner already owns the
         environment a probe subprocess sees.
         """

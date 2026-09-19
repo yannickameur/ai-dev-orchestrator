@@ -192,7 +192,7 @@ obviously-wrong key names (`api_key`, `token`, `secret`, `password`,
 **DeepSeek/Kimi exception, stated explicitly:** unlike Claude Code/Codex/
 Vibe (authenticated entirely outside this project, no secret ever handled
 here), the `deepseek`/`kimi` providers are reached through a real API key
-(`DEEPSEEK_API_KEY`/`KIMI_API_KEY`) — still never in `aido.yaml`/
+(`DEEPSEEK_API_KEY`/`KIMI_API_KEY`), still never in `aido.yaml`/
 `config/workers.yaml`, always read from the process environment only, at
 the moment `orchestrator.providers.deepseek_adapter`/`kimi_adapter` is
 actually invoked for a provider an enabled worker requires. See

@@ -1,6 +1,6 @@
 """Tests for the Kimi provider factory (build_kimi_adapter).
 
-All offline: no network call, no real Kimi/Claude Code invocation — ``env``
+All offline: no network call, no real Kimi/Claude Code invocation. ``env``
 is always an explicit mapping here, never the real process environment, so
 these tests never depend on (or leak) a real API key.
 """

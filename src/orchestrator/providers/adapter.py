@@ -26,7 +26,7 @@ class ProviderConfigError(Exception):
     is ever attempted. A provider-specific adapter factory (e.g.
     ``orchestrator.providers.deepseek_adapter.build_deepseek_adapter``)
     raises a subclass of this for its own missing configuration. Only ever
-    raised for a provider actually requested by the caller — never for one
+    raised for a provider actually requested by the caller, never for one
     that is simply configured but unused, so a missing key for one
     optional, API-key-based provider must never prevent any other provider
     from working.
