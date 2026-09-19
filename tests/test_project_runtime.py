@@ -388,3 +388,43 @@ class TestConfigRuntimeConflicts:
             rt2.bootstrap()
             ids = {wi.work_item_id for wi in rt2.project_store.list_work_items("mvp-1")}
             assert ids == {"wi-1", "wi-2"}
+
+
+class TestProjectStatusReader:
+    """Unit-level coverage of the strictly-read-only status path — see
+    tests/test_cli.py's TestStatus for the full public-CLI-level proof."""
+
+    def test_open_returns_none_when_never_bootstrapped(self, tmp_path: Path) -> None:
+        from orchestrator.project_runtime import ProjectStatusReader
+
+        config = _write_project(tmp_path)
+        assert not config.project.state_dir.exists()
+        reader = ProjectStatusReader.open(config)
+        assert reader is None
+        assert not config.project.state_dir.exists()  # never created just by trying to open
+
+    def test_open_never_creates_state_dir_even_if_it_partially_exists(self, tmp_path: Path) -> None:
+        from orchestrator.project_runtime import ProjectStatusReader
+
+        config = _write_project(tmp_path)
+        config.project.state_dir.mkdir(parents=True)  # dir exists, but no project.sqlite3 yet
+        reader = ProjectStatusReader.open(config)
+        assert reader is None
+        assert list(config.project.state_dir.iterdir()) == []  # still empty
+
+    def test_open_returns_a_reader_once_bootstrapped_and_is_read_only(self, tmp_path: Path) -> None:
+        from orchestrator.project_runtime import ProjectRuntime, ProjectStatusReader
+
+        config = _write_project(tmp_path)
+        with ProjectRuntime.open(config, clock=lambda: UTC_T0, provider_adapters={"anthropic": _FakeAdapter()}) as rt:
+            rt.bootstrap()
+
+        reader = ProjectStatusReader.open(config)
+        assert reader is not None
+        try:
+            project = reader.project_store.get_project("demo")
+            assert project.project_id == "demo"
+            with pytest.raises(Exception):
+                reader.project_store.create_project(project_id="other", name="Other", workspace=config.project.workspace)
+        finally:
+            reader.close()

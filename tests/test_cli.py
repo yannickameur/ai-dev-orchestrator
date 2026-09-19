@@ -406,6 +406,20 @@ class TestValidate:
 # --- aido status -----------------------------------------------------------
 
 
+def _snapshot_tree(root: Path) -> dict[str, tuple[bytes, int, int]]:
+    """Recursive relative file list + bytes + size + mtime_ns for every
+    regular file under ``root`` — the whole-state-tree contract §7 needs,
+    not just one database."""
+    if not root.exists():
+        return {}
+    snapshot = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            stat = path.stat()
+            snapshot[str(path.relative_to(root))] = (path.read_bytes(), stat.st_size, stat.st_mtime_ns)
+    return snapshot
+
+
 class TestStatus:
     def test_uninitialized_project_reports_not_initialized(
         self, tmp_path: Path, capsys: pytest.CaptureFixture,
@@ -415,6 +429,16 @@ class TestStatus:
         out = capsys.readouterr().out
         assert exit_code == 0
         assert "NOT_INITIALIZED" in out
+
+    def test_uninitialized_status_does_not_create_state_dir(self, tmp_path: Path) -> None:
+        config_path = _write_config(tmp_path)
+        config = ProjectConfig.load(config_path)
+        assert not config.project.state_dir.exists()
+
+        exit_code = _invoke(["status", str(config_path)], provider_adapters={"anthropic": _NeverCalledAdapter()})
+
+        assert exit_code == 0
+        assert not config.project.state_dir.exists()  # still does not exist at all
 
     def test_initialized_project_reports_workitem_statuses(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
         config_path = _write_config(tmp_path)
@@ -441,7 +465,56 @@ class TestStatus:
         exit_code = _invoke(["status", str(config_path)], provider_adapters={"anthropic": _NeverCalledAdapter()})
         assert exit_code == 0  # would have raised via _NeverCalledAdapter.probe if ever called
 
-    def test_no_state_mutation(self, tmp_path: Path) -> None:
+    def test_status_never_instantiates_any_provider_adapter(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Structural proof, not just behavioral: patch every real adapter
+        class's ``__init__`` to raise if ever constructed at all."""
+        from orchestrator.providers import claude_code_adapter, codex_adapter, mistral_vibe_adapter
+
+        def _boom(self, *a, **k):
+            raise AssertionError("no provider adapter may ever be instantiated by aido status")
+
+        for module, cls_name in (
+            (claude_code_adapter, "ClaudeCodeAdapter"),
+            (codex_adapter, "CodexAdapter"),
+            (mistral_vibe_adapter, "MistralVibeAdapter"),
+        ):
+            monkeypatch.setattr(getattr(module, cls_name), "__init__", _boom)
+
+        config_path = _write_config(tmp_path)
+        config = ProjectConfig.load(config_path)
+        # Bootstrap via explicit fakes (never the real adapters patched above).
+        from orchestrator.project_runtime import ProjectRuntime
+
+        with ProjectRuntime.open(config, clock=lambda: UTC_T0, provider_adapters={"anthropic": _FakeAdapter()}) as rt:
+            rt.bootstrap()
+
+        exit_code = _invoke(["status", str(config_path)])
+        assert exit_code == 0  # would have raised via the patched __init__ if status ever built a real adapter
+
+    def test_status_never_instantiates_ralph_execution_engine(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Structural proof: patch RalphExecutionEngine.__init__ itself to
+        raise if ever constructed — status must never even build one,
+        let alone launch a subprocess through it."""
+        config_path = _write_config(tmp_path)
+        config = ProjectConfig.load(config_path)
+        from orchestrator.project_runtime import ProjectRuntime
+
+        # Bootstrap FIRST, with the real (unpatched) engine — only `aido
+        # run`'s own composition legitimately builds one.
+        with ProjectRuntime.open(config, clock=lambda: UTC_T0, provider_adapters={"anthropic": _FakeAdapter()}) as rt:
+            rt.bootstrap()
+
+        from orchestrator import ralph_execution_engine as ree_module
+
+        def _boom(self, *a, **k):
+            raise AssertionError("RalphExecutionEngine must never be constructed by aido status")
+
+        monkeypatch.setattr(ree_module.RalphExecutionEngine, "__init__", _boom)
+
+        exit_code = _invoke(["status", str(config_path)], provider_adapters={"anthropic": _NeverCalledAdapter()})
+        assert exit_code == 0  # would have raised via the patched __init__ if status ever built one
+
+    def test_whole_state_tree_byte_identical_before_and_after(self, tmp_path: Path) -> None:
         config_path = _write_config(tmp_path)
         config = ProjectConfig.load(config_path)
         from orchestrator.project_runtime import ProjectRuntime
@@ -449,11 +522,95 @@ class TestStatus:
         with ProjectRuntime.open(config, clock=lambda: UTC_T0, provider_adapters={"anthropic": _FakeAdapter()}) as rt:
             rt.bootstrap()
 
-        db_path = config.project.state_dir / "project.sqlite3"
-        before = db_path.read_bytes()
+        before = _snapshot_tree(config.project.state_dir)
+        assert before  # sanity: something real was actually created by bootstrap
+
         _invoke(["status", str(config_path)], provider_adapters={"anthropic": _NeverCalledAdapter()})
-        after = db_path.read_bytes()
+
+        after = _snapshot_tree(config.project.state_dir)
         assert before == after
+
+    def test_missing_unrelated_store_db_is_not_created_by_status(self, tmp_path: Path) -> None:
+        config_path = _write_config(tmp_path)
+        config = ProjectConfig.load(config_path)
+        from orchestrator.project_runtime import ProjectRuntime
+
+        with ProjectRuntime.open(config, clock=lambda: UTC_T0, provider_adapters={"anthropic": _FakeAdapter()}) as rt:
+            rt.bootstrap()
+
+        validation_db = config.project.state_dir / "validation_qa.sqlite3"
+        assert validation_db.is_file()
+        validation_db.unlink()
+        assert not validation_db.exists()
+
+        exit_code = _invoke(["status", str(config_path)], provider_adapters={"anthropic": _NeverCalledAdapter()})
+
+        assert exit_code == 0
+        assert not validation_db.exists()  # status never recreates it
+
+    def test_legacy_pre_p12_execution_db_is_readable_without_migration(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        import sqlite3
+
+        config_path = _write_config(tmp_path)
+        config = ProjectConfig.load(config_path)
+        from orchestrator.project_runtime import ProjectRuntime
+
+        with ProjectRuntime.open(config, clock=lambda: UTC_T0, provider_adapters={"anthropic": _FakeAdapter()}) as rt:
+            rt.bootstrap()
+
+        # Overwrite the (empty, freshly-created) executions DB with a
+        # hand-built pre-P12 schema — no permission_mode column at all —
+        # populated with one real historical row.
+        execution_db = config.project.state_dir / "executions.sqlite3"
+        execution_db.unlink()
+        legacy_conn = sqlite3.connect(str(execution_db))
+        legacy_conn.execute(
+            """
+            CREATE TABLE executions (
+                execution_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, worker_id TEXT NOT NULL,
+                provider TEXT NOT NULL, backend TEXT NOT NULL, model TEXT NOT NULL, role TEXT NOT NULL,
+                reasoning_effort TEXT, started_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL,
+                exit_code INTEGER, provider_session_id TEXT, ralph_loop_id TEXT,
+                git_sha_before TEXT, git_sha_after TEXT
+            )
+            """
+        )
+        legacy_conn.execute(
+            "INSERT INTO executions "
+            "(execution_id, task_id, worker_id, provider, backend, model, role, started_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("legacy-exec", "wi-1", "alice", "anthropic", "claude_code", "sonnet", "developer",
+             UTC_T0.isoformat(), "succeeded"),
+        )
+        legacy_conn.commit()
+        legacy_conn.close()
+
+        before_bytes = execution_db.read_bytes()
+        before_schema = _table_columns(execution_db, "executions")
+
+        exit_code = _invoke(["status", str(config_path)], provider_adapters={"anthropic": _NeverCalledAdapter()})
+        out = capsys.readouterr().out
+
+        assert exit_code == 0
+        assert "permission_mode=unknown" in out  # never fabricated as standard/unrestricted
+
+        after_bytes = execution_db.read_bytes()
+        after_schema = _table_columns(execution_db, "executions")
+        assert before_bytes == after_bytes  # byte-identical: no migration ever ran
+        assert before_schema == after_schema
+        assert "permission_mode" not in after_schema  # schema genuinely never gained the column
+
+
+def _table_columns(db_path: Path, table: str) -> list[str]:
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+    finally:
+        conn.close()
 
 
 # --- aido run: end-to-end offline WorkItem Flow ---------------------------
