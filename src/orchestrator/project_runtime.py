@@ -22,10 +22,18 @@ stays authoritative).
 Provider composition (§7): the provider adapter for each provider actually
 required by the configured, *enabled* workers is resolved from a small,
 explicit table (``anthropic`` -> ``ClaudeCodeAdapter``, ``openai`` ->
-``CodexAdapter``, ``mistral`` -> ``MistralVibeAdapter``) — never generic
-reflection/plugin discovery. An enabled worker on a provider with no known
-adapter fails composition clearly, before any execution, rather than being
-silently dropped. Provider expansion is P3's job, not P1's.
+``CodexAdapter``, ``mistral`` -> ``MistralVibeAdapter``, ``deepseek`` ->
+``build_deepseek_adapter``, ``kimi`` -> ``build_kimi_adapter``), never
+generic reflection/plugin discovery. An enabled worker on a provider with no
+known adapter fails composition clearly, before any execution, rather than
+being silently dropped. DeepSeek/Kimi are the first two providers reached
+through an API key (read from the process environment, never stored/
+defaulted here or in ``config/workers.yaml``) rather than an
+already-authenticated CLI; a missing key surfaces as a clean, controlled
+``ProviderConfigurationError``, handled the same way as
+``UnsupportedProviderError`` below. Per the same "only providers of
+enabled workers are resolved" rule this table has always followed, it
+never affects a project that does not enable a worker on that provider.
 
 Execution permission policy (P12, §8): ``RalphExecutionEngine`` is always
 constructed with ``permission_mode=config.execution.permission_mode`` —
@@ -58,9 +66,11 @@ from orchestrator.project_state import (
     UnknownMVPError,
     UnknownProjectError,
 )
-from orchestrator.providers.adapter import ProviderAdapter
+from orchestrator.providers.adapter import ProviderAdapter, ProviderConfigError
 from orchestrator.providers.claude_code_adapter import ClaudeCodeAdapter
 from orchestrator.providers.codex_adapter import CodexAdapter
+from orchestrator.providers.deepseek_adapter import build_deepseek_adapter
+from orchestrator.providers.kimi_adapter import build_kimi_adapter
 from orchestrator.providers.mistral_vibe_adapter import MistralVibeAdapter
 from orchestrator.qa import QAPolicy, QARunStore
 from orchestrator.quota_manager import QuotaManager, QuotaPolicy
@@ -77,11 +87,15 @@ def _utcnow() -> datetime:
 
 
 # Current known provider mapping (§7) — deliberately small and explicit,
-# never generic reflection/plugin discovery. New providers are P3's job.
+# never generic reflection/plugin discovery. Adding a provider here is
+# always a deliberate, explicit step (see ROADMAP.md, "Providers et
+# workers"), never automatic.
 _PROVIDER_ADAPTER_FACTORIES: dict[str, Callable[[], ProviderAdapter]] = {
     "anthropic": ClaudeCodeAdapter,
     "openai": CodexAdapter,
     "mistral": MistralVibeAdapter,
+    "deepseek": build_deepseek_adapter,
+    "kimi": build_kimi_adapter,
 }
 
 # Deterministic, stable filenames under ProjectConfig.project.state_dir —
@@ -109,8 +123,23 @@ class UnsupportedProviderError(ProjectRuntimeError):
             f"no provider adapter is known for {provider!r} (required by an "
             f"enabled worker) — currently supported providers: "
             f"{sorted(_PROVIDER_ADAPTER_FACTORIES)!r}. Adding a new provider "
-            "adapter is future work (ROADMAP.md, P3), not part of P1."
+            "adapter is a deliberate, explicit step (see ROADMAP.md), never "
+            "generic plugin discovery."
         )
+        self.provider = provider
+
+
+class ProviderConfigurationError(ProjectRuntimeError):
+    """Raised when a required provider adapter is known but could not be
+    constructed. Currently only DeepSeek/Kimi, whose factories require an
+    API key read from the process environment (``DEEPSEEK_API_KEY``/
+    ``KIMI_API_KEY``). Wraps the adapter factory's own
+    ``ProviderConfigError`` with which provider was affected; only ever
+    raised for a provider an *enabled* worker actually requires, so a
+    missing key never affects any other provider."""
+
+    def __init__(self, provider: str, cause: ProviderConfigError) -> None:
+        super().__init__(f"provider {provider!r} could not be configured: {cause}")
         self.provider = provider
 
 
@@ -126,7 +155,10 @@ def _resolve_provider_adapters(providers: set[str]) -> dict[str, ProviderAdapter
         factory = _PROVIDER_ADAPTER_FACTORIES.get(provider)
         if factory is None:
             raise UnsupportedProviderError(provider)
-        adapters[provider] = factory()
+        try:
+            adapters[provider] = factory()
+        except ProviderConfigError as exc:
+            raise ProviderConfigurationError(provider, exc) from exc
     return adapters
 
 
