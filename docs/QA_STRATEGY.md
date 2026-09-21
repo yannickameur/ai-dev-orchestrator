@@ -317,12 +317,54 @@ principe que `ReviewPolicy.max_review_cycles`, Slice 9/17) ; au-delà :
 `BLOCKED`/`HUMAN_ESCALATION` selon policy — jamais de boucle autonome
 infinie.
 
+### 8.3 DETERMINISTIC QA EVIDENCE — preuve liée à l'environnement, pas
+seulement au SHA (Slice 25)
+
+Défaut réel découvert par un run réel d'auto-dogfooding (AIDO Code, WI-02,
+premier projet de référence externe gouverné en développement réel) :
+`WI-02` a produit un `pytest -q` `FAIL` (`ModuleNotFoundError`) puis, sur
+le **même** head SHA et la **même** commande, un `PASS`, parce qu'un
+processus externe a installé une dépendance manquante dans
+l'environnement Python ambiant entre les deux tentatives QA — un
+changement invisible en Git. Avant cette Slice, `ValidationResult` liait
+une preuve QA au SHA et à la commande, mais jamais à l'environnement
+d'exécution réellement observé : ce cas précis de dérive était donc
+indétectable, et le second `PASS` ne se distinguait en rien d'un vrai
+run reproductible.
+
+Correction : `ValidationEnvironmentEvidence`
+(`src/orchestrator/validation.py`) capture, à chaque exécution d'une
+`ValidationCommand`, l'exécutable réellement résolu (jamais un nom nu non
+vérifié), l'interpréteur Python sous-jacent quand il y en a un (suit le
+shebang, jamais une règle spécifique à `pytest`), sa version, son
+`sys.prefix`, et une empreinte du jeu de paquets installés — jamais un
+dump brut de `os.environ` (liste explicite, aucun secret). Deux tentatives
+de QA sur le **même** `head_sha`, avec la **même** commande, mais une
+empreinte d'environnement différente : `evaluate_qa_verdict` (via
+`qa.environment_drift_reason`) refuse de traiter un `PASS` qui suivrait un
+`FAIL`/`INCONCLUSIVE` antérieur comme une preuve déterministe équivalente
+— verdict `INCONCLUSIVE` (`VALIDATION_ENVIRONMENT_CHANGED`), jamais un
+`PASS` silencieux, jamais un simple "retry aveugle" requalifié après coup.
+Un `PASS` déjà enregistré n'est en revanche jamais remis en cause
+rétroactivement par une dérive ultérieure — cette vérification ne protège
+que contre un *nouveau* verdict qui masquerait un échec antérieur non
+résolu.
+
+**Définition exacte de « DETERMINISTIC QA EVIDENCE »** dans ce projet :
+même head SHA + même `ValidationCommand` + même environnement de
+validation *observé*. Ce n'est **jamais** une preuve d'hermiticité totale
+(sandbox/conteneur immuable) — seulement une preuve que l'environnement a
+été observé, donc qu'une dérive future est détectable. Une isolation
+complète (conteneur, venv immuable) reste une évolution séparée,
+volontairement non construite ici (KISS/YAGNI — voir aussi §16).
+
 ## 9. INCONCLUSIVE — statut de premier ordre
 
 `INCONCLUSIVE` n'est **jamais** équivalent à `PASS`. Exemples :
 environnement indisponible, BrowserStack/TestSprite indisponible,
 dépendance externe cassée, spécifications contradictoires, test
-impossible à exécuter.
+impossible à exécuter, dérive de l'environnement de validation entre deux
+tentatives sur le même SHA (§8.3).
 
 ### 9.1 Indisponibilité d'un fournisseur externe
 
@@ -463,6 +505,12 @@ releases futures protégées par ce test.
   (même principe que Slice 18 : projection factuelle uniquement).
 - `MergeEligibility`/`ReleaseManager` (Slice 20) : exigence
   `QAVerdict.PASS` sur le SHA courant quand QA est requis (§8).
+- P14 (observabilité de consommation, `ROADMAP.md`, `APPROUVÉ — APRÈS
+  P13`, non implémenté) pourra réutiliser l'empreinte d'environnement de
+  validation introduite en §8.3 comme une dimension supplémentaire
+  (quelle empreinte d'environnement a produit quel coût/durée) — une
+  réutilisation possible, pas une exigence de cette slice, et P14 reste
+  sans WorkItem à ce jour.
 
 ## 17. Candidats externes — axes d'étude (Slice 21, pas de choix ici)
 

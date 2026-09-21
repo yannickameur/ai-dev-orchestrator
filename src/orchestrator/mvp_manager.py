@@ -168,6 +168,7 @@ from orchestrator.qa import (
     QARunStatus,
     QARunStore,
     QAVerdictStatus,
+    environment_drift_reason,
     evaluate_qa_verdict,
     new_qa_run,
 )
@@ -935,9 +936,48 @@ class MVPManager:
             run=run, result=result, now=self._clock(),
             unauthorized_protected_change=unauthorized,
             read_only_violation=result.read_only_violation, read_only_unprovable=result.read_only_unprovable,
+            environment_drift_detail=self._environment_drift_detail(run=run, request=request, result=result),
         )
         self._qa_run_store.record_verdict(run.run_id, verdict)
         return self._qa_run_store.get(run.run_id)
+
+    def _environment_drift_detail(self, *, run: QARun, request: QARequest, result) -> str | None:
+        """Compares this QA attempt's validation environment against the
+        most recent prior *completed, verdicted* QA attempt at this exact
+        head SHA (Slice 25 — see ``qa.environment_drift_reason``). Needs a
+        real ``ValidationStore`` (never wired when QA is a fully external/
+        fake engine, e.g. in unit tests using a scripted ``QAEngine``) and
+        a ``QAResult.engine_run_id`` (the underlying validation run this
+        result's environment evidence was recorded under) — silently
+        skips the check when either is unavailable, exactly like every
+        other opt-in fact here (``baseline``, ``git_governance_service``,
+        ...): no drift check is not the same as no drift, but it is never
+        fabricated from missing data."""
+        if self._validation_store is None or not result.engine_run_id:
+            return None
+        previous_runs = [
+            candidate
+            for candidate in self._qa_run_store.list_for_work_item(request.work_item_id)
+            if candidate.run_id != run.run_id
+            and candidate.expected_head_sha == request.head_sha
+            and candidate.status is QARunStatus.COMPLETED
+            and candidate.verdict is not None
+        ]
+        if not previous_runs:
+            return None
+        previous_run = previous_runs[-1]
+        previous_result = self._qa_run_store.get_result(previous_run.run_id)
+        if previous_result is None or not previous_result.engine_run_id:
+            return None
+        return environment_drift_reason(
+            previous_verdict_status=previous_run.verdict.status,
+            previous_environment_fingerprints=self._validation_store.get_environment_fingerprints(
+                previous_result.engine_run_id
+            ),
+            current_environment_fingerprints=self._validation_store.get_environment_fingerprints(
+                result.engine_run_id
+            ),
+        )
 
     def _build_resume_context(self, work_item_id: str) -> str | None:
         """Grounds a fresh (possibly different) worker in the last handoff.

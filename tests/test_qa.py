@@ -34,9 +34,11 @@ from orchestrator.qa import (
     QAResult,
     QAVerdict,
     QAVerdictStatus,
+    VALIDATION_ENVIRONMENT_CHANGED,
     ResultAlreadyRecordedError,
     UnknownQARunError,
     VerdictAlreadyRecordedError,
+    environment_drift_reason,
     evaluate_qa_verdict,
     new_qa_run,
     run_final_verification_gate,
@@ -295,6 +297,116 @@ class TestUnresolvedRegression:
         )
         verdict = evaluate_qa_verdict(run=run, result=_result(), now=UTC_NOW)
         assert verdict.status is QAVerdictStatus.FAIL
+
+
+# --- 9.5 Environment drift: same SHA FAIL -> PASS is never a free pass ------
+#
+# Regression coverage for a real defect found via a real AIDO Code
+# self-dogfood run (WI-02): a validation command FAILed with
+# ModuleNotFoundError, then PASSed on the identical head SHA and command
+# after an unrelated process installed a missing dependency into the
+# ambient environment between the two QA attempts — see
+# validation.ValidationEnvironmentEvidence's own docstring for the full
+# forensic account.
+
+
+class TestEnvironmentDriftReason:
+    def test_no_prior_run_means_nothing_to_compare(self) -> None:
+        assert environment_drift_reason(
+            previous_verdict_status=None,
+            previous_environment_fingerprints={},
+            current_environment_fingerprints={"qa-tests": "fp-2"},
+        ) is None
+
+    def test_prior_pass_is_never_overridden_by_drift(self) -> None:
+        # An already-trusted PASS is a historical fact; a later attempt
+        # under a different environment does not retroactively cast doubt
+        # on it — this function only ever protects a *would-be* PASS from
+        # masking a real prior FAIL/INCONCLUSIVE.
+        assert environment_drift_reason(
+            previous_verdict_status=QAVerdictStatus.PASS,
+            previous_environment_fingerprints={"qa-tests": "fp-1"},
+            current_environment_fingerprints={"qa-tests": "fp-2"},
+        ) is None
+
+    def test_identical_fingerprints_after_a_fail_is_not_drift(self) -> None:
+        # Same SHA, same command, same environment, still failing then
+        # passing (a real DEV FIX): genuinely reproducible, no drift.
+        assert environment_drift_reason(
+            previous_verdict_status=QAVerdictStatus.FAIL,
+            previous_environment_fingerprints={"qa-tests": "fp-1"},
+            current_environment_fingerprints={"qa-tests": "fp-1"},
+        ) is None
+
+    def test_differing_fingerprint_after_a_fail_is_drift(self) -> None:
+        reason = environment_drift_reason(
+            previous_verdict_status=QAVerdictStatus.FAIL,
+            previous_environment_fingerprints={"qa-tests": "fp-1"},
+            current_environment_fingerprints={"qa-tests": "fp-2"},
+        )
+        assert reason is not None
+        assert VALIDATION_ENVIRONMENT_CHANGED in reason
+        assert "qa-tests" in reason
+
+    def test_differing_fingerprint_after_inconclusive_is_also_drift(self) -> None:
+        reason = environment_drift_reason(
+            previous_verdict_status=QAVerdictStatus.INCONCLUSIVE,
+            previous_environment_fingerprints={"qa-tests": "fp-1"},
+            current_environment_fingerprints={"qa-tests": "fp-2"},
+        )
+        assert reason is not None
+        assert VALIDATION_ENVIRONMENT_CHANGED in reason
+
+    def test_missing_fingerprint_on_either_side_is_never_treated_as_drift(self) -> None:
+        # Absence of evidence (a pre-Slice-25 historical run, or a probe
+        # that itself failed) is never treated as evidence of drift.
+        assert environment_drift_reason(
+            previous_verdict_status=QAVerdictStatus.FAIL,
+            previous_environment_fingerprints={"qa-tests": None},
+            current_environment_fingerprints={"qa-tests": "fp-2"},
+        ) is None
+        assert environment_drift_reason(
+            previous_verdict_status=QAVerdictStatus.FAIL,
+            previous_environment_fingerprints={"qa-tests": "fp-1"},
+            current_environment_fingerprints={"qa-tests": None},
+        ) is None
+
+    def test_unrelated_matching_command_does_not_mask_a_real_drift(self) -> None:
+        reason = environment_drift_reason(
+            previous_verdict_status=QAVerdictStatus.FAIL,
+            previous_environment_fingerprints={"lint": "fp-lint", "qa-tests": "fp-1"},
+            current_environment_fingerprints={"lint": "fp-lint", "qa-tests": "fp-2"},
+        )
+        assert reason is not None
+        assert "qa-tests" in reason
+        assert "lint" not in reason
+
+
+class TestEvaluateVerdictWithEnvironmentDrift:
+    def test_drift_detail_forces_inconclusive_even_though_result_would_pass(self) -> None:
+        run = QARun(
+            run_id="r", project_id="p", mvp_id="m", work_item_id="wi", engine_id="internal",
+            phase=QAPhase.FINAL_VERIFICATION, expected_base_sha="a" * 40, expected_head_sha="b" * 40,
+            policy=_policy(), manifest=_manifest(), status=QARunStatus.COMPLETED,
+            created_at=UTC_NOW, updated_at=UTC_NOW,
+        )
+        result = _result()  # a clean, would-be PASS: no regressions
+        verdict = evaluate_qa_verdict(
+            run=run, result=result, now=UTC_NOW,
+            environment_drift_detail=f"{VALIDATION_ENVIRONMENT_CHANGED}: test detail",
+        )
+        assert verdict.status is QAVerdictStatus.INCONCLUSIVE
+        assert VALIDATION_ENVIRONMENT_CHANGED in verdict.reason
+
+    def test_no_drift_detail_preserves_existing_pass_behavior(self) -> None:
+        run = QARun(
+            run_id="r", project_id="p", mvp_id="m", work_item_id="wi", engine_id="internal",
+            phase=QAPhase.FINAL_VERIFICATION, expected_base_sha="a" * 40, expected_head_sha="b" * 40,
+            policy=_policy(), manifest=_manifest(), status=QARunStatus.COMPLETED,
+            created_at=UTC_NOW, updated_at=UTC_NOW,
+        )
+        verdict = evaluate_qa_verdict(run=run, result=_result(), now=UTC_NOW)
+        assert verdict.status is QAVerdictStatus.PASS
 
 
 # --- 10. Infrastructure failure => INCONCLUSIVE ---------------------------

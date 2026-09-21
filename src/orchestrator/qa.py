@@ -57,7 +57,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Protocol, Sequence
+from typing import TYPE_CHECKING, Callable, Mapping, Protocol, Sequence
 
 if TYPE_CHECKING:
     from orchestrator.validation import QualityGateRunner
@@ -151,6 +151,12 @@ class QAVerdictStatus(str, Enum):
     PASS = "pass"
     FAIL = "fail"
     INCONCLUSIVE = "inconclusive"
+
+
+#: A machine-checkable token embedded in ``QAVerdict.reason`` whenever
+#: ``evaluate_qa_verdict`` returns INCONCLUSIVE because of
+#: ``environment_drift_reason`` below — see that function's docstring.
+VALIDATION_ENVIRONMENT_CHANGED = "VALIDATION_ENVIRONMENT_CHANGED"
 
 
 # --- QARequest / QAResult ----------------------------------------------------
@@ -743,6 +749,56 @@ def new_qa_run(
 # --- deterministic governance decision ---------------------------------------
 
 
+def environment_drift_reason(
+    *,
+    previous_verdict_status: QAVerdictStatus | None,
+    previous_environment_fingerprints: Mapping[str, str | None],
+    current_environment_fingerprints: Mapping[str, str | None],
+) -> str | None:
+    """Detects the exact defect a real AIDO Code self-dogfood run found
+    (WI-02, see ``validation.ValidationEnvironmentEvidence``'s docstring):
+    a validation command FAILed, then PASSed on the identical head SHA
+    and command after something outside Git changed the ambient
+    execution environment (a dependency became importable) between the
+    two QA attempts. Neither attempt was "wrong" about what it observed —
+    but the second attempt's PASS is not deterministic evidence
+    equivalent to the first attempt's FAIL, because the environment
+    itself was never pinned/verified.
+
+    Returns a reason string embedding ``VALIDATION_ENVIRONMENT_CHANGED``
+    when: a prior QA run exists at this exact head SHA, that prior run's
+    verdict was not already ``PASS`` (nothing here overwrites an already-
+    trusted PASS), and at least one validation command's environment
+    fingerprint genuinely differs between the two attempts (a fingerprint
+    missing on either side — e.g. a pre-Slice-25 historical run — is never
+    treated as a difference; absence of evidence is not evidence of
+    drift). Returns ``None`` otherwise: no prior run to compare against,
+    the prior run was already ``PASS``, or every comparable fingerprint
+    matches (genuinely reproducible).
+
+    Pure — takes already-computed fingerprints (from
+    ``ValidationStore.get_environment_fingerprints``), never queries a
+    store itself, exactly like every other ``evaluate_qa_verdict`` input.
+    """
+    if previous_verdict_status is None or previous_verdict_status is QAVerdictStatus.PASS:
+        return None
+    changed = sorted(
+        validation_id
+        for validation_id, current_fp in current_environment_fingerprints.items()
+        if current_fp is not None
+        and previous_environment_fingerprints.get(validation_id) is not None
+        and previous_environment_fingerprints[validation_id] != current_fp
+    )
+    if not changed:
+        return None
+    return (
+        f"{VALIDATION_ENVIRONMENT_CHANGED}: validation command(s) {changed!r} ran under a "
+        f"different validation environment than the prior {previous_verdict_status.value!r} "
+        "attempt at this exact head SHA — a resulting PASS is not deterministic evidence "
+        "equivalent to that prior attempt"
+    )
+
+
 def evaluate_qa_verdict(
     *,
     run: QARun,
@@ -751,25 +807,40 @@ def evaluate_qa_verdict(
     unauthorized_protected_change: bool = False,
     read_only_violation: bool = False,
     read_only_unprovable: bool = False,
+    environment_drift_detail: str | None = None,
 ) -> QAVerdict:
     """Pure, deterministic — never an LLM call, never reads
     ``result.engine_reported_status``. Mirrors
     ``git_governance.compute_merge_eligibility``'s shape exactly: every
     fact beyond ``run``/``result`` is a caller-supplied, already-computed
     fact (e.g. from ``orchestrator.qa_protection``'s baseline comparison,
-    or ``run_final_verification_gate`` below) — this function never
-    queries a store or the filesystem itself.
+    ``run_final_verification_gate`` below, or ``environment_drift_reason``
+    above) — this function never queries a store or the filesystem
+    itself.
+
+    ``environment_drift_detail`` (Slice 25, additive, default ``None``):
+    the caller-computed result of ``environment_drift_reason`` — when not
+    ``None``, this run's verdict is ``INCONCLUSIVE`` regardless of what
+    ``result`` itself shows, since the caller only ever passes a non-
+    ``None`` value when this attempt would otherwise flip a prior non-PASS
+    attempt to PASS under a different, unpinned validation environment
+    (see that function). "DETERMINISTIC QA EVIDENCE" means: same head SHA
+    + same validation command + same *observed* validation environment —
+    never a claim of full sandbox hermeticity (see
+    ``docs/QA_STRATEGY.md``).
 
     Order of checks mirrors the minimal PASS conditions from
     ``docs/QA_STRATEGY.md``/``docs/QA_GOVERNANCE.md``: run must be
     ``COMPLETED``; a read-only Final Verification that can't prove it
     stayed read-only is ``INCONCLUSIVE``; a missing ``QAResult`` on a
     completed run is ``INCONCLUSIVE`` (an infrastructure gap, not a
-    negative test signal); everything after that is a definite ``FAIL``
-    signal (read-only violated, wrong SHA, empty mandatory evidence,
-    unauthorized protected-test change, unresolved regression, a required
-    invariant failing, or a required engine missing) — only when none of
-    those apply is the verdict ``PASS``.
+    negative test signal); an unpinned environment change since a prior
+    non-PASS attempt at this exact SHA is also ``INCONCLUSIVE``;
+    everything after that is a definite ``FAIL`` signal (read-only
+    violated, wrong SHA, empty mandatory evidence, unauthorized
+    protected-test change, unresolved regression, a required invariant
+    failing, or a required engine missing) — only when none of those
+    apply is the verdict ``PASS``.
     """
     _require_aware(now, field_name="evaluate_qa_verdict now")
 
@@ -788,6 +859,8 @@ def evaluate_qa_verdict(
         return _verdict(QAVerdictStatus.INCONCLUSIVE, "final verification could not prove the repository stayed read-only")
     if result is None:
         return _verdict(QAVerdictStatus.INCONCLUSIVE, "qa run completed but produced no QAResult")
+    if environment_drift_detail is not None:
+        return _verdict(QAVerdictStatus.INCONCLUSIVE, environment_drift_detail)
     if read_only_violation:
         return _verdict(QAVerdictStatus.FAIL, "final verification declared read-only but a mutation was observed")
     if run.policy.require_exact_sha and result.observed_head_sha != run.expected_head_sha:

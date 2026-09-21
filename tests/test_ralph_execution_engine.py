@@ -39,6 +39,8 @@ from orchestrator.ralph_execution_engine import (
     UnsupportedProfileOptionError,
     _claude_code_permission_args,
     _codex_permission_args,
+    _default_subprocess_runner,
+    _worker_git_identity_env,
     parse_ralph_events,
 )
 from orchestrator.worker_selector import Worker
@@ -683,6 +685,130 @@ class TestGitShaCapture:
 
         assert result.record.git_sha_before is None
         assert result.record.git_sha_after is None
+
+
+class TestWorkerGitIdentity:
+    """Slice 25: worker Git commits are attributed by ``display_name``,
+    never by a provider/vendor name, and never via a global git config
+    mutation — see ``_worker_git_identity_env``."""
+
+    def test_alice_maps_to_author_alice(self) -> None:
+        env = _worker_git_identity_env(_alice())
+        assert env["GIT_AUTHOR_NAME"] == "Alice"
+        assert env["GIT_COMMITTER_NAME"] == "Alice"
+
+    def test_victor_maps_to_author_victor(self) -> None:
+        env = _worker_git_identity_env(_victor())
+        assert env["GIT_AUTHOR_NAME"] == "Victor"
+        assert env["GIT_COMMITTER_NAME"] == "Victor"
+
+    def test_email_is_deterministic_and_technical(self) -> None:
+        env = _worker_git_identity_env(_alice())
+        assert env["GIT_AUTHOR_EMAIL"] == "claude_dev_01@workers.ai-dev-orchestrator.local"
+        assert env["GIT_COMMITTER_EMAIL"] == env["GIT_AUTHOR_EMAIL"]
+        # deterministic: calling it again for the same worker is identical
+        assert _worker_git_identity_env(_alice()) == env
+
+    def test_different_workers_get_different_identities(self) -> None:
+        assert _worker_git_identity_env(_alice()) != _worker_git_identity_env(_victor())
+        assert _worker_git_identity_env(_alice()) != _worker_git_identity_env(_milo())
+
+    def test_never_a_provider_or_vendor_name(self) -> None:
+        # The author *name* (never a provider/vendor name) is the actual
+        # requirement here — the email is derived from worker_id, a
+        # project's own config choice (e.g. this file's fixtures use
+        # "claude_dev_01" for unrelated historical reasons; real
+        # config/workers.yaml worker_ids are plain first names like
+        # "alice"/"victor").
+        for worker in (_alice(), _victor(), _milo()):
+            env = _worker_git_identity_env(worker)
+            name_blob = f"{env['GIT_AUTHOR_NAME']} {env['GIT_COMMITTER_NAME']}".lower()
+            for forbidden in ("claude", "anthropic", "codex", "openai", "mistral", "vibe"):
+                assert forbidden not in name_blob
+
+    def test_never_claims_a_real_github_account(self) -> None:
+        # A clearly non-human, non-guessable email domain — never
+        # something that could be mistaken for the maintainer's own
+        # GitHub-linked email or a real human account.
+        for worker in (_alice(), _victor(), _milo()):
+            env = _worker_git_identity_env(worker)
+            assert env["GIT_AUTHOR_EMAIL"].endswith("@workers.ai-dev-orchestrator.local")
+
+
+class TestWorkerGitIdentityRealCommit:
+    """Uses the real ``git`` binary (like ``TestGitShaCapture`` above) to
+    prove the identity actually lands on a real commit, scoped to that
+    one subprocess only — never a global git config mutation."""
+
+    def _init_repo(self, path: Path) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+        # Deliberately configured to a *different* identity: proves the
+        # env-supplied worker identity is what actually wins, not
+        # whatever the repo/global config already says.
+        subprocess.run(["git", "config", "user.email", "someone-else@example.com"], cwd=path, check=True)
+        subprocess.run(["git", "config", "user.name", "Someone Else"], cwd=path, check=True)
+        (path / "seed.txt").write_text("seed\n")
+        subprocess.run(["git", "add", "seed.txt"], cwd=path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=path, check=True)
+
+    def _last_author(self, path: Path) -> str:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%an <%ae>"], cwd=path, capture_output=True, text=True, check=True,
+        )
+        return result.stdout.strip()
+
+    def test_alice_commit_is_attributed_to_alice(self, tmp_path: Path) -> None:
+        self._init_repo(tmp_path)
+        asyncio.run(
+            _default_subprocess_runner(
+                ["git", "commit", "-q", "--allow-empty", "-m", "alice work"], tmp_path, 10.0,
+                env=_worker_git_identity_env(_alice()),
+            )
+        )
+        assert self._last_author(tmp_path) == "Alice <claude_dev_01@workers.ai-dev-orchestrator.local>"
+
+    def test_victor_commit_is_attributed_to_victor(self, tmp_path: Path) -> None:
+        self._init_repo(tmp_path)
+        asyncio.run(
+            _default_subprocess_runner(
+                ["git", "commit", "-q", "--allow-empty", "-m", "victor work"], tmp_path, 10.0,
+                env=_worker_git_identity_env(_victor()),
+            )
+        )
+        assert self._last_author(tmp_path) == "Victor <codex_dev_01@workers.ai-dev-orchestrator.local>"
+
+    def test_global_git_config_is_never_touched(self, tmp_path: Path) -> None:
+        before = subprocess.run(
+            ["git", "config", "--global", "--list"], capture_output=True, text=True,
+        )
+        self._init_repo(tmp_path)
+        asyncio.run(
+            _default_subprocess_runner(
+                ["git", "commit", "-q", "--allow-empty", "-m", "alice work"], tmp_path, 10.0,
+                env=_worker_git_identity_env(_alice()),
+            )
+        )
+        after = subprocess.run(
+            ["git", "config", "--global", "--list"], capture_output=True, text=True,
+        )
+        assert before.stdout == after.stdout
+        assert before.returncode == after.returncode
+
+    def test_repo_local_config_is_also_never_touched(self, tmp_path: Path) -> None:
+        self._init_repo(tmp_path)
+        before = subprocess.run(
+            ["git", "config", "--local", "--list"], cwd=tmp_path, capture_output=True, text=True, check=True,
+        )
+        asyncio.run(
+            _default_subprocess_runner(
+                ["git", "commit", "-q", "--allow-empty", "-m", "alice work"], tmp_path, 10.0,
+                env=_worker_git_identity_env(_alice()),
+            )
+        )
+        after = subprocess.run(
+            ["git", "config", "--local", "--list"], cwd=tmp_path, capture_output=True, text=True, check=True,
+        )
+        assert before.stdout == after.stdout
 
 
 class TestNoForbiddenBehavior:

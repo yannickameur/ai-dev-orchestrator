@@ -1,6 +1,6 @@
 # Status
 
-Snapshot factuel court — mis à jour le 2026-09-19. Pas un journal ;
+Snapshot factuel court — mis à jour le 2026-09-21. Pas un journal ;
 l'historique détaillé daté (Slices, incidents, diagnostics) vit dans
 l'historique Git (`git log`) et dans les rapports sous `docs/reports/`.
 Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
@@ -21,10 +21,9 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   (deepseek/kimi via `claude_code` redirigé, `development` uniquement,
   **`enabled: false`**, clé API requise, pas encore de preuve
   d'exécution réelle ; voir `ROADMAP.md` §7/§13).
-- **Tests offline** : 1157 PASS (1135 avant + 22 pour la façade moteur
-  `OrchestratorEngine`, snapshot
-  courant, voir §11 de `ROADMAP.md` pour la méthode de comptage ; ce
-  nombre n'est pas un invariant permanent).
+- **Tests offline** : 1186 PASS (1157 avant + 29 pour la correction QA
+  environnement-déterministe/attribution Git worker, P13.1, voir
+  `ROADMAP.md` §13 ; ce nombre n'est pas un invariant permanent).
 - **Roman Numerals** (pilote externe) : `PASS`.
 - **Mistral / Vibe** : ✅ `VALIDATED`.
 - **Morpion Web 3D** (pilote externe) : `DONE`. SHA final :
@@ -51,6 +50,14 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   OrchestratorEngine` ; dépôt `aido-code` créé (`~/projects/aido-code`,
   roadmap/`MVP_SPEC.yaml`/WorkItems M1 préparés, aucun code fonctionnel
   écrit, aucun `aido run` lancé). Voir `ROADMAP.md` §13.
+- **P13.1 (première exécution réelle du WorkItem Flow sur AIDO Code M1)** :
+  `DONE` (2026-09-21). WI-01..WI-07 `completed` en 8 cycles, 32 tests
+  finaux PASS, un recovery réel (WI-01) ; défaut moteur réel découvert
+  (`FAIL`->`PASS` sur SHA identique via dérive de l'environnement de
+  validation, hors Git) et corrigé (`ValidationEnvironmentEvidence`,
+  `VALIDATION_ENVIRONMENT_CHANGED`, voir `docs/QA_STRATEGY.md` §8.3) ;
+  attribution Git des commits workers par `display_name` ajoutée. AIDO
+  Code promu deuxième projet de référence réel. Voir `ROADMAP.md` §13.
 - **P14 (observabilité de consommation et efficacité économique)** :
   `APPROUVÉ — APRÈS P13` (2026-09-19). Aucun WorkItem d'implémentation
   créé à ce jour ; voir `ROADMAP.md` §13. Toutes les autres propositions
@@ -124,5 +131,12 @@ Chronologie détaillée entièrement récupérable via `git log` et
 - P14 (observabilité de consommation et efficacité économique) approuvé
   par l'utilisateur pour après P13 ; aucun WorkItem d'implémentation créé
   à ce jour (2026-09-19). Voir `ROADMAP.md` §13.
+- P13.1 : premier `aido run` réel sur AIDO Code (M1, WI-01..WI-07),
+  révélant un défaut réel de preuve QA (même SHA, `FAIL` puis `PASS`,
+  dérive de l'environnement de validation hors Git) — corrigé par
+  `ValidationEnvironmentEvidence`/`environment_drift_reason`
+  (`INCONCLUSIVE` fail-closed plutôt qu'un `PASS` silencieux) ; attribution
+  Git des commits workers par `display_name` ajoutée à cette occasion
+  (2026-09-21). Voir `ROADMAP.md` §13, `docs/QA_STRATEGY.md` §8.3.
 
 Ce fichier reste court et factuel : pas de duplication de `ROADMAP.md`.
