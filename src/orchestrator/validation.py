@@ -37,7 +37,11 @@ Design invariants:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import os
+import re
+import shutil
 import sqlite3
 import subprocess
 import uuid
@@ -121,6 +125,70 @@ class ValidationCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ValidationEnvironmentEvidence:
+    """What actually ran a ``ValidationCommand`` — observed once per
+    execution, alongside the git SHA it ran against.
+
+    Found necessary via a real AIDO Code self-dogfood run (WI-02, see
+    ``docs/reports/``): a project's configured QA command (``pytest -q``,
+    resolved as a bare name via inherited ``PATH``) FAILed with
+    ``ModuleNotFoundError`` on some head SHA, then PASSed on that exact
+    same SHA and command after an unrelated process installed the
+    missing dependency into the ambient environment between the two QA
+    attempts. Before this, ``ValidationResult`` recorded the SHA and the
+    command but nothing about *which* interpreter/environment actually
+    ran it — so this exact "same SHA, different environment" drift was
+    unrepresentable, and a resulting PASS looked identical to a genuinely
+    deterministic one. See ``qa.environment_drift_reason``/
+    ``evaluate_qa_verdict``'s ``environment_drift_detail``.
+
+    Deliberately a small, explicit allow-list — never a raw ``os.environ``
+    dump: only facts that can plausibly explain a command resolving
+    differently between two runs of the identical ``argv``/``cwd``/SHA.
+    No secret, token, or credential is ever captured here.
+
+    This does not prove the execution environment was hermetic/sandboxed
+    — only that it was *observed*, so a later drift is *detectable*. See
+    ``docs/QA_STRATEGY.md``'s "DETERMINISTIC QA EVIDENCE" definition.
+    """
+
+    resolved_executable: str | None
+    path_value: str
+    virtual_env: str | None = None
+    pythonpath: str | None = None
+    python_executable: str | None = None
+    python_version: str | None = None
+    sys_prefix: str | None = None
+    packages_fingerprint: str | None = None
+    probe_error: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "path_value", _bounded(self.path_value))
+
+    @property
+    def fingerprint(self) -> str:
+        """A stable digest of every field above. Two evidence values with
+        the same fingerprint are, as far as this module can observe, the
+        identical validation environment — used only to detect drift
+        between two attempts, never to prove hermetic isolation."""
+        payload = json.dumps(
+            {
+                "resolved_executable": self.resolved_executable,
+                "path_value": self.path_value,
+                "virtual_env": self.virtual_env,
+                "pythonpath": self.pythonpath,
+                "python_executable": self.python_executable,
+                "python_version": self.python_version,
+                "sys_prefix": self.sys_prefix,
+                "packages_fingerprint": self.packages_fingerprint,
+                "probe_error": self.probe_error,
+            },
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
 class ValidationResult:
     """The observed outcome of running one ValidationCommand once."""
 
@@ -136,6 +204,10 @@ class ValidationResult:
     stdout: str = ""
     stderr: str = ""
     git_sha: str | None = None
+    #: ``None`` for any result recorded before this field existed — decoded
+    #: honestly as unknown, never fabricated after the fact (see
+    #: ``_decode_result_row``).
+    environment: ValidationEnvironmentEvidence | None = None
 
     def __post_init__(self) -> None:
         _require_non_empty_str(self.validation_run_id, field_name="ValidationResult.validation_run_id")
@@ -151,6 +223,11 @@ class ValidationResult:
             raise TypeError(f"ValidationResult.exit_code must be an int or None, got {type(self.exit_code)!r}")
         if self.git_sha is not None:
             _require_non_empty_str(self.git_sha, field_name="ValidationResult.git_sha")
+        if self.environment is not None and not isinstance(self.environment, ValidationEnvironmentEvidence):
+            raise TypeError(
+                f"ValidationResult.environment must be a ValidationEnvironmentEvidence or None, "
+                f"got {type(self.environment)!r}"
+            )
 
     @property
     def duration_ms(self) -> int:
@@ -242,8 +319,37 @@ def _compute_passed(
     return True
 
 
+def _encode_environment(environment: ValidationEnvironmentEvidence | None) -> str | None:
+    if environment is None:
+        return None
+    return json.dumps(
+        {
+            "resolved_executable": environment.resolved_executable,
+            "path_value": environment.path_value,
+            "virtual_env": environment.virtual_env,
+            "pythonpath": environment.pythonpath,
+            "python_executable": environment.python_executable,
+            "python_version": environment.python_version,
+            "sys_prefix": environment.sys_prefix,
+            "packages_fingerprint": environment.packages_fingerprint,
+            "probe_error": environment.probe_error,
+        }
+    )
+
+
+def _decode_environment(raw: str | None) -> ValidationEnvironmentEvidence | None:
+    """``None`` for anything not recorded (missing column value, or a row
+    written before this field existed) — decoded honestly as unknown,
+    never fabricated after the fact."""
+    if raw is None:
+        return None
+    data = json.loads(raw)
+    return ValidationEnvironmentEvidence(**data)
+
+
 def _decode_result_row(row: sqlite3.Row) -> ValidationResult:
     try:
+        environment_raw = row["environment_json"] if "environment_json" in row.keys() else None
         return ValidationResult(
             validation_run_id=row["validation_run_id"],
             validation_id=row["validation_id"],
@@ -257,6 +363,7 @@ def _decode_result_row(row: sqlite3.Row) -> ValidationResult:
             stdout=row["stdout"],
             stderr=row["stderr"],
             git_sha=row["git_sha"],
+            environment=_decode_environment(environment_raw),
         )
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         raise CorruptValidationResultError(str(exc)) from exc
@@ -302,7 +409,8 @@ CREATE TABLE IF NOT EXISTS validation_results (
     exit_code INTEGER,
     stdout TEXT NOT NULL,
     stderr TEXT NOT NULL,
-    git_sha TEXT
+    git_sha TEXT,
+    environment_json TEXT
 );
 CREATE TABLE IF NOT EXISTS validation_run_manifests (
     validation_run_id TEXT PRIMARY KEY,
@@ -331,6 +439,19 @@ class ValidationStore:
         self._conn.row_factory = sqlite3.Row
         with self._conn:
             self._conn.executescript(_CREATE_TABLES_SQL)
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """Idempotent, additive-only: a pre-existing ``validation_results``
+        table (created before ``environment_json`` existed) gets the
+        column added once; a fresh table already has it from
+        ``_CREATE_TABLES_SQL``. Never drops/renames a column, never
+        touches existing rows — old rows simply decode
+        ``environment=None`` (see ``_decode_environment``)."""
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(validation_results)").fetchall()}
+        if "environment_json" not in columns:
+            with self._conn:
+                self._conn.execute("ALTER TABLE validation_results ADD COLUMN environment_json TEXT")
 
     def close(self) -> None:
         self._conn.close()
@@ -381,15 +502,34 @@ class ValidationStore:
             self._conn.execute(
                 "INSERT INTO validation_results "
                 "(validation_run_id, project_id, mvp_id, work_item_id, validation_id, kind, "
-                "required, argv, status, started_at, finished_at, exit_code, stdout, stderr, git_sha) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "required, argv, status, started_at, finished_at, exit_code, stdout, stderr, git_sha, "
+                "environment_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     validation_run_id, project_id, mvp_id, work_item_id, result.validation_id,
                     result.kind.value, int(result.required), json.dumps(result.argv),
                     result.status.value, result.started_at.isoformat(), result.finished_at.isoformat(),
                     result.exit_code, result.stdout, result.stderr, git_sha,
+                    _encode_environment(result.environment),
                 ),
             )
+
+    def get_environment_fingerprints(self, validation_run_id: str) -> dict[str, str | None]:
+        """``validation_id -> ValidationEnvironmentEvidence.fingerprint``
+        for every result recorded under this run, ``None`` for any result
+        with no recorded environment evidence (a pre-Slice-25 row, or a
+        probe that itself failed) — never fabricated. The primitive
+        ``qa.environment_drift_reason`` needs to compare two attempts at
+        the same head SHA."""
+        rows = self._conn.execute(
+            "SELECT validation_id, environment_json FROM validation_results WHERE validation_run_id = ?",
+            (validation_run_id,),
+        ).fetchall()
+        fingerprints: dict[str, str | None] = {}
+        for row in rows:
+            environment = _decode_environment(row["environment_json"])
+            fingerprints[row["validation_id"]] = environment.fingerprint if environment is not None else None
+        return fingerprints
 
     def record_manifest(
         self, validation_run_id: str, project_id: str, commands: Sequence[ValidationCommand]
@@ -513,6 +653,138 @@ async def _default_subprocess_runner(
     return process.returncode, stdout, stderr
 
 
+EnvironmentProbe = Callable[[Sequence[str], Path], ValidationEnvironmentEvidence]
+
+_PYTHON_NAME_RE = re.compile(r"^python[0-9.]*$")
+
+_PYTHON_PROBE_SOURCE = (
+    "import json, sys\n"
+    "packages = []\n"
+    "try:\n"
+    "    from importlib import metadata\n"
+    "    for d in metadata.distributions():\n"
+    "        name = d.name\n"
+    "        if not name:\n"
+    "            continue\n"
+    "        entry = f'{name}=={d.version}'\n"
+    "        try:\n"
+    "            direct_url = d.read_text('direct_url.json') or ''\n"
+    "        except Exception:\n"
+    "            direct_url = ''\n"
+    "        if '\"editable\": true' in direct_url.replace(' ', ''):\n"
+    "            entry += '+editable'\n"
+    "        packages.append(entry)\n"
+    "    packages = sorted(set(packages))\n"
+    "except Exception:\n"
+    "    packages = []\n"
+    "print(json.dumps({'version': sys.version, 'prefix': sys.prefix, "
+    "'executable': sys.executable, 'packages': packages}))\n"
+)
+
+
+def _looks_like_python(path: str) -> bool:
+    return bool(_PYTHON_NAME_RE.match(Path(path).name))
+
+
+def _follow_shebang(executable: str) -> str | None:
+    """Generic, not Python-specific: a console-script wrapper (``pytest``,
+    ``ruff``, ...) is almost always a small text file whose first line
+    names its real interpreter (``#!/path/to/python3``, possibly via
+    ``#!/usr/bin/env python3`` indirection). Returns the resolved
+    interpreter path, or ``None`` when ``executable`` has no shebang (a
+    real ELF binary — ``node``, ``cargo``, ``go``, ...) or that
+    interpreter cannot be located."""
+    try:
+        with open(executable, "rb") as fh:
+            head = fh.read(256)
+    except OSError:
+        return None
+    if not head.startswith(b"#!"):
+        return None
+    line = head.split(b"\n", 1)[0].decode("utf-8", errors="replace")
+    parts = line[2:].strip().split()
+    if not parts:
+        return None
+    program = parts[0]
+    if Path(program).name == "env" and len(parts) > 1:
+        program = parts[1]
+    if Path(program).is_absolute():
+        return program if Path(program).is_file() else None
+    return shutil.which(program)
+
+
+def _resolve_python_executable(resolved: str) -> str | None:
+    if _looks_like_python(resolved):
+        return resolved
+    followed = _follow_shebang(resolved)
+    if followed is not None and _looks_like_python(followed):
+        return followed
+    return None
+
+
+def _probe_python_environment(python_executable: str) -> tuple[dict | None, str | None]:
+    try:
+        probe = subprocess.run(
+            [python_executable, "-c", _PYTHON_PROBE_SOURCE], capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"python environment probe could not run: {exc}"
+    if probe.returncode != 0:
+        return None, f"python environment probe exited {probe.returncode}: {_bounded(probe.stderr)}"
+    try:
+        return json.loads(probe.stdout), None
+    except json.JSONDecodeError as exc:
+        return None, f"python environment probe returned unparseable output: {exc}"
+
+
+def _default_environment_probe(argv: Sequence[str], cwd: Path) -> ValidationEnvironmentEvidence:
+    """Real, best-effort resolution of what will actually run ``argv[0]``
+    — never invents a fact it could not observe (see
+    ``ValidationEnvironmentEvidence``'s own docstring for why this
+    exists). Reads only an explicit allow-list of environment variables
+    (``PATH``/``VIRTUAL_ENV``/``PYTHONPATH``) — never a raw ``os.environ``
+    dump, so no secret/token/credential is ever captured."""
+    path_value = os.environ.get("PATH", "")
+    virtual_env = os.environ.get("VIRTUAL_ENV")
+    pythonpath = os.environ.get("PYTHONPATH")
+
+    argv0 = argv[0] if argv else ""
+    resolved = shutil.which(argv0) if argv0 else None
+    if resolved is None and argv0 and Path(argv0).is_file():
+        # A bare name is resolved by shutil.which via PATH; argv0 may
+        # instead already be an absolute/relative path (e.g.
+        # ``sys.executable``), which shutil.which does not handle.
+        resolved = str(Path(argv0))
+
+    if resolved is None:
+        return ValidationEnvironmentEvidence(
+            resolved_executable=None, path_value=path_value, virtual_env=virtual_env, pythonpath=pythonpath,
+            probe_error=f"could not resolve {argv0!r} via PATH",
+        )
+
+    python_executable = _resolve_python_executable(resolved)
+    if python_executable is None:
+        return ValidationEnvironmentEvidence(
+            resolved_executable=resolved, path_value=path_value, virtual_env=virtual_env, pythonpath=pythonpath,
+        )
+
+    data, probe_error = _probe_python_environment(python_executable)
+    if data is None:
+        return ValidationEnvironmentEvidence(
+            resolved_executable=resolved, path_value=path_value, virtual_env=virtual_env, pythonpath=pythonpath,
+            python_executable=python_executable, probe_error=probe_error,
+        )
+    packages_fingerprint = hashlib.sha256(
+        json.dumps(data.get("packages", []), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return ValidationEnvironmentEvidence(
+        resolved_executable=resolved, path_value=path_value, virtual_env=virtual_env, pythonpath=pythonpath,
+        python_executable=data.get("executable") or python_executable,
+        python_version=data.get("version"), sys_prefix=data.get("prefix"),
+        packages_fingerprint=packages_fingerprint,
+    )
+
+
 class QualityGateRunner:
     """Executes a project's configured ValidationCommands and persists results.
 
@@ -529,11 +801,13 @@ class QualityGateRunner:
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
         subprocess_runner: SubprocessRunner | None = None,
+        environment_probe: EnvironmentProbe | None = None,
     ) -> None:
         self._store = store
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
         self._run_subprocess = subprocess_runner or _default_subprocess_runner
+        self._environment_probe = environment_probe or _default_environment_probe
 
     async def run_gate(
         self,
@@ -592,9 +866,20 @@ class QualityGateRunner:
             git_sha=git_sha,
         )
 
+    def _capture_environment(self, argv: Sequence[str], cwd: Path) -> ValidationEnvironmentEvidence:
+        try:
+            return self._environment_probe(argv, cwd)
+        except Exception as exc:  # noqa: BLE001 - forensic evidence must never crash the gate itself
+            return ValidationEnvironmentEvidence(
+                resolved_executable=None, path_value=os.environ.get("PATH", ""),
+                virtual_env=os.environ.get("VIRTUAL_ENV"), pythonpath=os.environ.get("PYTHONPATH"),
+                probe_error=f"environment probe raised: {exc}",
+            )
+
     async def _run_one(
         self, validation_run_id: str, command: ValidationCommand, cwd: Path
     ) -> ValidationResult:
+        environment = self._capture_environment(command.argv, cwd)
         started_at = self._clock()
         try:
             exit_code, stdout, stderr = await self._run_subprocess(
@@ -605,13 +890,14 @@ class QualityGateRunner:
                 validation_run_id=validation_run_id, validation_id=command.validation_id,
                 kind=command.kind, required=command.required, argv=command.argv,
                 status=ValidationStatus.TIMEOUT, started_at=started_at, finished_at=self._clock(),
+                environment=environment,
             )
         except FileNotFoundError as exc:
             return ValidationResult(
                 validation_run_id=validation_run_id, validation_id=command.validation_id,
                 kind=command.kind, required=command.required, argv=command.argv,
                 status=ValidationStatus.ERROR, started_at=started_at, finished_at=self._clock(),
-                stderr=_bounded(str(exc)),
+                stderr=_bounded(str(exc)), environment=environment,
             )
 
         finished_at = self._clock()
@@ -622,4 +908,5 @@ class QualityGateRunner:
             status=status, started_at=started_at, finished_at=finished_at, exit_code=exit_code,
             stdout=_bounded(stdout.decode("utf-8", errors="replace")),
             stderr=_bounded(stderr.decode("utf-8", errors="replace")),
+            environment=environment,
         )

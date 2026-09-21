@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ from orchestrator.validation import (
     ReadOnlyValidationViolationError,
     UnknownValidationRunError,
     ValidationCommand,
+    ValidationEnvironmentEvidence,
     ValidationKind,
     ValidationResult,
     ValidationStatus,
@@ -602,3 +604,127 @@ class TestReadOnlyVerificationHardening:
             runner.run_gate(project_id="proj-1", cwd=tmp_path, verify_repository_unchanged=True)
         )
         assert gate.passed is True
+
+
+class TestEnvironmentEvidence:
+    """Slice 25: every ``ValidationResult`` also records what actually ran
+    it — found necessary by a real defect (see
+    ``ValidationEnvironmentEvidence``'s own docstring: same head SHA, same
+    command, FAIL then PASS because the ambient Python environment
+    silently changed between two QA attempts)."""
+
+    def test_real_python_command_is_recognized_as_python(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.set_project_commands("proj-1", [_cmd(argv=(PY, "-c", "pass"))])
+        runner = _runner(store)
+
+        gate = asyncio.run(runner.run_gate(project_id="proj-1", cwd=tmp_path))
+
+        environment = gate.results[0].environment
+        assert environment is not None
+        assert environment.resolved_executable == PY
+        assert environment.python_executable == PY
+        assert environment.python_version is not None
+        assert environment.sys_prefix is not None
+        assert environment.packages_fingerprint is not None
+        assert environment.probe_error is None
+
+    def test_non_python_command_has_no_python_fields(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.set_project_commands("proj-1", [_cmd(argv=("true",))])
+        runner = _runner(store)
+
+        gate = asyncio.run(runner.run_gate(project_id="proj-1", cwd=tmp_path))
+
+        environment = gate.results[0].environment
+        assert environment is not None
+        assert environment.resolved_executable is not None
+        assert environment.python_executable is None
+        assert environment.packages_fingerprint is None
+
+    def test_missing_binary_still_records_environment_with_probe_error(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.set_project_commands("proj-1", [_cmd(argv=("this-binary-does-not-exist-xyz",))])
+        runner = _runner(store)
+
+        gate = asyncio.run(runner.run_gate(project_id="proj-1", cwd=tmp_path))
+
+        environment = gate.results[0].environment
+        assert environment is not None
+        assert environment.resolved_executable is None
+        assert environment.probe_error is not None
+
+    def test_identical_environment_probe_yields_identical_fingerprint(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.set_project_commands("proj-1", [_cmd(argv=(PY, "-c", "pass"))])
+        runner = _runner(store)
+
+        gate1 = asyncio.run(runner.run_gate(project_id="proj-1", cwd=tmp_path))
+        gate2 = asyncio.run(runner.run_gate(project_id="proj-1", cwd=tmp_path))
+
+        assert gate1.results[0].environment.fingerprint == gate2.results[0].environment.fingerprint
+
+    def test_custom_environment_probe_is_used_and_persisted(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.set_project_commands("proj-1", [_cmd(argv=(PY, "-c", "pass"))])
+        fake_evidence = ValidationEnvironmentEvidence(
+            resolved_executable="/fake/pytest", path_value="/fake/bin", python_executable="/fake/python",
+            python_version="3.99", sys_prefix="/fake/venv", packages_fingerprint="deadbeef",
+        )
+        runner = QualityGateRunner(
+            store, clock=lambda: UTC_NOW, id_factory=lambda: "run-1",
+            environment_probe=lambda argv, cwd: fake_evidence,
+        )
+
+        gate = asyncio.run(runner.run_gate(project_id="proj-1", cwd=tmp_path))
+        assert gate.results[0].environment == fake_evidence
+
+        fingerprints = store.get_environment_fingerprints(gate.validation_run_id)
+        assert fingerprints == {"unit-tests": fake_evidence.fingerprint}
+
+    def test_environment_probe_raising_never_crashes_the_gate(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.set_project_commands("proj-1", [_cmd(argv=(PY, "-c", "pass"))])
+
+        def _boom(argv, cwd):
+            raise RuntimeError("probe exploded")
+
+        runner = QualityGateRunner(
+            store, clock=lambda: UTC_NOW, id_factory=lambda: "run-1", environment_probe=_boom,
+        )
+
+        gate = asyncio.run(runner.run_gate(project_id="proj-1", cwd=tmp_path))
+        assert gate.passed is True  # the command itself still ran fine
+        assert gate.results[0].environment is not None
+        assert "probe exploded" in gate.results[0].environment.probe_error
+
+    def test_old_rows_without_environment_decode_as_none(self, tmp_path: Path) -> None:
+        # Simulates a pre-Slice-25 database row (inserted before
+        # environment_json existed): must decode honestly as unknown,
+        # never a fabricated fingerprint.
+        db_path = tmp_path / "validation.sqlite3"
+        store = ValidationStore(db_path, clock=lambda: UTC_NOW)
+        with store._conn:
+            store._conn.execute(
+                "INSERT INTO validation_results (validation_run_id, project_id, mvp_id, work_item_id, "
+                "validation_id, kind, required, argv, status, started_at, finished_at, exit_code, stdout, "
+                "stderr, git_sha) VALUES (?, ?, NULL, NULL, ?, ?, 1, ?, ?, ?, ?, 0, '', '', NULL)",
+                (
+                    "legacy-run", "proj-1", "unit-tests", ValidationKind.UNIT_TEST.value, json.dumps(["pytest"]),
+                    ValidationStatus.PASSED.value, UTC_NOW.isoformat(), UTC_NOW.isoformat(),
+                ),
+            )
+
+        gate = store.get_gate_result("legacy-run")
+        assert gate.results[0].environment is None
+        assert store.get_environment_fingerprints("legacy-run") == {"unit-tests": None}
+
+    def test_migration_is_idempotent_on_reopen(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "validation.sqlite3"
+        ValidationStore(db_path, clock=lambda: UTC_NOW).close()
+        # Reopening an already-migrated database must not raise (e.g. a
+        # naive unconditional "ALTER TABLE ADD COLUMN" would fail the
+        # second time).
+        reopened = ValidationStore(db_path, clock=lambda: UTC_NOW)
+        reopened.set_project_commands("proj-1", [_cmd()])
+        assert reopened.get_project_commands("proj-1") == (_cmd(),)
