@@ -163,6 +163,19 @@ These are load-bearing product decisions, not style preferences — see
   configured commands (pytest, project-specific test suites, browser
   regression tests, ...) and computes the verdict itself; a worker's
   own claim that "the tests pass" is never sufficient.
+- **"Deterministic" means same SHA + same command + same *observed*
+  validation environment** (`docs/QA_STRATEGY.md`, §8.3) — not a claim
+  of full sandbox hermeticity. Found necessary by a real defect: a real
+  AIDO Code self-dogfood run (WI-02) produced a `FAIL` then a `PASS` on
+  the identical head SHA and QA command because an external process
+  changed the ambient Python environment between the two attempts, with
+  no Git-visible change at all. The engine now records
+  `ValidationEnvironmentEvidence` per validation run and downgrades a
+  would-be `PASS` that follows a prior non-`PASS` attempt under a
+  different environment to `INCONCLUSIVE`
+  (`VALIDATION_ENVIRONMENT_CHANGED`) rather than trusting it silently.
+  If you see this verdict in a real run, it means exactly that — not a
+  test bug to be shrugged off.
 
 ## Git rules
 

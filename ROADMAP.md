@@ -692,6 +692,85 @@ fonctionnel du futur CLI `aido-code` écrit par cette session ; aucun
 count = 0 pour AIDO Code. Voir la sous-section suivante pour la
 préparation (roadmap/MVP_SPEC/WorkItems) du projet `aido-code` lui-même.
 
+### P13.1 — Première exécution réelle du WorkItem Flow sur AIDO Code (M1) et défaut moteur QA découvert/corrigé (2026-09-21)
+
+**Fait** : le GO humain a été donné pour laisser AI Dev Orchestrator
+construire réellement AIDO Code M1 (WI-01 à WI-07, `~/projects/aido-code`)
+via son propre `aido run` — DEV A (`alice`/anthropic), DEV B corrective
+(`victor`/openai), QA déterministe interne, merge/tag gouvernés. Les 7
+WorkItems ont atteint `completed` en 8 cycles ; 32 tests finaux PASS ; un
+recovery réel (`RECOVERY_REQUIRED`) a eu lieu sur WI-01 après une
+interruption externe du process ; aucune correction manuelle du code
+produit par un opérateur humain/assistant.
+
+**Défaut moteur découvert par ce run réel** (analyse forensique read-only,
+preuve exacte) : WI-02 a produit un `pytest -q` `FAIL`
+(`ModuleNotFoundError: No module named 'orchestrator'`) puis, sur le
+**même** head SHA (`06c79d9…`) et la **même** commande, un `PASS`,
+9 tests passés. Cause établie : la commande QA configurée (`argv:
+["pytest", "-q"]`, résolue via le `PATH` ambiant hérité par
+`asyncio.create_subprocess_exec`, jamais pinnée à un interpréteur
+déclaré) a résolu un `pytest` différemment selon que le paquet
+`orchestrator` était, ou non, installé dans l'environnement Python
+utilisateur ambiant au moment précis de chaque tentative — un processus
+externe (le worker DEV FIX lui-même, suivant `CONTRIBUTING.md`
+d'AIDO Code) a installé cette dépendance manquante *entre* les deux
+tentatives QA, sans aucun changement Git (SHA avant = SHA après). Ce
+n'était donc ni un défaut produit d'AIDO Code, ni un « blind retry », mais
+une lacune réelle de la preuve QA moteur : `ValidationResult` liait un
+verdict au SHA et à la commande, jamais à l'environnement d'exécution
+réellement observé — le run historique original **n'était donc pas
+parfaitement déterministe/hermétique**, contrairement à ce qu'un simple
+« QA PASS » suggérait avant cette correction.
+
+**Correction moteur appliquée** (branche `fix/qa-environment-determinism`,
+PR dédiée) : voir `docs/QA_STRATEGY.md`, §8.3 (« DETERMINISTIC QA
+EVIDENCE ») pour le détail complet. En résumé :
+`ValidationEnvironmentEvidence` (`src/orchestrator/validation.py`) capture
+désormais l'exécutable réellement résolu, l'interpréteur Python
+sous-jacent (générique, jamais une règle spécifique à `pytest`), sa
+version, son `sys.prefix`, et une empreinte du jeu de paquets installés,
+pour chaque commande de validation exécutée ; `qa.environment_drift_reason`
++ `evaluate_qa_verdict(..., environment_drift_detail=...)` refusent de
+traiter comme un `PASS` déterministe une tentative qui suivrait un
+`FAIL`/`INCONCLUSIVE` antérieur sur le même SHA sous un environnement de
+validation différent — verdict `INCONCLUSIVE`
+(`VALIDATION_ENVIRONMENT_CHANGED`) à la place, jamais un `PASS` silencieux.
+Migration SQLite additive/idempotente (`environment_json`, anciens
+enregistrements décodés `environment=None`, jamais un fingerprint
+fabriqué après coup). Aucune promesse d'hermiticité totale — voir la
+définition exacte de « DETERMINISTIC QA EVIDENCE » en §8.3 de
+`docs/QA_STRATEGY.md`.
+
+**Attribution Git des workers** (même correction) : les commits produits
+par un worker sont désormais attribués par `worker.display_name` (jamais
+un nom de provider/vendor — Claude/Anthropic/Codex/OpenAI/Mistral exclus
+par construction), via `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/
+`GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL` injectés dans l'environnement
+du seul subprocess du worker concerné (`RalphExecutionEngine`,
+`_worker_git_identity_env`) — jamais `git config --global`/`--system`,
+aucune logique Git dans `MVPManager`/`WorkerSelector`. Email technique
+stable et non trompeuse : `<worker_id>@workers.ai-dev-orchestrator.local`.
+Les commits WI-01 à WI-07 déjà produits par le run réel ci-dessus
+**n'ont pas été réécrits** (preuve d'exécution immuable) ; cette
+attribution s'applique aux commits produits à partir de cette correction.
+
+**Tests** : régression exacte du scénario WI-02 (même SHA, même commande,
+environnement différent -> `INCONCLUSIVE`, jamais `PASS`) dans
+`tests/test_mvp_manager_workitem_flow.py`
+(`TestEnvironmentDriftNeverMasksAsPass`), plus tests unitaires
+`tests/test_qa.py`/`tests/test_validation.py`/
+`tests/test_ralph_execution_engine.py` (empreinte d'environnement,
+migration idempotente, attribution Git par worker, aucune fuite de
+secret, aucune mutation de config Git globale).
+
+**AIDO Code, statut après cette correction** : `M1 DONE` fonctionnellement
+(WI-01..WI-07 `completed`, 32 tests PASS, smoke test read-only PASS) ;
+promu deuxième projet de référence réel avec la réserve honnête
+ci-dessus — le run initial a révélé un défaut moteur réel, corrigé avant
+toute promotion sans réserve. M2 (sessions/resume) reste `PLANNED`, non
+démarré ; aucun WorkItem M2 créé dans l'état runtime.
+
 ### P14 — Observabilité de consommation et efficacité économique — `APPROUVÉ`, après P13 (2026-09-19, non implémenté)
 
 **Décision produit** : approuvée, statut `APPROUVÉ — APRÈS P13`. Aucun
@@ -863,6 +942,7 @@ Invariants respectés par l'implémentation (`RalphExecutionEngine`,
 | P11 | Productiser le cycle optionnel release/planning | `PlanningCoordinator` → `ApprovalCoordinator` → `RoadmapApplicationService` existent déjà (§10) — en faire un flux produit supporté de bout en bout ? | À VOTER |
 | P12 | Format de configuration de projet public | Aucun format déclaratif stable n'existait pour onboarder un projet (harnais Python custom) | **`DONE` — voir §3/§10, `docs/PROJECT_CONFIG.md`** |
 | P13 | Découplage moteur / externalisation AIDO Code | Le moteur headless doit-il être séparé d'une future interface terminal interactive (AIDO Code), pour rester réutilisable par un frontend externe ? | **`DONE`, priorité 1 (2026-09-19) — voir §3/§10, sous-section P13 ci-dessus** |
+| P13.1 | Première exécution réelle du WorkItem Flow sur AIDO Code (M1) — défaut moteur QA découvert et corrigé | Le run réel de M1 (WI-01..WI-07) a-t-il fonctionné, et qu'a-t-il révélé sur le moteur lui-même ? | **`DONE` (2026-09-21) — M1 complété fonctionnellement ; défaut réel de preuve QA (`FAIL`->`PASS` sur SHA identique via dérive d'environnement, hors Git) découvert et corrigé (`VALIDATION_ENVIRONMENT_CHANGED`) ; attribution Git par worker ajoutée — voir sous-section P13.1 ci-dessus** |
 | P14 | Observabilité de consommation et efficacité économique | Le moteur doit-il enregistrer, par exécution, les métriques réelles (tokens, durée, retries, coût observé/estimé) nécessaires pour identifier ensuite quelles phases/workers/providers sont les moins économiques ? | **APPROUVÉ — APRÈS P13** (2026-09-19). Aucun WorkItem d'implémentation créé à ce jour ; voir sous-section P14 ci-dessous pour le détail complet des critères |
 
 Les propositions encore `À VOTER` restent non planifiées ; aucun ordre entre
