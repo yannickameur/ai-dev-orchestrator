@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -82,7 +83,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Awaitable, Callable, Sequence
+from typing import Awaitable, Callable, Mapping, Sequence
 
 from orchestrator.execution_policy import ExecutionPermissionMode
 from orchestrator.execution_store import ExecutionRecord, ExecutionStore
@@ -603,13 +604,46 @@ def _write_runtime_config(
 
 SubprocessRunner = Callable[[Sequence[str], Path, float], Awaitable[tuple[int, bytes, bytes]]]
 
+#: A stable, technical, non-human-account identity domain for worker Git
+#: commits — never a real GitHub account, never a provider/vendor name
+#: (Claude/Anthropic/Codex/OpenAI/Mistral). See ``_worker_git_identity_env``.
+_WORKER_GIT_EMAIL_DOMAIN = "workers.ai-dev-orchestrator.local"
+
+
+def _worker_git_identity_env(worker: Worker) -> dict[str, str]:
+    """Provider-agnostic Git author/committer identity for a worker's own
+    subprocess only — never ``git config --global`` (see module/
+    ``RalphExecutionEngine.execute`` docs). ``worker.display_name`` (a
+    human label — see ``Worker``'s own docstring) becomes the Git author
+    *name*; ``worker.worker_id`` (the stable technical identity) anchors a
+    deterministic, clearly-non-human email so a real commit never looks
+    like it came from a human GitHub account. Contains no branch on
+    ``worker.provider``/``backend`` — the exact same translation applies
+    to every worker regardless of which provider it runs on."""
+    return {
+        "GIT_AUTHOR_NAME": worker.display_name,
+        "GIT_AUTHOR_EMAIL": f"{worker.worker_id}@{_WORKER_GIT_EMAIL_DOMAIN}",
+        "GIT_COMMITTER_NAME": worker.display_name,
+        "GIT_COMMITTER_EMAIL": f"{worker.worker_id}@{_WORKER_GIT_EMAIL_DOMAIN}",
+    }
+
 
 async def _default_subprocess_runner(
-    args: Sequence[str], cwd: Path, timeout: float
+    args: Sequence[str], cwd: Path, timeout: float, *, env: Mapping[str, str] | None = None,
 ) -> tuple[int, bytes, bytes]:
+    """``env`` is keyword-only with a ``None`` default so this remains a
+    drop-in ``SubprocessRunner`` (3 positional args) for any caller
+    unaware of it — merged over a copy of this process's own
+    ``os.environ`` (never mutating ``os.environ`` itself), scoped to this
+    one subprocess only. See ``RalphExecutionEngine.execute`` for how
+    ``env`` is supplied only when this exact default implementation is in
+    use (a custom/fake ``subprocess_runner``, as every test in this
+    codebase injects, never spawns a real process, so it never needs or
+    receives this extra ``env`` — it stays a plain 3-arg callable)."""
     process = await asyncio.create_subprocess_exec(
         *args,
         cwd=str(cwd),
+        env={**os.environ, **(env or {})},
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -641,6 +675,12 @@ class RalphExecutionEngine:
         self._permission_mode = permission_mode
 
     async def execute(self, request: ExecutionRequest) -> ExecutionResult:
+        """Runs one Worker via Ralph. ``request.worker``'s Git identity
+        (see ``_worker_git_identity_env``) is passed to ``_run_subprocess``
+        as an ``env`` mapping scoped to this one subprocess only — never
+        ``git config --global``/``--system``, and this method never
+        touches this process's own ``os.environ`` either, so a concurrent
+        execution for a different worker is never affected."""
         git_sha_before = _git_head_sha(request.workspace)
 
         record = self._execution_store.create(
@@ -661,9 +701,19 @@ class RalphExecutionEngine:
         try:
             try:
                 args = self._build_ralph_args(runtime_dir, request)
-                exit_code, stdout, stderr = await self._run_subprocess(
-                    args, request.workspace, request.timeout_seconds
-                )
+                if self._run_subprocess is _default_subprocess_runner:
+                    # Only the real implementation actually spawns a
+                    # process and can honor `env=` — a custom/fake
+                    # `subprocess_runner` (every test in this codebase)
+                    # stays a plain 3-arg SubprocessRunner, unaffected.
+                    exit_code, stdout, stderr = await _default_subprocess_runner(
+                        args, request.workspace, request.timeout_seconds,
+                        env=_worker_git_identity_env(request.worker),
+                    )
+                else:
+                    exit_code, stdout, stderr = await self._run_subprocess(
+                        args, request.workspace, request.timeout_seconds
+                    )
             except RalphTimeoutError:
                 loop_id = _read_ralph_loop_id(request.workspace)
                 updated = self._execution_store.mark_interrupted(

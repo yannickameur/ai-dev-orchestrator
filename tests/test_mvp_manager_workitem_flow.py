@@ -33,8 +33,24 @@ from orchestrator.git_governance import (
 from orchestrator.handoff import HandoffStore
 from orchestrator.mvp_manager import MVPManager
 from orchestrator.project_state import ProjectStateStore, WorkItemStatus
-from orchestrator.qa import FailureClassification, QAPhase, QAPolicy, QARunStore, QAResult
+from orchestrator.qa import (
+    VALIDATION_ENVIRONMENT_CHANGED,
+    FailureClassification,
+    QAPhase,
+    QAPolicy,
+    QARunStore,
+    QAResult,
+    QAVerdictStatus,
+)
 from orchestrator.ralph_execution_engine import ExecutionResult
+from orchestrator.validation import (
+    ValidationCommand,
+    ValidationEnvironmentEvidence,
+    ValidationKind,
+    ValidationResult,
+    ValidationStatus,
+    ValidationStore,
+)
 from orchestrator.wait import WaitStore
 from orchestrator.worker_selector import (
     NoEligibleWorkerError,
@@ -545,6 +561,180 @@ class TestWorkItemQAFailBoundedRetry:
         assert wi2_result.work_item.work_item_id == "wi-2"
         assert wi2_result.work_item.status is WorkItemStatus.COMPLETED
         assert git_store.get("wi-2").status is GitWorkItemStatus.MERGED
+
+
+# --- Slice 25: environment drift never silently becomes a trusted PASS -----
+
+
+class TestEnvironmentDriftNeverMasksAsPass:
+    """Regression coverage for a real defect found via a real AIDO Code
+    self-dogfood run (WI-02, see
+    ``orchestrator.validation.ValidationEnvironmentEvidence``'s own
+    docstring for the full forensic account): same head SHA, same QA
+    command, a DEV FIX that changes nothing in Git, QA FAIL then QA PASS
+    — driven here by two pre-recorded environment fingerprints that
+    genuinely differ, exactly like the real "a dependency became
+    importable between two attempts" incident. The fixed engine must
+    never treat the second attempt as a trusted, mergeable PASS."""
+
+    def test_fail_then_pass_under_a_different_environment_stays_inconclusive(self, tmp_path: Path) -> None:
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-1", mvp_id="mvp-1", title="A")
+        git_service, git_store = _git_service(tmp_path)
+        qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
+        validation_store = ValidationStore(tmp_path / "validation.sqlite3", clock=lambda: UTC_NOW)
+
+        env_without_dependency = ValidationEnvironmentEvidence(
+            resolved_executable="/env/bin/pytest", path_value="/env/bin",
+            python_executable="/env/bin/python", python_version="3.11.0",
+            sys_prefix="/env", packages_fingerprint="fp-without-orchestrator",
+        )
+        env_with_dependency = ValidationEnvironmentEvidence(
+            resolved_executable="/env/bin/pytest", path_value="/env/bin",
+            python_executable="/env/bin/python", python_version="3.11.0",
+            sys_prefix="/env", packages_fingerprint="fp-with-orchestrator",
+        )
+        assert env_without_dependency.fingerprint != env_with_dependency.fingerprint
+
+        def _record_validation_run(run_id: str, environment: ValidationEnvironmentEvidence, *, passed: bool) -> None:
+            validation_store.set_project_commands(
+                f"proj:{run_id}",
+                [ValidationCommand(validation_id="qa-tests", kind=ValidationKind.UNIT_TEST, argv=("pytest", "-q"))],
+            )
+            result = ValidationResult(
+                validation_run_id=run_id, validation_id="qa-tests", kind=ValidationKind.UNIT_TEST,
+                required=True, argv=("pytest", "-q"),
+                status=ValidationStatus.PASSED if passed else ValidationStatus.FAILED,
+                started_at=UTC_NOW, finished_at=UTC_NOW, exit_code=0 if passed else 2,
+                environment=environment,
+            )
+            validation_store.record_result(run_id, f"proj:{run_id}", result)
+
+        _record_validation_run("vrun-fail", env_without_dependency, passed=False)
+        _record_validation_run("vrun-pass", env_with_dependency, passed=True)
+
+        def _fail_for(request):
+            return QAResult(
+                engine_id="fake-qa", engine_run_id="vrun-fail", observed_head_sha=request.head_sha,
+                started_at=UTC_NOW, finished_at=UTC_NOW,
+                tests_executed=("qa-tests",), passed_count=0, failed_count=1,
+                regressions=("qa-tests (failed, exit=2)",), requires_coding_agent=True,
+                failure_classifications=(FailureClassification.REGRESSION,),
+            )
+
+        def _pass_for(request):
+            return QAResult(
+                engine_id="fake-qa", engine_run_id="vrun-pass", observed_head_sha=request.head_sha,
+                started_at=UTC_NOW, finished_at=UTC_NOW,
+                tests_executed=("qa-tests",), passed_count=1, failed_count=0,
+            )
+
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+        engine = WorkItemFlowFakeEngine(dev_actions=[
+            _commit_action("feature.py", "x = 1\n", "DEV A implementation"),
+            None,  # DEV B: no change
+            None,  # DEV FIX: no change — exactly the real WI-02 pattern
+        ])
+        selector = _real_worker_selector([alice, victor])
+        qa_engine = DynamicQAEngine([_fail_for, _pass_for])
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine,
+            git_governance_service=git_service, qa_engine=qa_engine,
+            qa_policy=QAPolicy(max_qa_cycles=3, required_invariant_ids=("workitem-qa-check",)), qa_run_store=qa_run_store,
+            validation_store=validation_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        first = asyncio.run(manager.run_next_work_item("mvp-1"))
+        assert first.work_item.status is WorkItemStatus.NEEDS_REWORK
+
+        second = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        runs = qa_run_store.list_for_work_item("wi-1")
+        assert len(runs) == 2
+        assert runs[0].verdict.status is QAVerdictStatus.FAIL
+        # The would-be PASS must be downgraded, never a silent merge:
+        assert runs[1].verdict.status is QAVerdictStatus.INCONCLUSIVE
+        assert VALIDATION_ENVIRONMENT_CHANGED in runs[1].verdict.reason
+
+        assert second.work_item.status is not WorkItemStatus.COMPLETED
+        record = git_store.get("wi-1")
+        assert record.status is not GitWorkItemStatus.MERGED
+
+    def test_fail_then_pass_under_the_same_environment_still_passes(self, tmp_path: Path) -> None:
+        """Control case: identical environment fingerprints must never be
+        blocked by this check — a genuine DEV FIX that actually resolves
+        the failure still merges normally."""
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-1", mvp_id="mvp-1", title="A")
+        git_service, git_store = _git_service(tmp_path)
+        qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
+        validation_store = ValidationStore(tmp_path / "validation.sqlite3", clock=lambda: UTC_NOW)
+
+        same_environment = ValidationEnvironmentEvidence(
+            resolved_executable="/env/bin/pytest", path_value="/env/bin",
+            python_executable="/env/bin/python", python_version="3.11.0",
+            sys_prefix="/env", packages_fingerprint="fp-stable",
+        )
+
+        def _record_validation_run(run_id: str, *, passed: bool) -> None:
+            validation_store.set_project_commands(
+                f"proj:{run_id}",
+                [ValidationCommand(validation_id="qa-tests", kind=ValidationKind.UNIT_TEST, argv=("pytest", "-q"))],
+            )
+            result = ValidationResult(
+                validation_run_id=run_id, validation_id="qa-tests", kind=ValidationKind.UNIT_TEST,
+                required=True, argv=("pytest", "-q"),
+                status=ValidationStatus.PASSED if passed else ValidationStatus.FAILED,
+                started_at=UTC_NOW, finished_at=UTC_NOW, exit_code=0 if passed else 2,
+                environment=same_environment,
+            )
+            validation_store.record_result(run_id, f"proj:{run_id}", result)
+
+        _record_validation_run("vrun-fail", passed=False)
+        _record_validation_run("vrun-pass", passed=True)
+
+        def _fail_for(request):
+            return QAResult(
+                engine_id="fake-qa", engine_run_id="vrun-fail", observed_head_sha=request.head_sha,
+                started_at=UTC_NOW, finished_at=UTC_NOW,
+                tests_executed=("qa-tests",), passed_count=0, failed_count=1,
+                regressions=("qa-tests (failed, exit=2)",), requires_coding_agent=True,
+                failure_classifications=(FailureClassification.REGRESSION,),
+            )
+
+        def _pass_for(request):
+            return QAResult(
+                engine_id="fake-qa", engine_run_id="vrun-pass", observed_head_sha=request.head_sha,
+                started_at=UTC_NOW, finished_at=UTC_NOW,
+                tests_executed=("qa-tests",), passed_count=1, failed_count=0,
+            )
+
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+        engine = WorkItemFlowFakeEngine(dev_actions=[
+            _commit_action("feature.py", "x = 1  # buggy\n", "DEV A implementation"),
+            None,  # DEV B: no change
+            _commit_action("feature.py", "x = 2  # fixed\n", "DEV FIX"),
+        ])
+        selector = _real_worker_selector([alice, victor])
+        qa_engine = DynamicQAEngine([_fail_for, _pass_for])
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine,
+            git_governance_service=git_service, qa_engine=qa_engine,
+            qa_policy=QAPolicy(max_qa_cycles=3, required_invariant_ids=("workitem-qa-check",)), qa_run_store=qa_run_store,
+            validation_store=validation_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+        second = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        runs = qa_run_store.list_for_work_item("wi-1")
+        assert runs[1].verdict.status is QAVerdictStatus.PASS
+        assert second.work_item.status is WorkItemStatus.COMPLETED
+        assert git_store.get("wi-1").status is GitWorkItemStatus.MERGED
 
 
 # --- S/U: QA never PASSes on a workspace/SHA it cannot trust ----------------
