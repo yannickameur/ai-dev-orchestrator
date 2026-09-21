@@ -19,7 +19,7 @@ Code/Codex/Vibe, whose CLIs authenticate outside this project and never
 hand this project a secret. This module never defaults ``KIMI_API_KEY``
 and never stores one: it reads the process environment only when this
 factory is actually called, which
-``orchestrator.project_runtime._resolve_provider_adapters`` only does for a
+``orchestrator.project_runtime.resolve_provider_adapters`` only does for a
 provider an *enabled* worker actually requires. A missing key raises
 ``KimiConfigError`` rather than a bare ``KeyError``/``None`` used as a key,
 and never affects any other provider.
