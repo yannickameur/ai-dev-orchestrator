@@ -41,9 +41,9 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - **v0.1.1** — **PUBLIÉE**, première release publique open source.
 - **MVP 0.1** : `DONE` (contrat d'acceptation : `MVP_SPEC.yaml` v4).
 - **Phase 1** : `DONE`.
-- Suite de tests offline : **1135 PASS** (1105 avant, 30 pour l'intégration
-  DeepSeek/Kimi ; voir §13, sous-section P3, et docs/status.md pour le
-  détail).
+- Suite de tests offline : **1157 PASS** (1135 avant, 22 pour la façade
+  moteur `OrchestratorEngine` ; voir §13, sous-section P13, et
+  docs/status.md pour le détail).
 - **P12 (format de configuration de projet public + mode de permission
   d'exécution des workers) : `DONE`**, voir §10 et `docs/PROJECT_CONFIG.md`.
   **P1 (CLI publique `aido`) : `DONE`** (`aido init/validate/run/status`,
@@ -52,8 +52,17 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   `IMPLEMENTED` (2026-09-19), validation réelle `PENDING`**, voir §7 et
   §13. **P4 (étude Mammouth) : `RETIRÉ`** : étude menée, agrégateur jugé
   d'intérêt économique/architectural insuffisant, intégration directe
-  préférée (décision utilisateur, 2026-09-19). Aucun développement actif
-  en cours.
+  préférée (décision utilisateur, 2026-09-19).
+- **P13 (découplage moteur / externalisation AIDO Code), priorité 1 :
+  `DONE`** (2026-09-19) — voir §10 et §13. L'orchestrateur expose
+  désormais une façade publique (`orchestrator.engine.OrchestratorEngine`)
+  qu'un frontend externe (AIDO Code) peut consommer sans jamais construire
+  `MVPManager`/`WorkerSelector`/`QuotaManager` lui-même. Aucun
+  développement fonctionnel d'AIDO Code n'a été lancé par cette tâche.
+- **P14 (observabilité de consommation et efficacité économique) :
+  `APPROUVÉ — APRÈS P13`** (2026-09-19), voir §13. Aucun WorkItem
+  d'implémentation créé à ce jour ; capacité moteur, jamais recalculée
+  côté AIDO Code.
 
 ## 3. Ce qui existe aujourd'hui
 
@@ -100,6 +109,13 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - CLI publique `aido` (P1) — `aido init/validate/run/status`, plus besoin
   de harnais Python pour l'usage normal. `run` est aussi la reprise (pas
   de commande `resume` séparée). Voir §10 pour le détail complet.
+- Façade moteur publique `orchestrator.engine.OrchestratorEngine` (P13) —
+  `.open()`/`.validate()`/`.status()`/`.workers()`/`.probe_workers()`/
+  `.run()`/`.close()`, masquant `ProjectRuntime`/`MVPManager`/
+  `WorkerSelector`/`QuotaManager`/`ProviderAdapter`/`GitGovernanceService`/
+  `InternalQAEngine`/toute Store derrière des snapshots typés,
+  sérialisables, jamais un objet interne. Le CLI `aido` existant reste
+  intact et n'est pas migré vers cette façade par P13. Voir §10.
 
 Seules les capacités qui existent réellement dans le dépôt au commit
 `47ab4da` (et après) sont listées ici.
@@ -419,6 +435,14 @@ explicitement par un appelant :
   sur une machine de ce projet, ni spike équivalent à
   `docs/VIBE_SPIKE.md`. `dana`/`kai` restent `enabled: false` jusqu'à
   cette validation.
+- **AIDO Code** (deuxième projet de référence prévu, après Morpion Web
+  3D) — `PREPARED`, `DEVELOPMENT NOT STARTED`. Dépôt Git local créé
+  (`~/projects/aido-code`), roadmap/`MVP_SPEC.yaml`/WorkItems M1
+  préparés par P13 ; aucun `aido run` lancé, aucun code fonctionnel du
+  futur CLI écrit, DEV A/DEV B count = 0. Ne devient `DONE`/`VALIDATED`
+  que lorsque AI Dev Orchestrator aura réellement exécuté ses propres
+  WorkItems dessus (DEV A, DEV B, QA déterministe, merge gouverné),
+  jamais avant.
 
 La chronologie forensique détaillée (exécutions individuelles, durées,
 diagnostics pas-à-pas) est récupérable via l'historique Git et les
@@ -451,6 +475,11 @@ Jalons majeurs seulement — pas de journal Slice par Slice :
   (redirection `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`) ; `dana`/`kai`
   désactivés par défaut faute de clé/preuve d'exécution réelle
   (implémentation `DONE`, validation réelle `PENDING`, 2026-09-19).
+- P13 — Découplage moteur / externalisation AIDO Code (priorité 1) :
+  façade publique `orchestrator.engine.OrchestratorEngine` exposée,
+  projet `aido-code` créé (`~/projects/aido-code`, roadmap/`MVP_SPEC.yaml`/
+  WorkItems M1 préparés, aucun code fonctionnel écrit), `DONE`
+  (2026-09-19).
 
 Chronologie détaillée : historique Git (`git log`) et docs techniques
 (`docs/status.md`, `docs/QA_GOVERNANCE.md`, `docs/GIT_GOVERNANCE.md`,
@@ -581,6 +610,176 @@ un état persistant correct : le même standard que Mistral/Vibe
 (`docs/VIBE_SPIKE.md`). Aucun de ces points n'est couvert aujourd'hui ;
 aucune preuve n'a été fabriquée pour en simuler la couverture.
 
+### P13 — Découplage moteur / externalisation AIDO Code — `DONE`, priorité 1 (2026-09-19)
+
+**Décision produit** : `ai-dev-orchestrator` devient un moteur headless
+réutilisable. L'interface terminal interactive devient un projet
+indépendant, `aido-code` (`~/projects/aido-code`, dépôt Git local séparé,
+aucun remote créé par cette tâche). Le découplage lui-même est réalisé
+directement par cette session ; le développement fonctionnel d'AIDO Code
+(à partir de M1 de sa propre roadmap) sera ensuite confié à
+AI Dev Orchestrator lui-même, une fois amorcé par un futur pilote réel,
+exactement comme Morpion Web 3D (§11), le premier exemple externe réel.
+
+**Propriété inchangée** : `ai-dev-orchestrator` reste seul propriétaire de
+`ProjectConfig`, Project/MVP/WorkItem, l'état persistant, `WorkerRegistry`,
+`WorkerSelector`, `QuotaManager`, les `ProviderAdapter`s,
+`RalphExecutionEngine`, `WAITING`/`RECOVERY_REQUIRED`, DEV A/DEV B, la QA
+déterministe, `GitGovernanceService`, et l'audit d'exécution. AIDO Code
+n'implémente et ne duplique jamais aucun de ces mécanismes ; il consomme
+la façade moteur ci-dessous.
+
+**Façade moteur publique (REUSE FIRST)** : `orchestrator.engine.
+OrchestratorEngine` (`src/orchestrator/engine.py`, nouveau). Ne construit
+rien de neuf : chaque méthode délègue à une primitive déjà réelle et déjà
+testée.
+
+| Méthode | Délègue à | Effet de bord |
+|---|---|---|
+| `.open(config_path)` | `ProjectConfig.load()` | aucun (lecture seule) |
+| `.validate()` | `ProjectConfig` + `WorkerRegistry` | aucun |
+| `.workers()` | `WorkerRegistry.all_workers()` | aucun, jamais de probe provider |
+| `.probe_workers()` | `project_runtime.resolve_provider_adapters` + `QuotaManager` | un probe réel, explicite, éphémère (aucun SQLite) |
+| `.status()` | `ProjectStatusReader` | aucun (identique à `aido status`, P1) |
+| `.run(max_cycles=...)` | `ProjectRuntime.open()`/`.bootstrap()` + `MVPManager.run_next_work_item()` | le seul appel écrivant réellement (SQLite, Git, provider) |
+| `.close()` | rien à fermer | no-op documenté (aucune connexion persistante entre appels) |
+
+Chaque réponse est un type `frozen`/`slots` sérialisable
+(`ProjectSnapshot`, `WorkerSnapshot`, `ProviderSnapshot`,
+`ExecutionSnapshot`, `WaitSnapshot`, `WorkItemSnapshot`,
+`MVPStatusSnapshot`, `ProjectStatusSnapshot`, `RunResult`, `EngineEvent`),
+jamais un objet Store, une connexion SQLite, ou une dataclass interne
+d'un autre module. La fonction privée `project_runtime._resolve_provider_adapters`
+a été rendue publique (`resolve_provider_adapters`) pour que
+`.probe_workers()` la réutilise sans dupliquer la table de résolution de
+providers (§7).
+
+**Invariants vérifiés, inchangés** (relecture explicite de
+`mvp_manager.py`/`worker_selector.py` avant toute modification) : aucun
+client HTTP direct introduit par cette tâche ; aucun second moteur
+d'exécution ; `ClaudeCodeAdapter` inchangé pour Anthropic ; aucun
+branchement spécifique à un provider dans `MVPManager` ou
+`WorkerSelector` (vérifié par recherche exhaustive, zéro occurrence) ;
+`.probe_workers()` ne mute jamais `os.environ` globalement ; les
+credentials DeepSeek/Kimi ne sont lus que si le provider est réellement
+requis (inchangé, §7) ; aucun secret n'entre dans `aido.yaml`/
+`config/workers.yaml`/`ExecutionRecord`/SQLite/logs/rapports ; la
+résolution des factories providers reste centralisée dans
+`project_runtime.py` ; `WorkerSelector` reste seul propriétaire du choix
+du worker ; `QuotaManager` reste provider-level, jamais worker-level ;
+Ralph reste propriétaire de l'exécution fine.
+
+**Événements structurés (§10 du prompt de découplage)** : contrat formalisé
+(`EngineEvent` : `kind`/`timestamp`/`project_id`/`mvp_id`/`work_item_id`/
+`payload`), mais seulement au grain que `MVPManager` expose réellement
+aujourd'hui : un événement `work_item.<status>` par appel à
+`run_next_work_item()`. Les sous-étapes fines (DEV A running/completed,
+DEV B running/completed, QA running, merge completed) ne sont émises nulle
+part dans ce dépôt : `MVPManager._execute_work_item` les exécute de façon
+synchrone, sans bus d'événements. Exposer cette granularité est un
+incrément moteur réel et distinct, documenté ici comme travail futur,
+jamais simulé.
+
+**Tests** : `tests/test_engine.py` (22 tests, entièrement hors ligne,
+mêmes fixtures que `tests/test_cli.py` : faux adaptateurs providers, faux
+subprocess Ralph scripté) ; suite complète 1157/1157 PASS (1135 avant).
+
+**Non fait, explicitement, par cette tâche** : aucune migration du CLI
+`aido` existant vers cette façade (P1 reste `DONE`, intact, non modifié
+fonctionnellement) ; aucun cutover de la commande `aido` ; aucun code
+fonctionnel du futur CLI `aido-code` écrit par cette session ; aucun
+`aido run` lancé dans `~/projects/aido-code` ; DEV A count = 0, DEV B
+count = 0 pour AIDO Code. Voir la sous-section suivante pour la
+préparation (roadmap/MVP_SPEC/WorkItems) du projet `aido-code` lui-même.
+
+### P14 — Observabilité de consommation et efficacité économique — `APPROUVÉ`, après P13 (2026-09-19, non implémenté)
+
+**Décision produit** : approuvée, statut `APPROUVÉ — APRÈS P13`. Aucun
+WorkItem d'implémentation créé à ce jour. Cette sous-section documente le
+contrat attendu pour que la future implémentation ait une référence
+stable ; elle ne constitue pas un engagement de conception définitif.
+
+**Objectif** : permettre d'identifier les phases, workers, providers et
+mécanismes d'orchestration qui consomment le plus de ressources, afin de
+pouvoir optimiser ultérieurement les parties les moins économiques du
+produit. Cette capacité appartient exclusivement au moteur. AIDO Code
+pourra ensuite présenter ces données, mais ne doit jamais recalculer
+lui-même les métriques (même séparation de responsabilité que le reste
+de cette roadmap : le moteur décide/calcule, le frontend affiche).
+
+**Métriques à collecter**, par exécution, lorsque l'information est
+réellement disponible : `project_id`, `mvp_id`, `work_item_id`, phase
+(DEV A, DEV B, DEV FIX, QA, et toute autre phase réelle existante),
+`worker_id`, provider, backend, modèle/`ExecutionProfile`, timestamps
+début/fin, durée, statut, tokens d'entrée, tokens de sortie, tokens
+d'entrée mis en cache si disponibles, tokens de raisonnement si
+réellement exposés, nombre d'appels provider, nombre de tentatives,
+nombre de reprises, `permission_mode`, coût observé ou estimé le cas
+échéant. Une métrique qu'un backend ne fournit pas n'est jamais
+fabriquée : elle reste `UNKNOWN`/`None`.
+
+**Coût** : jamais de tarifs fournisseurs codés en dur dans la logique
+métier. Ordre de préférence : (1) coût réellement fourni par le
+provider ; (2) une grille tarifaire explicitement configurée et
+versionnée, séparée du cœur de l'orchestration ; (3) à défaut, aucun
+coût monétaire, seulement les métriques de consommation brutes. Tout
+coût calculé distingue explicitement `OBSERVED_COST`, `ESTIMATED_COST`
+et `UNKNOWN_COST`, jamais un montant présenté sans préciser sa
+provenance.
+
+**Agrégations** minimales : exécution, phase, WorkItem, MVP, projet,
+worker, provider, modèle/profil. Notamment : tokens totaux, durée
+totale, coût total quand disponible, coût moyen par WorkItem,
+consommation moyenne par phase, nombre de retries, nombre de QA FAIL,
+nombre de DEV FIX, ratio consommation / WorkItem `COMPLETED`.
+
+**Top consommateurs** : une API permettant par exemple top phases par
+tokens, top phases par coût estimé, top workers par consommation, top
+providers par consommation, top WorkItems par consommation, top
+surcoût retry/fix. Un rapport ne présente jamais un pourcentage calculé
+à partir de données manquantes sans le signaler explicitement.
+
+**Analyse d'efficacité** : comparer deux versions du moteur, deux
+`ExecutionProfile`s, deux providers, deux stratégies de sélection, ou
+deux périodes, pour détecter par exemple une augmentation du nombre
+moyen d'exécutions par WorkItem, un contexte envoyé en hausse, un DEV B
+systématiquement trop coûteux, trop de DEV FIX, des retries fréquents,
+des phases longues sans valeur mesurable, ou un provider coûteux
+utilisé pour des tâches simples. Séquence explicite, jamais inversée :
+**MESURER → OBSERVER → COMPARER → OPTIMISER**. Aucune décision de
+routing (`WorkerSelector` ou stratégie de sélection) n'est modifiée
+automatiquement à partir de ces métriques ; une éventuelle automatisation
+serait une décision produit séparée, non couverte par P14.
+
+**Persistance** : REUSE FIRST. Réutiliser `ExecutionRecord`/
+`ExecutionStore`/`QARunStore`/`ActivityReport` autant que possible avant
+de créer un nouveau store ; ne jamais dupliquer une donnée déjà
+disponible.
+
+**API moteur (conceptuelle, noms définitifs à l'implémentation)** :
+`engine.consumption(...)`, `engine.consumption_by_phase(...)`,
+`engine.top_consumers(...)`, `engine.efficiency_report(...)` : la même
+philosophie de façade que `orchestrator.engine.OrchestratorEngine` (P13),
+jamais un second point d'entrée public parallèle.
+
+**Côté AIDO Code** (une fois P14 implémenté) : `/usage`, `/cost`,
+`/efficiency` dans le REPL, ou `aido usage`/`aido usage --by phase`/
+`aido usage --by provider`/`aido usage --work-item WI-42` en mode non
+interactif, toujours en consommant l'API moteur ci-dessus, jamais en
+recalculant quoi que ce soit côté frontend.
+
+**Critères d'acceptation initiaux** (P14 pourra passer `DONE`
+lorsque) : (1) chaque nouvelle exécution conserve les métriques
+réellement disponibles ; (2) aucune donnée inconnue n'est inventée ;
+(3) les métriques historiques restent rétrocompatibles ; (4) les
+agrégations phase/worker/provider/WorkItem sont déterministes ; (5) un
+rapport permet d'identifier les plus gros consommateurs ; (6) le coût
+observé et le coût estimé sont distingués ; (7) les tarifs ne sont pas
+codés en dur dans la logique d'orchestration ; (8) aucune sélection de
+worker n'est automatiquement modifiée par cette fonctionnalité ; (9)
+les tests sont entièrement offline ; (10) les métriques peuvent être
+consommées par un frontend externe via l'API moteur.
+
 #### Mode de permission d'exécution des workers — implémenté
 
 Constat factuel qui motivait cette exigence : Claude Code et Codex
@@ -640,6 +839,12 @@ Invariants respectés par l'implémentation (`RalphExecutionEngine`,
 3. P3 (implémentation `DONE`, validation réelle `PENDING`, 2026-09-19) :
    DeepSeek + Kimi intégrés comme providers de premier niveau, sur la base
    de la conclusion P4 (voir sous-section P3 ci-dessus et §7).
+4. P13 (`DONE`, priorité 1, 2026-09-19) : découplage moteur, façade
+   publique `OrchestratorEngine`, création préparatoire du projet
+   `aido-code`. Voir sous-section P13 ci-dessus.
+5. P14 (`APPROUVÉ — APRÈS P13`, 2026-09-19) : observabilité de
+   consommation et efficacité économique. Aucun WorkItem d'implémentation
+   créé à ce jour. Voir sous-section P14 ci-dessus.
 
 ### Table des propositions
 
@@ -657,12 +862,15 @@ Invariants respectés par l'implémentation (`RalphExecutionEngine`,
 | P10 | Isolation d'exécution QA en lecture seule | Worktree/copie isolée vs. solution amont Ralph pour les commits de housekeeping ? | À VOTER |
 | P11 | Productiser le cycle optionnel release/planning | `PlanningCoordinator` → `ApprovalCoordinator` → `RoadmapApplicationService` existent déjà (§10) — en faire un flux produit supporté de bout en bout ? | À VOTER |
 | P12 | Format de configuration de projet public | Aucun format déclaratif stable n'existait pour onboarder un projet (harnais Python custom) | **`DONE` — voir §3/§10, `docs/PROJECT_CONFIG.md`** |
+| P13 | Découplage moteur / externalisation AIDO Code | Le moteur headless doit-il être séparé d'une future interface terminal interactive (AIDO Code), pour rester réutilisable par un frontend externe ? | **`DONE`, priorité 1 (2026-09-19) — voir §3/§10, sous-section P13 ci-dessus** |
+| P14 | Observabilité de consommation et efficacité économique | Le moteur doit-il enregistrer, par exécution, les métriques réelles (tokens, durée, retries, coût observé/estimé) nécessaires pour identifier ensuite quelles phases/workers/providers sont les moins économiques ? | **APPROUVÉ — APRÈS P13** (2026-09-19). Aucun WorkItem d'implémentation créé à ce jour ; voir sous-section P14 ci-dessous pour le détail complet des critères |
 
 Les propositions encore `À VOTER` restent non planifiées ; aucun ordre entre
 elles n'est impliqué. La prochaine étape pour celles-ci, si l'utilisateur le
 décide, est un vote explicite proposition par proposition, pas une
-sélection automatique par cette session ni une future session. P12 et P1
-sont `DONE`. P3 est `IMPLEMENTED`, validation réelle `PENDING`. P4 est
-`RETIRÉ` : décision terminée, pas un report. Elle ne redevient pas un
-prérequis implicite d'une future proposition sans un nouveau vote
-explicite.
+sélection automatique par cette session ni une future session. P12, P1 et
+P13 sont `DONE`. P3 est `IMPLEMENTED`, validation réelle `PENDING`. P14
+est `APPROUVÉ — APRÈS P13`, sans WorkItem d'implémentation créé à ce
+jour. P4 est `RETIRÉ` : décision terminée, pas un report. Elle ne
+redevient pas un prérequis implicite d'une future proposition sans un
+nouveau vote explicite.

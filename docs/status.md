@@ -21,8 +21,8 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   (deepseek/kimi via `claude_code` redirigé, `development` uniquement,
   **`enabled: false`**, clé API requise, pas encore de preuve
   d'exécution réelle ; voir `ROADMAP.md` §7/§13).
-- **Tests offline** : 1135 PASS (1105 avant + 30 pour l'intégration
-  DeepSeek/Kimi, snapshot
+- **Tests offline** : 1157 PASS (1135 avant + 22 pour la façade moteur
+  `OrchestratorEngine`, snapshot
   courant, voir §11 de `ROADMAP.md` pour la méthode de comptage ; ce
   nombre n'est pas un invariant permanent).
 - **Roman Numerals** (pilote externe) : `PASS`.
@@ -45,7 +45,16 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   `RETIRÉ`. Étude menée, agrégateur jugé d'intérêt économique/
   architectural insuffisant face à l'intégration directe de providers
   (décision utilisateur, 2026-09-19), aucune dépendance gateway/agrégateur
-  multi-modèles. Toutes les autres propositions restent `À VOTER`.
+  multi-modèles.
+- **P13 (découplage moteur / externalisation AIDO Code), priorité 1** :
+  `DONE` (2026-09-19). Façade publique `orchestrator.engine.
+  OrchestratorEngine` ; dépôt `aido-code` créé (`~/projects/aido-code`,
+  roadmap/`MVP_SPEC.yaml`/WorkItems M1 préparés, aucun code fonctionnel
+  écrit, aucun `aido run` lancé). Voir `ROADMAP.md` §13.
+- **P14 (observabilité de consommation et efficacité économique)** :
+  `APPROUVÉ — APRÈS P13` (2026-09-19). Aucun WorkItem d'implémentation
+  créé à ce jour ; voir `ROADMAP.md` §13. Toutes les autres propositions
+  restent `À VOTER`.
 
 ## Historique synthétique
 
@@ -104,5 +113,16 @@ Chronologie détaillée entièrement récupérable via `git log` et
   les deux providers) plutôt qu'un second client HTTP ; workers `dana`/`kai`
   ajoutés à `config/workers.yaml`, désactivés par défaut (clé API requise,
   pas encore de preuve d'exécution réelle). Voir `ROADMAP.md` §7/§13.
+- P13 (priorité 1) : découplage moteur / externalisation AIDO Code.
+  Façade publique `orchestrator.engine.OrchestratorEngine` exposée,
+  masquant `ProjectRuntime`/`MVPManager`/`WorkerSelector`/`QuotaManager`/
+  `ProviderAdapter`/`GitGovernanceService`/`InternalQAEngine`/toute Store
+  derrière des snapshots typés ; projet `aido-code` créé
+  (`~/projects/aido-code`, dépôt Git local séparé, roadmap/
+  `MVP_SPEC.yaml`/WorkItems M1 préparés), aucun code fonctionnel écrit,
+  aucun `aido run` lancé. `DONE` (2026-09-19).
+- P14 (observabilité de consommation et efficacité économique) approuvé
+  par l'utilisateur pour après P13 ; aucun WorkItem d'implémentation créé
+  à ce jour (2026-09-19). Voir `ROADMAP.md` §13.
 
-Ce fichier reste court et factuel — pas de duplication de `ROADMAP.md`.
+Ce fichier reste court et factuel : pas de duplication de `ROADMAP.md`.

@@ -18,7 +18,7 @@ CLIs authenticate outside this project against a subscription and never
 hand this project a secret. This module never defaults
 ``DEEPSEEK_API_KEY`` and never stores one: it reads the process
 environment only when this factory is actually called, which
-``orchestrator.project_runtime._resolve_provider_adapters`` only does for a
+``orchestrator.project_runtime.resolve_provider_adapters`` only does for a
 provider an *enabled* worker actually requires. A missing key raises
 ``DeepSeekConfigError`` rather than a bare ``KeyError``/``None`` used as a
 key, and never affects any other provider.
