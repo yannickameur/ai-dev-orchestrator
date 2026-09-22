@@ -13,6 +13,8 @@ import sys
 import zipfile
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Minimal, regex-based reads of pyproject.toml rather than tomllib: this
@@ -131,6 +133,15 @@ def test_v0_1_1_tag_unchanged():
     # Locks the historical release tag to the commit it pointed to before
     # this packaging change; this expected SHA must never be updated to
     # match a moved/re-tagged v0.1.1.
+    verify = subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", "v0.1.1"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    if verify.returncode != 0:
+        pytest.skip("v0.1.1 tag not present in this checkout (shallow/tagless clone)")
+
     result = subprocess.run(
         ["git", "rev-list", "-n1", "v0.1.1"],
         check=True,
