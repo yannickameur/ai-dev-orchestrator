@@ -74,6 +74,7 @@ Design invariants:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -83,7 +84,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Awaitable, Callable, Mapping, Sequence
+from typing import Awaitable, Callable, Iterator, Mapping, Sequence
 
 from orchestrator.execution_policy import ExecutionPermissionMode
 from orchestrator.execution_store import ExecutionRecord, ExecutionStore
@@ -192,6 +193,42 @@ class RalphTimeoutError(RalphExecutionEngineError):
 
 class RalphEventParseError(RalphExecutionEngineError):
     """Raised when a Ralph events JSONL line is invalid or missing required fields."""
+
+
+class WorkerCommitIdentityMismatchError(RalphExecutionEngineError):
+    """Raised when a commit introduced during a worker's execution (in the
+    range ``git_sha_before..git_sha_after``) is not attributed — on BOTH
+    author and committer — to that worker's own Git identity (see
+    ``_worker_git_identity_env``). Fail-closed: detected before this
+    execution can ever reach QA/merge (P13.2, see ROADMAP.md); the
+    execution is finalized ``FAILED`` and this error is raised, exactly
+    like ``RalphEventParseError``. Never auto-corrected or used to rewrite
+    the offending commit — the engine only ever reports this."""
+
+    def __init__(
+        self,
+        *,
+        execution_id: str,
+        worker_id: str,
+        commit_sha: str,
+        expected_author: str,
+        observed_author: str,
+        expected_committer: str,
+        observed_committer: str,
+    ) -> None:
+        super().__init__(
+            f"commit {commit_sha!r} introduced by execution {execution_id!r} "
+            f"(worker {worker_id!r}) has the wrong Git identity: "
+            f"expected author {expected_author!r}, observed {observed_author!r}; "
+            f"expected committer {expected_committer!r}, observed {observed_committer!r}"
+        )
+        self.execution_id = execution_id
+        self.worker_id = worker_id
+        self.commit_sha = commit_sha
+        self.expected_author = expected_author
+        self.observed_author = observed_author
+        self.expected_committer = expected_committer
+        self.observed_committer = observed_committer
 
 
 def _claude_code_permission_args(mode: ExecutionPermissionMode) -> list[str]:
@@ -628,6 +665,187 @@ def _worker_git_identity_env(worker: Worker) -> dict[str, str]:
     }
 
 
+def _worker_git_identity_name_email(worker: Worker) -> tuple[str, str]:
+    return worker.display_name, f"{worker.worker_id}@{_WORKER_GIT_EMAIL_DOMAIN}"
+
+
+def _is_git_workspace(workspace: Path) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=str(workspace), capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _local_git_config_get(workspace: Path, key: str) -> str | None:
+    """The value ``key`` currently holds at the LOCAL (repo) config level
+    only — never falling through to global/system — or ``None`` if unset
+    at that level, so a caller can later restore "absent" as "absent"."""
+    try:
+        result = subprocess.run(
+            ["git", "config", "--local", "--get", key],
+            cwd=str(workspace), capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return value or None
+
+
+def _local_git_config_set(workspace: Path, key: str, value: str) -> None:
+    try:
+        subprocess.run(
+            ["git", "config", "--local", key, value],
+            cwd=str(workspace), capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _local_git_config_unset(workspace: Path, key: str) -> None:
+    try:
+        subprocess.run(
+            ["git", "config", "--local", "--unset-all", key],
+            cwd=str(workspace), capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+@contextlib.contextmanager
+def scoped_worker_git_identity(workspace: Path, worker: Worker) -> Iterator[None]:
+    """Second, independent defense alongside ``_worker_git_identity_env``'s
+    env-var injection (P13.2, see ROADMAP.md): temporarily sets this
+    workspace's own LOCAL git ``user.name``/``user.email`` (``git config
+    --local``, never ``--global``/``--system``) to ``worker``'s identity for
+    the duration of the block, then restores exactly whatever was there
+    before — the previous local value if one existed, or its absence if it
+    did not. A real, historical AIDO Code run (M1.1, WI-M1.1-01) proved
+    that a `git commit` made by a coding-agent backend's own nested shell
+    tool does not reliably inherit env vars injected only into Ralph's own
+    subprocess environment; this workspace-local config is read by `git`
+    regardless of how deeply that nested process is spawned, or whether it
+    inherited any environment at all, as long as it does not itself
+    override the identity via env vars or `-c` — see
+    ``_audit_worker_commit_identity`` for the deterministic check this is
+    paired with.
+
+    Safe only because exactly one worker execution ever runs against a
+    given governed workspace at a time (MVPManager's WorkItem Flow is
+    strictly sequential — see ``mvp_manager.py``'s "No parallelism" —, DEV
+    A and DEV B never run concurrently, and this project has no
+    worktree-per-task/parallel-execution feature); this context manager
+    must never be reused for a workspace that could see concurrent
+    executions without first switching to a per-worktree/per-process
+    identity mechanism instead, to avoid a shared-state race. Contains no
+    branch on ``worker.provider``/``backend`` — provider-agnostic, exactly
+    like ``_worker_git_identity_env``.
+
+    A non-Git ``workspace`` (or one where reading/writing local config
+    genuinely fails) is a silent no-op in both directions, matching every
+    other best-effort Git helper in this module (e.g. ``_git_head_sha``)."""
+    if not _is_git_workspace(workspace):
+        yield
+        return
+
+    previous_name = _local_git_config_get(workspace, "user.name")
+    previous_email = _local_git_config_get(workspace, "user.email")
+    name, email = _worker_git_identity_name_email(worker)
+    _local_git_config_set(workspace, "user.name", name)
+    _local_git_config_set(workspace, "user.email", email)
+    try:
+        yield
+    finally:
+        if previous_name is None:
+            _local_git_config_unset(workspace, "user.name")
+        else:
+            _local_git_config_set(workspace, "user.name", previous_name)
+        if previous_email is None:
+            _local_git_config_unset(workspace, "user.email")
+        else:
+            _local_git_config_set(workspace, "user.email", previous_email)
+
+
+_COMMIT_LOG_FORMAT = "%H%x00%an%x00%ae%x00%cn%x00%ce"
+
+
+def _commits_introduced(
+    workspace: Path, sha_before: str | None, sha_after: str | None
+) -> list[tuple[str, str, str, str, str]]:
+    """Every commit introduced strictly between ``sha_before`` (exclusive)
+    and ``sha_after`` (inclusive), each as ``(sha, author_name,
+    author_email, committer_name, committer_email)`` — oldest semantics
+    irrelevant here, order is not depended on by any caller. ``sha_before``
+    absent (a workspace with no prior commits at all) lists every commit
+    reachable from ``sha_after`` instead, correctly treating all of them as
+    introduced by this execution. Best-effort/fail-open on any Git-level
+    read failure — this is an audit of commits that verifiably exist, not
+    a Git-repository-health check; a truly missing/corrupt range is caught
+    by ``_git_head_sha`` and other existing invariants elsewhere, not here."""
+    if sha_after is None or sha_before == sha_after:
+        return []
+    range_arg = f"{sha_before}..{sha_after}" if sha_before else sha_after
+    try:
+        result = subprocess.run(
+            ["git", "log", f"--format={_COMMIT_LOG_FORMAT}", range_arg],
+            cwd=str(workspace), capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    commits: list[tuple[str, str, str, str, str]] = []
+    for line in result.stdout.splitlines():
+        if not line:
+            continue
+        parts = line.split("\x00")
+        if len(parts) != 5:
+            continue
+        commits.append((parts[0], parts[1], parts[2], parts[3], parts[4]))
+    return commits
+
+
+def _audit_worker_commit_identity(
+    *,
+    workspace: Path,
+    worker: Worker,
+    execution_id: str,
+    sha_before: str | None,
+    sha_after: str | None,
+) -> None:
+    """Deterministic post-execution check (P13.2, see ROADMAP.md): every
+    commit this execution introduced must be attributed to ``worker`` on
+    BOTH author and committer — raises ``WorkerCommitIdentityMismatchError``
+    fail-closed on the first commit that is not, before this execution's
+    result can ever reach QA/merge. An execution that introduced zero
+    commits (e.g. a review-only pass) trivially passes. Provider-agnostic:
+    only ``worker.display_name``/``worker.worker_id`` ever drive the
+    expected identity, never ``worker.provider``/``backend``."""
+    expected_name, expected_email = _worker_git_identity_name_email(worker)
+    expected = f"{expected_name} <{expected_email}>"
+    for sha, author_name, author_email, committer_name, committer_email in _commits_introduced(
+        workspace, sha_before, sha_after
+    ):
+        author_ok = author_name == expected_name and author_email == expected_email
+        committer_ok = committer_name == expected_name and committer_email == expected_email
+        if author_ok and committer_ok:
+            continue
+        raise WorkerCommitIdentityMismatchError(
+            execution_id=execution_id,
+            worker_id=worker.worker_id,
+            commit_sha=sha,
+            expected_author=expected,
+            observed_author=f"{author_name} <{author_email}>",
+            expected_committer=expected,
+            observed_committer=f"{committer_name} <{committer_email}>",
+        )
+
+
 async def _default_subprocess_runner(
     args: Sequence[str], cwd: Path, timeout: float, *, env: Mapping[str, str] | None = None,
 ) -> tuple[int, bytes, bytes]:
@@ -680,7 +898,24 @@ class RalphExecutionEngine:
         as an ``env`` mapping scoped to this one subprocess only — never
         ``git config --global``/``--system``, and this method never
         touches this process's own ``os.environ`` either, so a concurrent
-        execution for a different worker is never affected."""
+        execution for a different worker is never affected.
+
+        For a real subprocess run (P13.2, see ROADMAP.md), this env
+        injection is paired with a second, independent defense —
+        ``scoped_worker_git_identity``, a workspace-local (never
+        ``--global``/``--system``) ``git config`` override for the same
+        span — and a deterministic post-run audit
+        (``_audit_worker_commit_identity``) that fail-closes
+        (``WorkerCommitIdentityMismatchError``) if any commit this
+        execution introduced is not attributed to ``request.worker`` on
+        both author and committer, before this result can ever reach QA/
+        merge. Both are scoped to real subprocess runs only — a custom/
+        fake ``subprocess_runner`` (every test in this codebase) never
+        represents a real worker-produced commit, so neither applies to
+        it; see ``TestWorkerGitIdentityRealCommit``/
+        ``TestWorkerCommitIdentityEnforcement`` for the dedicated, fully
+        offline tests of both mechanisms via the real ``git`` binary."""
+        is_real_runner = self._run_subprocess is _default_subprocess_runner
         git_sha_before = _git_head_sha(request.workspace)
 
         record = self._execution_store.create(
@@ -698,43 +933,62 @@ class RalphExecutionEngine:
         )
 
         runtime_dir = Path(tempfile.mkdtemp(prefix=f"ralph-exec-{request.execution_id}-"))
+        identity_ctx = (
+            scoped_worker_git_identity(request.workspace, request.worker)
+            if is_real_runner
+            else contextlib.nullcontext()
+        )
         try:
-            try:
-                args = self._build_ralph_args(runtime_dir, request)
-                if self._run_subprocess is _default_subprocess_runner:
-                    # Only the real implementation actually spawns a
-                    # process and can honor `env=` — a custom/fake
-                    # `subprocess_runner` (every test in this codebase)
-                    # stays a plain 3-arg SubprocessRunner, unaffected.
-                    exit_code, stdout, stderr = await _default_subprocess_runner(
-                        args, request.workspace, request.timeout_seconds,
-                        env=_worker_git_identity_env(request.worker),
+            with identity_ctx:
+                try:
+                    args = self._build_ralph_args(runtime_dir, request)
+                    if is_real_runner:
+                        # Only the real implementation actually spawns a
+                        # process and can honor `env=` — a custom/fake
+                        # `subprocess_runner` (every test in this codebase)
+                        # stays a plain 3-arg SubprocessRunner, unaffected.
+                        exit_code, stdout, stderr = await _default_subprocess_runner(
+                            args, request.workspace, request.timeout_seconds,
+                            env=_worker_git_identity_env(request.worker),
+                        )
+                    else:
+                        exit_code, stdout, stderr = await self._run_subprocess(
+                            args, request.workspace, request.timeout_seconds
+                        )
+                except RalphTimeoutError:
+                    loop_id = _read_ralph_loop_id(request.workspace)
+                    updated = self._execution_store.mark_interrupted(
+                        request.execution_id, ralph_loop_id=loop_id, finished_at=self._clock()
                     )
-                else:
-                    exit_code, stdout, stderr = await self._run_subprocess(
-                        args, request.workspace, request.timeout_seconds
-                    )
-            except RalphTimeoutError:
-                loop_id = _read_ralph_loop_id(request.workspace)
-                updated = self._execution_store.mark_interrupted(
-                    request.execution_id, ralph_loop_id=loop_id, finished_at=self._clock()
-                )
-                return ExecutionResult(record=updated)
-            except FileNotFoundError as exc:
-                self._execution_store.mark_failed(request.execution_id, finished_at=self._clock())
-                raise RalphLaunchError(f"could not launch {self._ralph_binary!r}: {exc}") from exc
-            except RalphExecutionEngineError:
-                # e.g. UnsupportedBackendError raised while building the
-                # temporary config, before any subprocess was even
-                # launched: a known engine-level failure. Finalize the
-                # record before propagating — it must never stay RUNNING.
-                self._execution_store.mark_failed(request.execution_id, finished_at=self._clock())
-                raise
+                    return ExecutionResult(record=updated)
+                except FileNotFoundError as exc:
+                    self._execution_store.mark_failed(request.execution_id, finished_at=self._clock())
+                    raise RalphLaunchError(f"could not launch {self._ralph_binary!r}: {exc}") from exc
+                except RalphExecutionEngineError:
+                    # e.g. UnsupportedBackendError raised while building the
+                    # temporary config, before any subprocess was even
+                    # launched: a known engine-level failure. Finalize the
+                    # record before propagating — it must never stay RUNNING.
+                    self._execution_store.mark_failed(request.execution_id, finished_at=self._clock())
+                    raise
         finally:
             shutil.rmtree(runtime_dir, ignore_errors=True)
 
         git_sha_after = _git_head_sha(request.workspace)
         ralph_loop_id = _read_ralph_loop_id(request.workspace)
+
+        if is_real_runner:
+            try:
+                _audit_worker_commit_identity(
+                    workspace=request.workspace, worker=request.worker, execution_id=request.execution_id,
+                    sha_before=git_sha_before, sha_after=git_sha_after,
+                )
+            except WorkerCommitIdentityMismatchError:
+                self._execution_store.mark_failed(
+                    request.execution_id, exit_code=exit_code, git_sha_after=git_sha_after,
+                    ralph_loop_id=ralph_loop_id, finished_at=self._clock(),
+                )
+                raise
 
         try:
             events = _read_ralph_events(request.workspace)

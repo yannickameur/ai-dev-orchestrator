@@ -771,6 +771,88 @@ ci-dessus — le run initial a révélé un défaut moteur réel, corrigé avant
 toute promotion sans réserve. M2 (sessions/resume) reste `PLANNED`, non
 démarré ; aucun WorkItem M2 créé dans l'état runtime.
 
+### P13.2 — Attribution Git worker renforcée après un défaut réel découvert sur AIDO Code (M1.1) — `DONE` (2026-09-22)
+
+**Défaut découvert** (run réel gouverné M1.1 d'AIDO Code, WI-M1.1-01,
+`docs/M1_1_REFERENCE_RUN.md` de ce projet) : le commit fonctionnel réel
+de `alice` (`0e9eb9676ba806a66e79689baaf16168699cc471`, correction
+`pyproject.toml`) est resté attribué à l'identité ambiante
+`yannickameur <yannick.ameur@gmail.com>` au lieu d'Alice, alors que le
+commit de sécurité Ralph du même cycle (`7ae6037`, "auto-commit before
+merge") a bien reçu l'identité injectée par P13.1
+(`_worker_git_identity_env`, variables `GIT_AUTHOR_*`/`GIT_COMMITTER_*`
+dans l'environnement du seul subprocess `ralph`).
+
+**Cause établie** (audit forensique read-only, `src/orchestrator/
+ralph_execution_engine.py`, `tests/test_ralph_execution_engine.py`) :
+`GIT_AUTHOR_*`/`GIT_COMMITTER_*` ne sont injectées que dans l'environnement
+du subprocess `ralph` lui-même — un héritage d'environnement à travers un
+processus enfant arbitrairement imbriqué (le backend `claude_code`, puis
+son propre outil shell interne) n'est PAS une garantie : un `git commit`
+lancé par ce shell imbriqué sans hériter (ou avec un environnement
+explicitement appauvri par ce niveau) retombe sur `user.name`/
+`user.email` résolus par `git` (config locale/globale/système), jamais
+sur les variables `GIT_AUTHOR_*` du processus grand-parent si elles ne
+sont concrètement pas présentes dans l'environnement du processus qui
+exécute réellement `git commit`. Reproduit et prouvé offline, sans aucun
+provider réel : `tests/test_ralph_execution_engine.py::
+TestWorkerCommitIdentityEndToEnd::test_nested_commit_with_stripped_env_still_gets_worker_identity`
+exécute un vrai `ralph` factice qui lance un `git commit` imbriqué dans
+un environnement volontairement réduit au seul `PATH` — la même forme de
+défaut que celle réellement observée.
+
+**Correction appliquée** (`src/orchestrator/ralph_execution_engine.py`) :
+une seconde défense indépendante, `scoped_worker_git_identity` — un
+contexte qui fixe temporairement `user.name`/`user.email` en config Git
+**locale au workspace** (`git config --local`, jamais `--global`/
+`--system`) à l'identité du worker pendant la durée d'une exécution
+réelle, puis restaure exactement l'état précédent (valeur locale
+antérieure, ou son absence). `git` lit cette config quel que soit le
+niveau d'imbrication du processus qui lance `git commit`, y compris sans
+aucun héritage d'environnement — l'injection `GIT_AUTHOR_*`/
+`GIT_COMMITTER_*` (P13.1) est conservée telle quelle comme première
+défense. Sûr uniquement parce qu'une seule exécution worker tourne
+jamais contre un workspace gouverné donné à la fois (`MVPManager`,
+« No parallelism », DEV A et DEV B jamais concurrents) — vérifié avant
+d'introduire cette mutation locale, pour ne jamais l'exposer à une
+future concurrence sans une isolation par worktree/processus.
+
+**Audit post-exécution, fail-closed** : `_audit_worker_commit_identity`
+énumère, après chaque exécution réelle, tous les commits introduits dans
+`git_sha_before..git_sha_after` et compare author/committer à l'identité
+attendue du worker — sur les deux champs. Le premier commit non conforme
+lève `WorkerCommitIdentityMismatchError` (execution_id, worker_id, SHA,
+identité attendue/observée pour author et committer), l'exécution est
+finalisée `FAILED`, et l'exception remonte non interceptée jusqu'à
+`aido run`/`OrchestratorEngine.run()` — aucun chemin ne l'avale en échec
+métier ordinaire, donc aucun merge ne peut jamais voir un commit mal
+attribué. Aucune réécriture automatique du commit fautif. Les deux
+mécanismes (config locale + audit) ne s'appliquent qu'à une exécution
+`ralph` réelle (`subprocess_runner` par défaut) — jamais aux tests avec
+un faux `subprocess_runner` (toute la suite existante), qui ne
+représentent jamais un vrai commit produit par un worker ; cette
+frontière est documentée dans la docstring d'`execute()`.
+
+**Historique M1.1 non réécrit** : `0e9eb96` reste tel quel dans
+`~/projects/aido-code` — preuve d'exécution immuable du défaut, jamais
+corrigée après coup.
+
+**Tests** : 22 nouveaux tests offline, aucun provider réel
+(`tests/test_ralph_execution_engine.py`) —
+`TestScopedWorkerGitIdentity` (mise en place/restauration de la config
+locale, y compris après exception, absence de fuite entre deux workers
+successifs, jamais de mutation globale, no-op sur un workspace non-Git),
+`TestWorkerCommitIdentityAudit` (les 11 cas requis : aucun commit,
+commit(s) correct(s), identité incorrecte sur le 2e commit, author
+correct/committer incorrect et inversement, commit de sécurité Ralph
+audité comme les autres, Alice jamais dans la plage de Victor, preuve
+complète dans l'exception, absence de commit antérieur), et
+`TestWorkerCommitIdentityEndToEnd` (le vrai chemin `_default_
+subprocess_runner`/`RalphExecutionEngine.execute()` avec un faux binaire
+`ralph` réel : commit imbriqué à environnement appauvri correctement
+attribué, identité imbriquée adverse détectée et fail-closed, config
+locale restaurée après un run réel, chemin faux-runner inchangé).
+
 ### P14 — Observabilité de consommation et efficacité économique — `APPROUVÉ`, après P13 (2026-09-19, non implémenté)
 
 **Décision produit** : approuvée, statut `APPROUVÉ — APRÈS P13`. Aucun
@@ -943,6 +1025,7 @@ Invariants respectés par l'implémentation (`RalphExecutionEngine`,
 | P12 | Format de configuration de projet public | Aucun format déclaratif stable n'existait pour onboarder un projet (harnais Python custom) | **`DONE` — voir §3/§10, `docs/PROJECT_CONFIG.md`** |
 | P13 | Découplage moteur / externalisation AIDO Code | Le moteur headless doit-il être séparé d'une future interface terminal interactive (AIDO Code), pour rester réutilisable par un frontend externe ? | **`DONE`, priorité 1 (2026-09-19) — voir §3/§10, sous-section P13 ci-dessus** |
 | P13.1 | Première exécution réelle du WorkItem Flow sur AIDO Code (M1) — défaut moteur QA découvert et corrigé | Le run réel de M1 (WI-01..WI-07) a-t-il fonctionné, et qu'a-t-il révélé sur le moteur lui-même ? | **`DONE` (2026-09-21) — M1 complété fonctionnellement ; défaut réel de preuve QA (`FAIL`->`PASS` sur SHA identique via dérive d'environnement, hors Git) découvert et corrigé (`VALIDATION_ENVIRONMENT_CHANGED`) ; attribution Git par worker ajoutée — voir sous-section P13.1 ci-dessus** |
+| P13.2 | Attribution Git worker renforcée après un défaut réel découvert sur AIDO Code (M1.1) | Un commit fonctionnel réel d'un worker (M1.1, WI-M1.1-01) est resté attribué à l'identité ambiante du mainteneur au lieu du worker — l'injection d'environnement seule dans le subprocess `ralph` était-elle suffisante ? | **`DONE` (2026-09-22) — non, un `git commit` imbriqué peut ne pas hériter cet environnement ; config Git locale au workspace en défense indépendante + audit post-exécution fail-closed (`WorkerCommitIdentityMismatchError`) ajoutés — voir sous-section P13.2 ci-dessus** |
 | P14 | Observabilité de consommation et efficacité économique | Le moteur doit-il enregistrer, par exécution, les métriques réelles (tokens, durée, retries, coût observé/estimé) nécessaires pour identifier ensuite quelles phases/workers/providers sont les moins économiques ? | **APPROUVÉ — APRÈS P13** (2026-09-19). Aucun WorkItem d'implémentation créé à ce jour ; voir sous-section P14 ci-dessous pour le détail complet des critères |
 
 Les propositions encore `À VOTER` restent non planifiées ; aucun ordre entre
