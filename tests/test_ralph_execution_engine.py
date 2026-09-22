@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,11 +38,14 @@ from orchestrator.ralph_execution_engine import (
     UnsupportedBackendError,
     UnsupportedPermissionModeError,
     UnsupportedProfileOptionError,
+    WorkerCommitIdentityMismatchError,
+    _audit_worker_commit_identity,
     _claude_code_permission_args,
     _codex_permission_args,
     _default_subprocess_runner,
     _worker_git_identity_env,
     parse_ralph_events,
+    scoped_worker_git_identity,
 )
 from orchestrator.worker_selector import Worker
 
@@ -957,3 +961,419 @@ class TestExecutionPermissionMode:
         engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
         result = asyncio.run(engine.execute(_request(tmp_path)))
         assert result.record.permission_mode is None
+
+
+class TestScopedWorkerGitIdentity:
+    """P13.2 (see ROADMAP.md): ``scoped_worker_git_identity`` sets/restores
+    a workspace's own LOCAL (never --global/--system) git user.name/
+    user.email around a block, as a second defense alongside
+    ``_worker_git_identity_env``'s env-var injection."""
+
+    def _init_repo(self, path: Path) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+
+    def _local_config(self, path: Path, key: str) -> str | None:
+        result = subprocess.run(
+            ["git", "config", "--local", "--get", key], cwd=path, capture_output=True, text=True,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    def test_sets_local_identity_to_worker_during_block(self, tmp_path: Path) -> None:
+        self._init_repo(tmp_path)
+        with scoped_worker_git_identity(tmp_path, _alice()):
+            assert self._local_config(tmp_path, "user.name") == "Alice"
+            assert self._local_config(tmp_path, "user.email") == "claude_dev_01@workers.ai-dev-orchestrator.local"
+
+    def test_a_plain_nested_git_commit_with_no_special_env_gets_worker_identity(self, tmp_path: Path) -> None:
+        # Proves the actual fix mechanism directly: a `git commit` that
+        # receives NO GIT_AUTHOR_*/GIT_COMMITTER_* env at all (exactly the
+        # real, observed WI-M1.1-01 failure mode) still lands on the
+        # worker's identity, because it is read from local config.
+        self._init_repo(tmp_path)
+        with scoped_worker_git_identity(tmp_path, _victor()):
+            subprocess.run(
+                ["git", "commit", "-q", "--allow-empty", "-m", "no special env"],
+                cwd=tmp_path, check=True, env={"PATH": os.environ.get("PATH", "")},
+            )
+        author = subprocess.run(
+            ["git", "log", "-1", "--format=%an <%ae>"], cwd=tmp_path, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert author == "Victor <codex_dev_01@workers.ai-dev-orchestrator.local>"
+
+    def test_restores_previous_local_identity_after_block(self, tmp_path: Path) -> None:
+        # Case J: repo already has a local identity -> restored EXACTLY.
+        self._init_repo(tmp_path)
+        subprocess.run(["git", "config", "--local", "user.name", "Someone Else"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "--local", "user.email", "someone@example.com"], cwd=tmp_path, check=True)
+
+        with scoped_worker_git_identity(tmp_path, _alice()):
+            pass
+
+        assert self._local_config(tmp_path, "user.name") == "Someone Else"
+        assert self._local_config(tmp_path, "user.email") == "someone@example.com"
+
+    def test_restores_absence_of_local_identity_after_block(self, tmp_path: Path) -> None:
+        # Case K: repo has no local identity at all -> absence restored.
+        self._init_repo(tmp_path)
+        assert self._local_config(tmp_path, "user.name") is None
+
+        with scoped_worker_git_identity(tmp_path, _alice()):
+            assert self._local_config(tmp_path, "user.name") == "Alice"
+
+        assert self._local_config(tmp_path, "user.name") is None
+        assert self._local_config(tmp_path, "user.email") is None
+
+    def test_restores_after_exception(self, tmp_path: Path) -> None:
+        # Case I.
+        self._init_repo(tmp_path)
+        subprocess.run(["git", "config", "--local", "user.name", "Someone Else"], cwd=tmp_path, check=True)
+
+        with pytest.raises(RuntimeError):
+            with scoped_worker_git_identity(tmp_path, _alice()):
+                assert self._local_config(tmp_path, "user.name") == "Alice"
+                raise RuntimeError("boom")
+
+        assert self._local_config(tmp_path, "user.name") == "Someone Else"
+
+    def test_never_touches_global_config(self, tmp_path: Path) -> None:
+        self._init_repo(tmp_path)
+        before = subprocess.run(["git", "config", "--global", "--list"], capture_output=True, text=True)
+        with scoped_worker_git_identity(tmp_path, _alice()):
+            pass
+        after = subprocess.run(["git", "config", "--global", "--list"], capture_output=True, text=True)
+        assert before.stdout == after.stdout
+
+    def test_noop_for_non_git_workspace(self, tmp_path: Path) -> None:
+        # No git init at all -> silent no-op, like `_git_head_sha`.
+        with scoped_worker_git_identity(tmp_path, _alice()):
+            pass  # must not raise
+
+    def test_switching_worker_between_two_calls_never_leaks(self, tmp_path: Path) -> None:
+        # Case H, at the identity-scoping level: Alice's identity must
+        # never still be configured once Victor's own scope begins.
+        self._init_repo(tmp_path)
+
+        with scoped_worker_git_identity(tmp_path, _alice()):
+            assert self._local_config(tmp_path, "user.name") == "Alice"
+
+        assert self._local_config(tmp_path, "user.name") is None
+
+        with scoped_worker_git_identity(tmp_path, _victor()):
+            assert self._local_config(tmp_path, "user.name") == "Victor"
+
+        assert self._local_config(tmp_path, "user.name") is None
+
+
+class TestWorkerCommitIdentityAudit:
+    """P13.2 (see ROADMAP.md): ``_audit_worker_commit_identity`` fail-closes
+    (``WorkerCommitIdentityMismatchError``) on the first commit in
+    ``sha_before..sha_after`` not attributed to the expected worker on
+    both author and committer."""
+
+    def _init_repo(self, path: Path) -> str:
+        subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=Seed", "-c", "user.email=seed@example.com",
+             "commit", "-q", "--allow-empty", "-m", "seed"],
+            cwd=path, check=True,
+        )
+        return _head(path)
+
+    def _commit_as(self, path: Path, *, name: str, email: str, message: str) -> str:
+        subprocess.run(
+            ["git", "-c", f"user.name={name}", "-c", f"user.email={email}",
+             "commit", "-q", "--allow-empty", "-m", message],
+            cwd=path, check=True,
+        )
+        return _head(path)
+
+    def test_no_commits_passes(self, tmp_path: Path) -> None:
+        # Case A.
+        sha = self._init_repo(tmp_path)
+        _audit_worker_commit_identity(
+            workspace=tmp_path, worker=_alice(), execution_id="exec-a",
+            sha_before=sha, sha_after=sha,
+        )  # must not raise
+
+    def test_single_correct_commit_passes(self, tmp_path: Path) -> None:
+        # Case B.
+        sha_before = self._init_repo(tmp_path)
+        sha_after = self._commit_as(
+            tmp_path, name="Alice", email="claude_dev_01@workers.ai-dev-orchestrator.local", message="alice work",
+        )
+        _audit_worker_commit_identity(
+            workspace=tmp_path, worker=_alice(), execution_id="exec-b",
+            sha_before=sha_before, sha_after=sha_after,
+        )  # must not raise
+
+    def test_multiple_correct_commits_pass(self, tmp_path: Path) -> None:
+        # Case C.
+        sha_before = self._init_repo(tmp_path)
+        self._commit_as(tmp_path, name="Alice", email="claude_dev_01@workers.ai-dev-orchestrator.local", message="1")
+        sha_after = self._commit_as(
+            tmp_path, name="Alice", email="claude_dev_01@workers.ai-dev-orchestrator.local", message="2",
+        )
+        _audit_worker_commit_identity(
+            workspace=tmp_path, worker=_alice(), execution_id="exec-c",
+            sha_before=sha_before, sha_after=sha_after,
+        )  # must not raise
+
+    def test_second_commit_wrong_identity_fails_closed(self, tmp_path: Path) -> None:
+        # Case D.
+        sha_before = self._init_repo(tmp_path)
+        self._commit_as(tmp_path, name="Alice", email="claude_dev_01@workers.ai-dev-orchestrator.local", message="1")
+        bad_sha = self._commit_as(tmp_path, name="yannickameur", email="yannick.ameur@gmail.com", message="2")
+
+        with pytest.raises(WorkerCommitIdentityMismatchError) as exc_info:
+            _audit_worker_commit_identity(
+                workspace=tmp_path, worker=_alice(), execution_id="exec-d",
+                sha_before=sha_before, sha_after=_head(tmp_path),
+            )
+        assert exc_info.value.commit_sha == bad_sha
+
+    def test_author_correct_committer_wrong_fails_closed(self, tmp_path: Path) -> None:
+        # Case E.
+        sha_before = self._init_repo(tmp_path)
+        subprocess.run(
+            ["git", "-c", "user.name=Alice", "-c", "user.email=claude_dev_01@workers.ai-dev-orchestrator.local",
+             "commit", "-q", "--allow-empty", "-m", "mixed",
+             "--author=Alice <claude_dev_01@workers.ai-dev-orchestrator.local>"],
+            cwd=tmp_path, check=True,
+            env={**os.environ, "GIT_COMMITTER_NAME": "yannickameur", "GIT_COMMITTER_EMAIL": "yannick.ameur@gmail.com"},
+        )
+        with pytest.raises(WorkerCommitIdentityMismatchError) as exc_info:
+            _audit_worker_commit_identity(
+                workspace=tmp_path, worker=_alice(), execution_id="exec-e",
+                sha_before=sha_before, sha_after=_head(tmp_path),
+            )
+        assert "yannick.ameur@gmail.com" in exc_info.value.observed_committer
+
+    def test_author_wrong_committer_correct_fails_closed(self, tmp_path: Path) -> None:
+        # Case F.
+        sha_before = self._init_repo(tmp_path)
+        subprocess.run(
+            ["git", "-c", "user.name=Alice", "-c", "user.email=claude_dev_01@workers.ai-dev-orchestrator.local",
+             "commit", "-q", "--allow-empty", "-m", "mixed",
+             "--author=yannickameur <yannick.ameur@gmail.com>"],
+            cwd=tmp_path, check=True,
+        )
+        with pytest.raises(WorkerCommitIdentityMismatchError) as exc_info:
+            _audit_worker_commit_identity(
+                workspace=tmp_path, worker=_alice(), execution_id="exec-f",
+                sha_before=sha_before, sha_after=_head(tmp_path),
+            )
+        assert "yannick.ameur@gmail.com" in exc_info.value.observed_author
+
+    def test_ralph_safety_commit_with_wrong_identity_is_still_caught(self, tmp_path: Path) -> None:
+        # Case G: a later, otherwise-legitimate-looking "safety" commit is
+        # audited exactly like any other commit in the range — no
+        # special-casing by message/position.
+        sha_before = self._init_repo(tmp_path)
+        self._commit_as(tmp_path, name="Alice", email="claude_dev_01@workers.ai-dev-orchestrator.local", message="work")
+        bad_sha = self._commit_as(
+            tmp_path, name="yannickameur", email="yannick.ameur@gmail.com",
+            message="chore: auto-commit before merge (loop primary)",
+        )
+        with pytest.raises(WorkerCommitIdentityMismatchError) as exc_info:
+            _audit_worker_commit_identity(
+                workspace=tmp_path, worker=_alice(), execution_id="exec-g",
+                sha_before=sha_before, sha_after=_head(tmp_path),
+            )
+        assert exc_info.value.commit_sha == bad_sha
+
+    def test_dev_a_alice_never_leaks_into_dev_b_victor_commits(self, tmp_path: Path) -> None:
+        # Case H, at the audit level.
+        sha0 = self._init_repo(tmp_path)
+        sha_after_alice = self._commit_as(
+            tmp_path, name="Alice", email="claude_dev_01@workers.ai-dev-orchestrator.local", message="dev a",
+        )
+        _audit_worker_commit_identity(
+            workspace=tmp_path, worker=_alice(), execution_id="exec-h-a",
+            sha_before=sha0, sha_after=sha_after_alice,
+        )  # must not raise
+
+        sha_after_victor = self._commit_as(
+            tmp_path, name="Victor", email="codex_dev_01@workers.ai-dev-orchestrator.local", message="dev b",
+        )
+        _audit_worker_commit_identity(
+            workspace=tmp_path, worker=_victor(), execution_id="exec-h-b",
+            sha_before=sha_after_alice, sha_after=sha_after_victor,
+        )  # must not raise
+
+        # And Alice's own range never contains Victor's commit or vice versa.
+        with pytest.raises(WorkerCommitIdentityMismatchError):
+            _audit_worker_commit_identity(
+                workspace=tmp_path, worker=_victor(), execution_id="exec-h-wrong",
+                sha_before=sha0, sha_after=sha_after_alice,
+            )
+
+    def test_mismatch_error_carries_full_evidence(self, tmp_path: Path) -> None:
+        sha_before = self._init_repo(tmp_path)
+        bad_sha = self._commit_as(tmp_path, name="yannickameur", email="yannick.ameur@gmail.com", message="oops")
+
+        with pytest.raises(WorkerCommitIdentityMismatchError) as exc_info:
+            _audit_worker_commit_identity(
+                workspace=tmp_path, worker=_alice(), execution_id="exec-evidence",
+                sha_before=sha_before, sha_after=_head(tmp_path),
+            )
+        err = exc_info.value
+        assert err.execution_id == "exec-evidence"
+        assert err.worker_id == "claude_dev_01"
+        assert err.commit_sha == bad_sha
+        assert err.expected_author == "Alice <claude_dev_01@workers.ai-dev-orchestrator.local>"
+        assert err.observed_author == "yannickameur <yannick.ameur@gmail.com>"
+        assert err.expected_committer == err.expected_author
+        assert err.observed_committer == err.observed_author
+
+    def test_no_prior_commits_audits_full_history_from_after(self, tmp_path: Path) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        sha = self._commit_as(
+            tmp_path, name="Alice", email="claude_dev_01@workers.ai-dev-orchestrator.local", message="first ever",
+        )
+        _audit_worker_commit_identity(
+            workspace=tmp_path, worker=_alice(), execution_id="exec-first",
+            sha_before=None, sha_after=sha,
+        )  # must not raise: the only commit in history is Alice's own
+
+        with pytest.raises(WorkerCommitIdentityMismatchError):
+            _audit_worker_commit_identity(
+                workspace=tmp_path, worker=_victor(), execution_id="exec-first-wrong",
+                sha_before=None, sha_after=sha,
+            )
+
+
+_FAKE_RALPH_SCRIPT = '''#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+def main():
+    cwd = Path.cwd()
+    ralph_dir = cwd / ".ralph"
+    ralph_dir.mkdir(exist_ok=True)
+    (ralph_dir / "current-loop-id").write_text("loop-1")
+    events_path = ralph_dir / "events-1.jsonl"
+    (ralph_dir / "current-events").write_text(".ralph/" + events_path.name)
+    events_path.write_text('{"topic": "work.completed", "ts": "2026-09-12T15:00:00+00:00"}\\n')
+
+    mode = "__MODE__"
+    if mode == "stripped-env":
+        # Simulates the real, observed defect: a nested shell-tool `git
+        # commit` that inherits NO GIT_AUTHOR_*/GIT_COMMITTER_* env at all
+        # -- only PATH, exactly like a sandboxed coding-agent Bash tool
+        # that does not forward custom parent env vars.
+        stripped_env = {"PATH": os.environ.get("PATH", "")}
+        subprocess.run(
+            ["git", "commit", "-q", "--allow-empty", "-m", "nested work"],
+            cwd=str(cwd), env=stripped_env, check=True,
+        )
+    elif mode == "adversarial-identity":
+        # Simulates a nested commit that explicitly overrides identity via
+        # `-c`, defeating both the env injection AND the scoped local
+        # config -- the last line of defense (the post-run audit) must
+        # still catch this.
+        subprocess.run(
+            ["git", "-c", "user.name=yannickameur", "-c", "user.email=yannick.ameur@gmail.com",
+             "commit", "-q", "--allow-empty", "-m", "nested work, wrong identity"],
+            cwd=str(cwd), env={"PATH": os.environ.get("PATH", "")}, check=True,
+        )
+    return 0
+
+sys.exit(main())
+'''
+
+
+def _write_fake_ralph(tmp_path: Path, *, mode: str = "stripped-env", name: str = "fake-ralph.py") -> Path:
+    script = tmp_path / name
+    script.write_text(_FAKE_RALPH_SCRIPT.replace("__MODE__", mode))
+    script.chmod(0o755)
+    return script
+
+
+def _init_git_workspace(path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Seed", "-c", "user.email=seed@example.com",
+         "commit", "-q", "--allow-empty", "-m", "seed"],
+        cwd=path, check=True,
+    )
+
+
+class TestWorkerCommitIdentityEndToEnd:
+    """P13.2 (see ROADMAP.md): the real ``_default_subprocess_runner`` path
+    through ``RalphExecutionEngine.execute()``, with a tiny local fake
+    ``ralph`` script standing in for the real binary — a real subprocess,
+    a real nested subprocess, and real `git`, but no Claude/Codex/Ralph/
+    network, fully offline, proving both the regression (section 4) and
+    the fix through the actual code path new production runs use."""
+
+    def test_nested_commit_with_stripped_env_still_gets_worker_identity(self, tmp_path: Path) -> None:
+        _init_git_workspace(tmp_path)
+        script = _write_fake_ralph(tmp_path)
+        store = _store(tmp_path)
+        engine = RalphExecutionEngine(store, ralph_binary=str(script), clock=lambda: UTC_NOW)
+
+        result = asyncio.run(engine.execute(_request(tmp_path, worker=_victor())))
+
+        assert result.record.status.value == "succeeded"
+        author = subprocess.run(
+            ["git", "log", "-1", "--format=%an <%ae>"], cwd=tmp_path, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert author == "Victor <codex_dev_01@workers.ai-dev-orchestrator.local>"
+
+    def test_adversarial_nested_identity_is_caught_and_fails_closed(self, tmp_path: Path) -> None:
+        _init_git_workspace(tmp_path)
+        script = _write_fake_ralph(tmp_path, mode="adversarial-identity", name="fake-ralph-adversarial.py")
+        store = _store(tmp_path)
+        engine = RalphExecutionEngine(store, ralph_binary=str(script), clock=lambda: UTC_NOW)
+
+        with pytest.raises(WorkerCommitIdentityMismatchError):
+            asyncio.run(engine.execute(_request(tmp_path, worker=_alice())))
+
+        record = store.get("exec-001")
+        assert record.status.value == "failed"
+
+    def test_local_config_restored_after_a_real_run(self, tmp_path: Path) -> None:
+        _init_git_workspace(tmp_path)
+        script = _write_fake_ralph(tmp_path)
+        store = _store(tmp_path)
+        engine = RalphExecutionEngine(store, ralph_binary=str(script), clock=lambda: UTC_NOW)
+
+        before = subprocess.run(
+            ["git", "config", "--local", "--get", "user.name"], cwd=tmp_path, capture_output=True, text=True,
+        )
+        asyncio.run(engine.execute(_request(tmp_path, worker=_victor())))
+        after = subprocess.run(
+            ["git", "config", "--local", "--get", "user.name"], cwd=tmp_path, capture_output=True, text=True,
+        )
+        assert before.returncode == after.returncode == 1  # never set locally, before or after
+
+    def test_fake_runner_path_is_unaffected_by_this_feature(self, tmp_path: Path) -> None:
+        # A fake/injected subprocess_runner (every other test in this
+        # suite) must behave exactly as before this feature: no scoped
+        # identity, no audit, even if it creates a commit under an
+        # unrelated identity.
+        _init_git_workspace(tmp_path)
+        subprocess.run(["git", "config", "--local", "user.name", "Pre-existing"], cwd=tmp_path, check=True)
+
+        def _on_call(args, cwd, timeout):
+            subprocess.run(
+                ["git", "-c", "user.name=Not Alice", "-c", "user.email=not-alice@example.com",
+                 "commit", "-q", "--allow-empty", "-m", "fake runner work"],
+                cwd=cwd, check=True,
+            )
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        result = asyncio.run(engine.execute(_request(tmp_path, worker=_alice())))
+
+        assert result.record.status.value == "succeeded"  # not caught, by design (see class docstring)
+
+
+def _head(path: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True, check=True,
+    ).stdout.strip()

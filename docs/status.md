@@ -21,9 +21,10 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   (deepseek/kimi via `claude_code` redirigé, `development` uniquement,
   **`enabled: false`**, clé API requise, pas encore de preuve
   d'exécution réelle ; voir `ROADMAP.md` §7/§13).
-- **Tests offline** : 1186 PASS (1157 avant + 29 pour la correction QA
-  environnement-déterministe/attribution Git worker, P13.1, voir
-  `ROADMAP.md` §13 ; ce nombre n'est pas un invariant permanent).
+- **Tests offline** : 1214 PASS (1186 avant + 6 pour le renommage de la
+  distribution PyPI + 22 pour le renforcement de l'attribution Git
+  worker, P13.2, voir `ROADMAP.md` §13 ; ce nombre n'est pas un invariant
+  permanent).
 - **Roman Numerals** (pilote externe) : `PASS`.
 - **Mistral / Vibe** : ✅ `VALIDATED`.
 - **Morpion Web 3D** (pilote externe) : `DONE`. SHA final :
@@ -58,6 +59,15 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   `VALIDATION_ENVIRONMENT_CHANGED`, voir `docs/QA_STRATEGY.md` §8.3) ;
   attribution Git des commits workers par `display_name` ajoutée. AIDO
   Code promu deuxième projet de référence réel. Voir `ROADMAP.md` §13.
+- **P13.2 (attribution Git worker renforcée après un défaut réel M1.1)** :
+  `DONE` (2026-09-22). Un run réel gouverné d'AIDO Code (M1.1,
+  WI-M1.1-01) a montré qu'un `git commit` imbriqué dans le backend
+  `claude_code` peut ne pas hériter l'injection d'environnement seule
+  (P13.1) ; `scoped_worker_git_identity` (config Git locale au workspace,
+  jamais `--global`/`--system`) ajoutée en défense indépendante, plus un
+  audit post-exécution fail-closed (`WorkerCommitIdentityMismatchError`)
+  qui détecte toute mauvaise attribution avant QA/merge. `0e9eb96`
+  (AIDO Code) non réécrit. Voir `ROADMAP.md` §13.
 - **P14 (observabilité de consommation et efficacité économique)** :
   `APPROUVÉ — APRÈS P13` (2026-09-19). Aucun WorkItem d'implémentation
   créé à ce jour ; voir `ROADMAP.md` §13. Toutes les autres propositions
@@ -138,5 +148,12 @@ Chronologie détaillée entièrement récupérable via `git log` et
   (`INCONCLUSIVE` fail-closed plutôt qu'un `PASS` silencieux) ; attribution
   Git des commits workers par `display_name` ajoutée à cette occasion
   (2026-09-21). Voir `ROADMAP.md` §13, `docs/QA_STRATEGY.md` §8.3.
+- P13.2 : un run réel gouverné d'AIDO Code (M1.1, WI-M1.1-01) a montré
+  que l'injection d'environnement seule (P13.1) ne suffit pas pour un
+  `git commit` imbriqué dans le backend `claude_code` — `scoped_worker_
+  git_identity` (config Git locale au workspace) ajoutée en défense
+  indépendante, plus un audit post-exécution fail-closed
+  (`WorkerCommitIdentityMismatchError`) (2026-09-22). Voir `ROADMAP.md`
+  §13.
 
 Ce fichier reste court et factuel : pas de duplication de `ROADMAP.md`.
