@@ -7,37 +7,43 @@ package name ("orchestrator") and the "aido" console script unchanged.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
-import tomllib
 import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# Minimal, regex-based reads of pyproject.toml rather than tomllib: this
+# repo supports Python 3.10, where tomllib doesn't exist yet (3.11+ only)
+# and adding a tomli backport dependency just for these checks isn't
+# worth it for the handful of scalar fields below.
 
-def _pyproject() -> dict:
-    with (REPO_ROOT / "pyproject.toml").open("rb") as f:
-        return tomllib.load(f)
+
+def _pyproject_text() -> str:
+    return (REPO_ROOT / "pyproject.toml").read_text()
 
 
 def test_distribution_name_and_version():
-    project = _pyproject()["project"]
-    assert project["name"] == "ai-dev-orchestrator"
-    assert project["version"] == "0.1.2"
+    text = _pyproject_text()
+    assert re.search(r'(?m)^name\s*=\s*"ai-dev-orchestrator"\s*$', text)
+    assert re.search(r'(?m)^version\s*=\s*"0\.1\.2"\s*$', text)
 
 
 def test_no_dependency_on_third_party_orchestrator_package():
-    project = _pyproject()["project"]
-    for dep in project.get("dependencies", []):
+    text = _pyproject_text()
+    deps_match = re.search(r"dependencies\s*=\s*\[(.*?)\]", text, re.S)
+    assert deps_match, "expected a top-level [project] dependencies list"
+    for dep in re.findall(r'"([^"]+)"', deps_match.group(1)):
         assert not dep.strip().lower().startswith("orchestrator"), (
             f"unexpected dependency on third-party 'orchestrator' package: {dep!r}"
         )
 
 
 def test_console_script_still_maps_to_orchestrator_cli():
-    scripts = _pyproject()["project"]["scripts"]
-    assert scripts["aido"] == "orchestrator.cli:main"
+    text = _pyproject_text()
+    assert re.search(r'(?m)^aido\s*=\s*"orchestrator\.cli:main"\s*$', text)
 
 
 def _build_wheel(tmp_path: Path) -> Path:
