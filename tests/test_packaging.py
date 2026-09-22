@@ -48,21 +48,14 @@ def test_console_script_still_maps_to_orchestrator_cli():
     assert re.search(r'(?m)^aido\s*=\s*"orchestrator\.cli:main"\s*$', text)
 
 
-def _build_wheel(tmp_path: Path) -> Path:
-    out_dir = tmp_path / "dist"
-    out_dir.mkdir()
+@pytest.fixture(scope="module")
+def built_wheel(tmp_path_factory) -> Path:
+    out_dir = tmp_path_factory.mktemp("dist")
+    # No --no-build-isolation: the CI environment isn't guaranteed to have
+    # "wheel" preinstalled, so let pip create its own isolated build env
+    # per build-system.requires (setuptools), same as a real `pip install`.
     subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "wheel",
-            str(REPO_ROOT),
-            "--no-deps",
-            "--no-build-isolation",
-            "-w",
-            str(out_dir),
-        ],
+        [sys.executable, "-m", "pip", "wheel", str(REPO_ROOT), "--no-deps", "-w", str(out_dir)],
         check=True,
         capture_output=True,
         text=True,
@@ -72,8 +65,8 @@ def _build_wheel(tmp_path: Path) -> Path:
     return wheels[0]
 
 
-def test_wheel_builds_with_correct_metadata(tmp_path):
-    wheel_path = _build_wheel(tmp_path)
+def test_wheel_builds_with_correct_metadata(built_wheel):
+    wheel_path = built_wheel
     assert wheel_path.name.startswith("ai_dev_orchestrator-0.1.2-")
 
     with zipfile.ZipFile(wheel_path) as z:
@@ -94,8 +87,8 @@ def test_wheel_builds_with_correct_metadata(tmp_path):
     assert "aido = orchestrator.cli:main" in entry_points
 
 
-def test_wheel_import_path_unchanged(tmp_path):
-    wheel_path = _build_wheel(tmp_path)
+def test_wheel_import_path_unchanged(built_wheel, tmp_path):
+    wheel_path = built_wheel
     install_dir = tmp_path / "installed"
     install_dir.mkdir()
 
