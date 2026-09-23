@@ -21,10 +21,10 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   (deepseek/kimi via `claude_code` redirigé, `development` uniquement,
   **`enabled: false`**, clé API requise, pas encore de preuve
   d'exécution réelle ; voir `ROADMAP.md` §7/§13).
-- **Tests offline** : 1214 PASS (1186 avant + 6 pour le renommage de la
-  distribution PyPI + 22 pour le renforcement de l'attribution Git
-  worker, P13.2, voir `ROADMAP.md` §13 ; ce nombre n'est pas un invariant
-  permanent).
+- **Tests offline** : 1234 PASS (1186 avant + 6 renommage distribution
+  PyPI + 22 attribution Git worker (P13.2) + 20 status/quota/registry
+  standalone (P13.3), voir `ROADMAP.md` §13 ; ce nombre n'est pas un
+  invariant permanent).
 - **Roman Numerals** (pilote externe) : `PASS`.
 - **Mistral / Vibe** : ✅ `VALIDATED`.
 - **Morpion Web 3D** (pilote externe) : `DONE`. SHA final :
@@ -68,6 +68,16 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   audit post-exécution fail-closed (`WorkerCommitIdentityMismatchError`)
   qui détecte toute mauvaise attribution avant QA/merge. `0e9eb96`
   (AIDO Code) non réécrit. Voir `ROADMAP.md` §13.
+- **P13.3 (status opérationnel complet, quotas riches, registry
+  standalone, GPT-6)** : `DONE` (2026-09-23). `aido status`/`--probe`
+  affichent désormais tous les workers (prénoms/modèles) et le quota
+  réel par provider (jamais dupliqué par worker, `unknown` jamais
+  fabriqué) ; registry de workers par défaut packagé dans le wheel
+  (`aido init` fonctionne sans checkout source, version moteur 0.1.3) ;
+  Victor/Oscar passent aux modèles Codex GPT-6 réellement validés
+  (`gpt-6-luna`/`gpt-6-sol`/`gpt-6-astra`) ; `MVP status=running` avec
+  100% WorkItems `completed` confirmé non-bug (ReleaseManager séparé,
+  P11 `À VOTER`). Voir `ROADMAP.md` §13.
 - **P14 (observabilité de consommation et efficacité économique)** :
   `APPROUVÉ — APRÈS P13` (2026-09-19). Aucun WorkItem d'implémentation
   créé à ce jour ; voir `ROADMAP.md` §13. Toutes les autres propositions
@@ -155,5 +165,11 @@ Chronologie détaillée entièrement récupérable via `git log` et
   indépendante, plus un audit post-exécution fail-closed
   (`WorkerCommitIdentityMismatchError`) (2026-09-22). Voir `ROADMAP.md`
   §13.
+- P13.3 : le kata externe a révélé l'absence de registry de workers
+  livré (`STANDALONE_RUNTIME_PASS = FAIL`) — corrigé par un registry
+  packagé (`src/orchestrator/resources/default_workers.yaml`) et
+  `aido init` standalone ; `aido status`/`--probe` enrichis (workers,
+  quotas par provider) ; Victor/Oscar sur GPT-6 ; `MVP status=running`
+  confirmé non-bug (2026-09-23). Voir `ROADMAP.md` §13.
 
 Ce fichier reste court et factuel : pas de duplication de `ROADMAP.md`.

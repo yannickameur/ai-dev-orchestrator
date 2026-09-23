@@ -44,6 +44,7 @@ import re
 import sys
 from pathlib import Path
 
+from orchestrator.engine import EngineConfigError, OrchestratorEngine
 from orchestrator.execution_policy import ExecutionPermissionMode
 from orchestrator.project_config import ProjectConfig, ProjectConfigError
 from orchestrator.project_runtime import (
@@ -53,7 +54,7 @@ from orchestrator.project_runtime import (
     ProjectStatusReader,
 )
 from orchestrator.project_state import UnknownMVPError, WorkItemStatus
-from orchestrator.worker_registry import WorkerRegistryError
+from orchestrator.worker_registry import UnknownWorkerError, WorkerRegistry, WorkerRegistryError
 
 DEFAULT_CONFIG_PATH = "./aido.yaml"
 DEFAULT_MAX_CYCLES = 50
@@ -139,6 +140,44 @@ qa:
 """
 
 
+def _default_worker_registry_text() -> str:
+    """The canonical worker registry template packaged inside this
+    distribution's own wheel (P13.3, see ROADMAP.md) — never the
+    ai-dev-orchestrator source checkout's ``config/workers.yaml`` (a
+    ``pip install``-only user has no such checkout at all). No secret/
+    API key/credential/machine path — see
+    ``tests/test_default_worker_registry.py``."""
+    from importlib.resources import files as _resource_files
+
+    return _resource_files("orchestrator.resources").joinpath("default_workers.yaml").read_text()
+
+
+def _user_worker_registry_path() -> Path:
+    """``$XDG_CONFIG_HOME/ai-dev-orchestrator/workers.yaml``, or
+    ``~/.config/ai-dev-orchestrator/workers.yaml`` if unset — a real
+    user's own editable copy, independent of any source checkout."""
+    import os
+
+    base = os.environ.get("XDG_CONFIG_HOME")
+    config_home = Path(base).expanduser() if base else Path.home() / ".config"
+    return config_home / "ai-dev-orchestrator" / "workers.yaml"
+
+
+def _materialize_user_worker_registry() -> Path:
+    """Creates the user's own worker registry from the packaged default
+    template if (and only if) it does not already exist — an existing
+    user file, however it got there, is never overwritten. Returns its
+    path either way."""
+    path = _user_worker_registry_path()
+    if not path.is_file():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_default_worker_registry_text())
+        print(f"aido init: no --workers-registry given; created a starter registry at {path}")
+    else:
+        print(f"aido init: no --workers-registry given; using existing {path}")
+    return path
+
+
 def _cmd_init(args: argparse.Namespace) -> int:
     config_path = Path(args.config).expanduser().resolve()
     if config_path.exists():
@@ -148,16 +187,18 @@ def _cmd_init(args: argparse.Namespace) -> int:
     if args.workers_registry:
         registry_path = Path(args.workers_registry).expanduser().resolve()
     else:
+        # Today's development convenience (a sibling `config/workers.yaml`
+        # in the current directory, e.g. this very repository) still
+        # wins if present, so nothing about the existing dev loop
+        # changes. Standalone (pip install only, no such checkout): fall
+        # back to a real, materializable user registry — never require a
+        # source checkout (P13.3).
         candidate = Path.cwd() / "config" / "workers.yaml"
-        if not candidate.is_file():
-            print(
-                "aido init: --workers-registry is required (no config/workers.yaml "
-                "found in the current directory to resolve automatically).",
-                file=sys.stderr,
-            )
-            return 1
-        registry_path = candidate.resolve()
-        print(f"aido init: no --workers-registry given; using existing {registry_path}")
+        if candidate.is_file():
+            registry_path = candidate.resolve()
+            print(f"aido init: no --workers-registry given; using existing {registry_path}")
+        else:
+            registry_path = _materialize_user_worker_registry()
 
     if not registry_path.is_file():
         print(f"aido init: worker registry not found: {registry_path}", file=sys.stderr)
@@ -234,21 +275,55 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 # --- aido status -----------------------------------------------------------
 
 def _cmd_status(args: argparse.Namespace) -> int:
-    """STRICTLY READ-ONLY: never creates ``state_dir`` or any store file,
-    never runs ``CREATE TABLE``/a migration, never writes a row — see
-    ``ProjectStatusReader``. Never uses the write-capable
-    ``ProjectRuntime.open()`` composition (no QuotaManager/
-    ProviderAdapter/WorkerSelector/RalphExecutionEngine/InternalQAEngine/
-    GitGovernanceService are ever instantiated for this command)."""
+    """STRICTLY READ-ONLY *unless* ``--probe`` is explicitly given: never
+    creates ``state_dir`` or any store file, never runs ``CREATE TABLE``/a
+    migration, never writes a row — see ``ProjectStatusReader``. Never
+    uses the write-capable ``ProjectRuntime.open()`` composition (no
+    QuotaManager/ProviderAdapter/WorkerSelector/RalphExecutionEngine/
+    InternalQAEngine/GitGovernanceService are ever instantiated unless
+    ``--probe`` is set, and even then only ``OrchestratorEngine.
+    probe_workers()``'s own, already-tested QuotaManager/ProviderAdapter
+    composition — never a second one built here)."""
     config = _load_config(args.config)
     if config is None:
         return 1
 
+    try:
+        registry = config.load_worker_registry()
+    except WorkerRegistryError as exc:
+        print(f"aido: invalid worker registry — {exc}", file=sys.stderr)
+        return 1
+
+    _print_project_status(config)
+
+    probes: tuple[Any, ...] | None = None
+    if getattr(args, "probe", False):
+        engine = OrchestratorEngine(config, provider_adapters=getattr(args, "provider_adapters", None))
+        try:
+            probes = engine.probe_workers()
+        except EngineConfigError as exc:
+            print(f"aido status --probe: FAIL — {exc}", file=sys.stderr)
+            return 1
+
+    print()
+    _print_workers_section(registry, probes)
+
+    if probes is not None:
+        print()
+        _print_provider_quotas_section(probes)
+
+    return 0
+
+
+def _print_project_status(config: ProjectConfig) -> None:
+    """The pre-existing project/MVP/WorkItem-counts rendering, unchanged —
+    factored out so ``_cmd_status`` can always continue to the workers
+    section below regardless of which case this hits."""
     reader = ProjectStatusReader.open(config)
     if reader is None:
         print("NOT_INITIALIZED")
         print("Run `aido run` to initialize and start this project.")
-        return 0
+        return
 
     try:
         try:
@@ -256,7 +331,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         except Exception:
             print("NOT_INITIALIZED")
             print("Run `aido run` to initialize and start this project.")
-            return 0
+            return
 
         print(f"project: {project.project_id} ({project.name})")
         try:
@@ -267,12 +342,17 @@ def _cmd_status(args: argparse.Namespace) -> int:
             print("\nWorkItem status counts:")
             for status in _REPORTED_STATUSES:
                 print(f"  {status.value}: 0")
-            return 0
+            return
 
         work_items = sorted(
             reader.project_store.list_work_items(config.mvp.id), key=lambda w: w.work_item_id
         )
         waits = reader.list_waits_for_mvp(config.mvp.id)
+        registry = None
+        try:
+            registry = config.load_worker_registry()
+        except WorkerRegistryError:
+            pass  # display-name resolution below degrades to "unknown", never breaks status
 
         counts = {status: 0 for status in WorkItemStatus}
         for wi in work_items:
@@ -285,8 +365,15 @@ def _cmd_status(args: argparse.Namespace) -> int:
             executions = reader.list_executions_for_work_item(wi.work_item_id)
             if executions:
                 last = executions[-1]
+                display_name = None
+                if registry is not None:
+                    try:
+                        display_name = registry.get(last.worker_id).display_name
+                    except UnknownWorkerError:
+                        display_name = None
+                worker_label = f"{display_name} [{last.worker_id}]" if display_name else f"{last.worker_id} [unknown display name]"
                 print(
-                    f"      last execution: worker={last.worker_id} provider={last.provider} "
+                    f"      last execution: worker={worker_label} provider={last.provider} "
                     f"status={last.status.value} "
                     f"permission_mode={last.permission_mode or 'unknown'}"
                 )
@@ -302,9 +389,64 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print("\nWorkItem status counts:")
         for status in _REPORTED_STATUSES:
             print(f"  {status.value}: {counts[status]}")
-        return 0
     finally:
         reader.close()
+
+
+def _print_workers_section(registry: "WorkerRegistry", probes: "tuple[Any, ...] | None") -> None:
+    """Shared by ``aido status``/``aido status --probe``: one rendering
+    path for the worker list, never duplicated between the two modes.
+    ``probes`` is ``None`` for the no-probe case (no ``probe=`` line at
+    all); otherwise each worker's line gets the observable state of ITS
+    OWN provider (never a fabricated per-worker state — two workers on
+    the same provider show the exact same probe result, see ROADMAP.md)."""
+    by_provider = {p.provider: p for p in (probes or ())}
+    print("Workers:")
+    for worker in registry.all_workers():
+        state = "enabled" if worker.enabled else "disabled"
+        line = (
+            f"  {worker.worker_id} — {worker.display_name}\n"
+            f"    {state}\n"
+            f"    provider={worker.provider}\n"
+            f"    backend={worker.backend}\n"
+            f"    model={worker.profile().model}"
+        )
+        print(line)
+        if probes is not None:
+            if not worker.enabled:
+                # A disabled worker's provider is never probed at all
+                # (probe_workers() only probes enabled workers' providers)
+                # — "disabled" is the honest fact here, never a fabricated
+                # "unknown" that implies a probe was attempted.
+                probe_state = "disabled"
+            else:
+                snapshot = by_provider.get(worker.provider)
+                probe_state = snapshot.reason if snapshot is not None else "unknown"
+            print(f"    probe={probe_state}")
+
+
+def _print_provider_quotas_section(probes: "tuple[Any, ...]") -> None:
+    """Quota is a PROVIDER-level fact, never per-worker (ROADMAP.md): one
+    block per distinct provider actually probed, regardless of how many
+    workers share it."""
+    print("Provider quotas:")
+    for snapshot in sorted(probes, key=lambda p: p.provider):
+        print(f"  {snapshot.provider}:")
+        if not snapshot.quota_windows:
+            print("    quota: unknown")
+        for window in snapshot.quota_windows:
+            used = f"{window.utilization:.0%}" if window.utilization is not None else "unknown"
+            remaining = f"{window.remaining:.0%}" if window.remaining is not None else "unknown"
+            reset = window.reset_at or "unknown"
+            print(f"    {window.window_type}:")
+            print(f"      used: {used}")
+            print(f"      remaining: {remaining}")
+            print(f"      reset: {reset}")
+        if snapshot.reset_credits:
+            print("    reset credits:")
+            for credit in snapshot.reset_credits:
+                count = credit.available_count if credit.available_count is not None else "unknown"
+                print(f"      {credit.title}: {credit.status} (available: {count})")
 
 
 # --- aido run --------------------------------------------------------------
@@ -417,6 +559,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     status_parser = subparsers.add_parser("status", help="Read persisted state — no provider calls.")
     status_parser.add_argument("config", nargs="?", default=DEFAULT_CONFIG_PATH)
+    status_parser.add_argument(
+        "--probe", action="store_true",
+        help="Also perform one real, explicit provider probe (network/CLI). Omit for zero provider calls.",
+    )
     status_parser.set_defaults(func=_cmd_status)
 
     return parser

@@ -798,3 +798,306 @@ class TestRunWaitingAndResume:
         with ProjectRuntime.open(config, clock=lambda: UTC_T1, provider_adapters={"anthropic": _FakeAdapter()}) as rt:
             wi = rt.project_store.get_work_item("wi-1")
             assert wi.status is WorkItemStatus.COMPLETED
+
+
+class _QuotaFakeAdapter(ProviderAdapter):
+    """Fully controllable fake for `aido status --probe` rendering tests —
+    unlike `_FakeAdapter`, lets a test specify exact QuotaWindow/
+    ResetCredit values (including deliberately unknown ones)."""
+
+    def __init__(self, *, provider: str, quota_windows=(), reset_credits=(), available: bool = True) -> None:
+        self.probe_calls = 0
+        self._provider = provider
+        self._quota_windows = quota_windows
+        self._reset_credits = reset_credits
+        self._available = available
+
+    async def probe(self) -> ProviderState:
+        self.probe_calls += 1
+        return ProviderState(
+            provider=self._provider,
+            availability=ProviderAvailability(available=self._available, observed_at=UTC_T0),
+            observed_at=UTC_T0, quota_windows=self._quota_windows, reset_credits=self._reset_credits,
+        )
+
+
+class TestStatusWorkers:
+    """P13.3 (see ROADMAP.md): `aido status` (no --probe) shows every
+    configured worker with its display name/model, still zero provider
+    calls."""
+
+    def test_workers_section_shows_display_names_and_models(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        config_path = _write_config(tmp_path)
+        exit_code = _invoke(["status", str(config_path)])
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "Workers:" in out
+        assert "alice — Alice" in out
+        assert "bob — Bob" in out
+        assert "model=sonnet" in out
+        assert "provider=anthropic" in out
+        assert "backend=claude_code" in out
+
+    def test_no_probe_line_without_probe_flag(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+        config_path = _write_config(tmp_path)
+        _invoke(["status", str(config_path)])
+        out = capsys.readouterr().out
+        assert "probe=" not in out
+        assert "Provider quotas:" not in out
+
+    def test_workers_shown_even_when_not_initialized(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+        config_path = _write_config(tmp_path)
+        exit_code = _invoke(["status", str(config_path)])
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "NOT_INITIALIZED" in out
+        assert "Workers:" in out  # still shown, even before any aido run
+
+    def test_status_without_probe_never_instantiates_any_provider_adapter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from orchestrator.providers import claude_code_adapter, codex_adapter, mistral_vibe_adapter
+
+        def _boom(self, *a, **k):
+            raise AssertionError("no provider adapter may ever be instantiated by aido status (no --probe)")
+
+        for module, cls_name in (
+            (claude_code_adapter, "ClaudeCodeAdapter"),
+            (codex_adapter, "CodexAdapter"),
+            (mistral_vibe_adapter, "MistralVibeAdapter"),
+        ):
+            monkeypatch.setattr(getattr(module, cls_name), "__init__", _boom)
+
+        config_path = _write_config(tmp_path)
+        exit_code = _invoke(["status", str(config_path)])
+        assert exit_code == 0
+
+
+class TestStatusProbe:
+    """P13.3: `aido status --probe` performs one real, explicit probe and
+    renders utilization/remaining/reset/reset-credits, provider-grouped,
+    never per-worker duplicated, unknown staying unknown."""
+
+    def test_probe_renders_utilization_remaining_and_reset(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        from orchestrator.providers.contracts import QuotaWindow
+
+        config_path = _write_config(tmp_path)
+        adapter = _QuotaFakeAdapter(
+            provider="anthropic",
+            quota_windows=(
+                QuotaWindow(
+                    window_type="five_hour", source="fake", observed_at=UTC_T0,
+                    utilization=0.37, reset_at=UTC_T1,
+                ),
+            ),
+        )
+        exit_code = _invoke(["status", str(config_path), "--probe"], provider_adapters={"anthropic": adapter})
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert adapter.probe_calls == 1
+        assert "Provider quotas:" in out
+        assert "anthropic:" in out
+        assert "five_hour:" in out
+        assert "used: 37%" in out
+        assert "remaining: 63%" in out
+        assert UTC_T1.isoformat() in out
+
+    def test_probe_unknown_utilization_stays_unknown_never_100_percent(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        from orchestrator.providers.contracts import QuotaWindow
+
+        config_path = _write_config(tmp_path)
+        adapter = _QuotaFakeAdapter(
+            provider="anthropic",
+            quota_windows=(
+                QuotaWindow(window_type="five_hour", source="fake", observed_at=UTC_T0),  # utilization/reset unknown
+            ),
+        )
+        exit_code = _invoke(["status", str(config_path), "--probe"], provider_adapters={"anthropic": adapter})
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "used: unknown" in out
+        assert "remaining: unknown" in out
+        assert "reset: unknown" in out
+        assert "used: 100%" not in out
+        assert "remaining: 100%" not in out
+
+    def test_probe_no_quota_windows_at_all_reports_unknown(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        config_path = _write_config(tmp_path)
+        adapter = _QuotaFakeAdapter(provider="anthropic")  # no quota_windows: e.g. Vibe/Mistral shape
+        exit_code = _invoke(["status", str(config_path), "--probe"], provider_adapters={"anthropic": adapter})
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "anthropic:" in out
+        assert "quota: unknown" in out
+
+    def test_probe_reset_credits_rendered_never_consumed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        from orchestrator.providers.contracts import ResetCredit, ResetCreditStatus
+
+        config_path = _write_config(tmp_path)
+        adapter = _QuotaFakeAdapter(
+            provider="anthropic",
+            reset_credits=(ResetCredit(title="Full reset", status=ResetCreditStatus.AVAILABLE, available_count=3),),
+        )
+        exit_code = _invoke(["status", str(config_path), "--probe"], provider_adapters={"anthropic": adapter})
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "reset credits:" in out
+        assert "Full reset: available (available: 3)" in out
+        assert adapter.probe_calls == 1  # probed (described), never a second call that would imply consumption
+
+    def test_shared_provider_quota_rendered_once_not_per_worker(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        # REGISTRY_TWO_WORKERS (alice + bob) both use "anthropic" —
+        # exactly the shared-provider case.
+        from orchestrator.providers.contracts import QuotaWindow
+
+        config_path = _write_config(tmp_path)
+        adapter = _QuotaFakeAdapter(
+            provider="anthropic",
+            quota_windows=(
+                QuotaWindow(window_type="five_hour", source="fake", observed_at=UTC_T0, utilization=0.5),
+            ),
+        )
+        exit_code = _invoke(["status", str(config_path), "--probe"], provider_adapters={"anthropic": adapter})
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert out.count("anthropic:") == 1  # one provider quota block, not two (per alice/bob)
+        assert adapter.probe_calls == 1  # probed once, not once per worker
+        # Both workers still each show their own probe=available line.
+        assert out.count("probe=available") == 2
+
+    def test_disabled_worker_shows_probe_disabled_not_unknown(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        config_path = tmp_path / "aido.yaml"
+        _init_git_repo_with_pytest_marker(tmp_path / "proj")
+        (tmp_path / "workers.yaml").write_text(
+            dedent(
+                """
+                workers:
+                  - worker_id: dana
+                    display_name: Dana
+                    provider: deepseek
+                    backend: claude_code
+                    enabled: false
+                    capabilities: [development]
+                    profiles:
+                      standard: {quality_tier: STANDARD, model: deepseek-flash}
+                  - worker_id: alice
+                    display_name: Alice
+                    provider: anthropic
+                    backend: claude_code
+                    capabilities: [development]
+                    profiles:
+                      standard: {quality_tier: STANDARD, model: sonnet}
+                """
+            )
+        )
+        config_path.write_text(
+            dedent(
+                f"""
+                schema_version: 1
+                project:
+                  id: demo
+                  name: Demo
+                  workspace: proj
+                  state_dir: state
+                workers:
+                  registry: workers.yaml
+                execution:
+                  permission_mode: standard
+                git:
+                  base_branch: main
+                mvp:
+                  id: mvp-1
+                  objective: Ship it
+                work_items:
+                  - id: wi-1
+                    title: Do the thing
+                    required_capabilities: [development]
+                qa:
+                  - id: qa-1
+                    kind: unit_test
+                    argv: ["{sys.executable}", "-c", "pass"]
+                """
+            )
+        )
+        adapter = _QuotaFakeAdapter(provider="anthropic")
+        exit_code = _invoke(["status", str(config_path), "--probe"], provider_adapters={"anthropic": adapter})
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "probe=disabled" in out
+        # deepseek was never probed at all (dana is disabled).
+        assert "deepseek:" not in out
+
+
+class TestStandaloneWorkerRegistry:
+    """P13.3 (see ROADMAP.md): `aido init` works with no
+    `--workers-registry` and no ai-dev-orchestrator source checkout in
+    sight — the packaged default registry template is materialized into
+    a real, editable user config instead."""
+
+    def test_init_without_registry_or_cwd_config_creates_user_registry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        workspace = tmp_path / "proj"
+        _init_git_repo_with_pytest_marker(workspace)
+        monkeypatch.chdir(workspace)  # no config/workers.yaml here
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+        config_path = tmp_path / "aido.yaml"
+        exit_code = _invoke(["init", str(config_path), "--workspace", str(workspace)])
+        assert exit_code == 0
+
+        user_registry = tmp_path / "xdg-config" / "ai-dev-orchestrator" / "workers.yaml"
+        assert user_registry.is_file()
+        from orchestrator.worker_registry import WorkerRegistry
+
+        registry = WorkerRegistry.load(user_registry)
+        assert registry.all_workers()  # parses, non-empty
+
+        config = ProjectConfig.load(config_path)
+        assert config.load_worker_registry().all_workers()  # generated aido.yaml actually resolves it
+
+    def test_init_never_overwrites_existing_user_registry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        workspace = tmp_path / "proj"
+        _init_git_repo_with_pytest_marker(workspace)
+        monkeypatch.chdir(workspace)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+        user_registry = tmp_path / "xdg-config" / "ai-dev-orchestrator" / "workers.yaml"
+        user_registry.parent.mkdir(parents=True)
+        user_registry.write_text(REGISTRY_TWO_WORKERS)  # a pre-existing user file
+
+        exit_code = _invoke(["init", str(tmp_path / "aido.yaml")])
+        assert exit_code == 0
+        assert user_registry.read_text() == REGISTRY_TWO_WORKERS  # untouched
+
+    def test_init_still_prefers_cwd_config_workers_yaml_when_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Today's dev-checkout convenience (e.g. this very repository)
+        is unaffected by the new standalone fallback."""
+        workspace = tmp_path / "proj"
+        _init_git_repo_with_pytest_marker(workspace)
+        (workspace / "config").mkdir()
+        (workspace / "config" / "workers.yaml").write_text(REGISTRY_TWO_WORKERS)
+        monkeypatch.chdir(workspace)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+        exit_code = _invoke(["init", str(tmp_path / "aido.yaml")])
+        assert exit_code == 0
+        assert not (tmp_path / "xdg-config").exists()  # standalone path never even touched

@@ -48,7 +48,7 @@ from orchestrator.project_runtime import (
 )
 from orchestrator.project_state import UnknownMVPError, WorkItem, WorkItemStatus
 from orchestrator.quota_manager import ProviderProbeError, QuotaManager, QuotaPolicy
-from orchestrator.worker_registry import WorkerRegistry, WorkerRegistryError
+from orchestrator.worker_registry import UnknownWorkerError, WorkerRegistry, WorkerRegistryError
 
 DEFAULT_MAX_CYCLES = 50
 # A probe is always an explicit, on-demand real read: state_ttl exists only
@@ -114,16 +114,57 @@ class WorkerSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class QuotaWindowSnapshot:
+    """One observed quota window (``probe_workers()`` only) — a thin,
+    serializable projection of ``providers.contracts.QuotaWindow``, never
+    the contract type itself. ``window_type`` is the provider's own opaque
+    label (e.g. Codex's ``primary_5h``/``secondary_7d``, Claude's
+    ``five_hour``/``seven_day``); this type never assumes a fixed set.
+    ``utilization``/``remaining`` are ``None`` when genuinely unknown —
+    never coerced to a fabricated 0%/100%. ``remaining`` is computed
+    (``1.0 - utilization``) only when ``utilization`` is known."""
+
+    window_type: str
+    utilization: float | None
+    remaining: float | None
+    reset_at: str | None
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResetCreditSnapshot:
+    """One observed, purely descriptive reset credit (``probe_workers()``
+    only) — a thin, serializable projection of
+    ``providers.contracts.ResetCredit``. Nothing in this façade can
+    consume one; ``auto_consume`` stays pinned to ``False`` upstream and
+    is intentionally not even exposed here (nothing downstream needs it
+    to render a description)."""
+
+    title: str
+    status: str
+    available_count: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderSnapshot:
     """One provider's real, freshly-probed availability (``probe_workers()``
     only). ``reason`` is one of ``UnavailabilityReason``'s own values,
     ``"available"``, or ``"probe_error: ..."``, never a fabricated quota
-    percentage or reset time; an unknown state stays reported as unknown."""
+    percentage or reset time; an unknown state stays reported as unknown.
+
+    ``quota_windows``/``reset_credits`` are provider-level facts (never
+    per-worker — two workers sharing one provider share the exact same
+    quota, see ``ROADMAP.md``): empty tuples by default, so any existing
+    caller ignoring them is unaffected. ``reset_at`` is kept for backward
+    compatibility (the reset timestamps of every quota window, flattened);
+    a new caller should prefer ``quota_windows`` for the full picture."""
 
     provider: str
     available: bool
     reason: str
     reset_at: tuple[str, ...] = ()
+    quota_windows: tuple[QuotaWindowSnapshot, ...] = ()
+    reset_credits: tuple[ResetCreditSnapshot, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +174,12 @@ class ExecutionSnapshot:
 
     execution_id: str
     worker_id: str
+    #: The worker's ``display_name`` resolved from the *current* worker
+    #: registry — ``None`` if that ``worker_id`` no longer exists there
+    #: (e.g. removed from ``config/workers.yaml`` since this execution
+    #: ran). Never fabricated/guessed; a stale/missing registry entry is
+    #: reported honestly as unknown, never silently dropped or invented.
+    worker_display_name: str | None
     provider: str
     status: str
     permission_mode: str | None
@@ -329,9 +376,26 @@ class OrchestratorEngine:
                 else (state.availability.reason.value if state.availability.reason else "unknown")
             )
             reset_at = tuple(w.reset_at.isoformat() for w in state.quota_windows if w.reset_at is not None)
+            quota_windows = tuple(
+                QuotaWindowSnapshot(
+                    window_type=w.window_type,
+                    utilization=w.utilization,
+                    remaining=(1.0 - w.utilization) if w.utilization is not None else None,
+                    reset_at=w.reset_at.isoformat() if w.reset_at is not None else None,
+                    source=w.source,
+                )
+                for w in state.quota_windows
+            )
+            reset_credits = tuple(
+                ResetCreditSnapshot(
+                    title=c.title, status=c.status.value, available_count=c.available_count,
+                )
+                for c in state.reset_credits
+            )
             snapshots.append(
                 ProviderSnapshot(
-                    provider=provider, available=state.availability.available, reason=reason, reset_at=reset_at,
+                    provider=provider, available=state.availability.available, reason=reason,
+                    reset_at=reset_at, quota_windows=quota_windows, reset_credits=reset_credits,
                 )
             )
         return tuple(snapshots)
@@ -367,8 +431,16 @@ class OrchestratorEngine:
                 mvp=MVPStatusSnapshot(mvp_id=cfg.mvp.id, status=None),
             )
 
+        # Loaded once per status() call, not per WorkItem: a stale worker
+        # registry read failure must never break the rest of the status
+        # (it only degrades display-name resolution to "unknown" below).
+        try:
+            registry = self._load_worker_registry()
+        except EngineConfigError:
+            registry = None
+
         work_items = tuple(
-            self._work_item_snapshot(reader, wi)
+            self._work_item_snapshot(reader, wi, registry)
             for wi in sorted(reader.project_store.list_work_items(cfg.mvp.id), key=lambda w: w.work_item_id)
         )
         return ProjectStatusSnapshot(
@@ -377,13 +449,22 @@ class OrchestratorEngine:
             work_items=work_items,
         )
 
-    def _work_item_snapshot(self, reader: ProjectStatusReader, wi: WorkItem) -> WorkItemSnapshot:
+    def _work_item_snapshot(
+        self, reader: ProjectStatusReader, wi: WorkItem, registry: WorkerRegistry | None,
+    ) -> WorkItemSnapshot:
         executions = reader.list_executions_for_work_item(wi.work_item_id)
         last_execution = None
         if executions:
             last = executions[-1]
+            display_name = None
+            if registry is not None:
+                try:
+                    display_name = registry.get(last.worker_id).display_name
+                except UnknownWorkerError:
+                    display_name = None
             last_execution = ExecutionSnapshot(
-                execution_id=last.execution_id, worker_id=last.worker_id, provider=last.provider,
+                execution_id=last.execution_id, worker_id=last.worker_id,
+                worker_display_name=display_name, provider=last.provider,
                 status=last.status.value, permission_mode=last.permission_mode,
                 started_at=last.started_at.isoformat(),
                 finished_at=last.finished_at.isoformat() if last.finished_at else None,
