@@ -70,7 +70,7 @@ workers:
   # provider preference (see docs/ADAPTIVE_EXECUTION.md and ROADMAP.md,
   # "Worker pool").
   - worker_id: bob
-    display_name: Bob
+    display_name: Lydie
     enabled: true
     provider: anthropic
     backend: claude_code
@@ -139,7 +139,7 @@ workers:
         cost_rank: 30
 
   - worker_id: oscar
-    display_name: Oscar
+    display_name: Yannick
     enabled: true
     provider: openai
     backend: codex
@@ -185,7 +185,7 @@ workers:
   # see MistralVibeAdapter) — both workers below share that same
   # provider-level signal, never an independent quota each.
   - worker_id: milo
-    display_name: Milo
+    display_name: Nathaniel
     enabled: true
     provider: mistral
     backend: vibe
