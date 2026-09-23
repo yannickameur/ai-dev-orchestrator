@@ -1,6 +1,6 @@
 # Status
 
-Snapshot factuel court — mis à jour le 2026-09-21. Pas un journal ;
+Snapshot factuel court — mis à jour le 2026-09-23. Pas un journal ;
 l'historique détaillé daté (Slices, incidents, diagnostics) vit dans
 l'historique Git (`git log`) et dans les rapports sous `docs/reports/`.
 Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
@@ -21,10 +21,10 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   (deepseek/kimi via `claude_code` redirigé, `development` uniquement,
   **`enabled: false`**, clé API requise, pas encore de preuve
   d'exécution réelle ; voir `ROADMAP.md` §7/§13).
-- **Tests offline** : 1234 PASS (1186 avant + 6 renommage distribution
-  PyPI + 22 attribution Git worker (P13.2) + 20 status/quota/registry
-  standalone (P13.3), voir `ROADMAP.md` §13 ; ce nombre n'est pas un
-  invariant permanent).
+- **Tests offline** : ~1260 PASS as of 2026-09-23 (snapshot, not a
+  contract — see `pytest -q`'s own real count for the current figure;
+  history/breakdown by change lives in `ROADMAP.md` §13 and `git log`,
+  not duplicated here).
 - **Roman Numerals** (pilote externe) : `PASS`.
 - **Mistral / Vibe** : ✅ `VALIDATED`.
 - **Morpion Web 3D** (pilote externe) : `DONE`. SHA final :
