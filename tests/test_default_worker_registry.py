@@ -106,3 +106,67 @@ def test_default_registry_resource_is_actually_included_in_the_built_wheel(tmp_p
         assert "orchestrator/resources/default_workers.yaml" in names
         packaged_in_wheel = z.read("orchestrator/resources/default_workers.yaml").decode()
     assert packaged_in_wheel == _default_registry_text()
+
+
+def _load_default_registry() -> WorkerRegistry:
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        f.write(_default_registry_text())
+        path = Path(f.name)
+    try:
+        return WorkerRegistry.load(path)
+    finally:
+        path.unlink()
+
+
+def test_bob_oscar_milo_display_names_updated_worker_ids_unchanged():
+    """Maintainer decision, pre-M2: display names change, worker_ids
+    (the stable technical identity) never do."""
+    registry = _load_default_registry()
+    expected = {"bob": "Lydie", "oscar": "Yannick", "milo": "Nathaniel"}
+    for worker_id, display_name in expected.items():
+        worker = registry.get(worker_id)
+        assert worker.worker_id == worker_id
+        assert worker.display_name == display_name
+
+
+def test_other_workers_display_names_unaffected():
+    registry = _load_default_registry()
+    unaffected = {"alice": "Alice", "victor": "Victor", "juno": "Juno", "dana": "Dana", "kai": "Kai"}
+    for worker_id, display_name in unaffected.items():
+        assert registry.get(worker_id).display_name == display_name
+
+
+def test_renamed_workers_git_identity_uses_new_display_name():
+    """P13.2's worker Git identity (author/committer) is derived from
+    display_name + worker_id — never a provider/vendor name, and the
+    stable technical email must never change just because the human
+    label did."""
+    from orchestrator.ralph_execution_engine import _worker_git_identity_env
+
+    registry = _load_default_registry()
+    expected = {
+        "bob": ("Lydie", "bob@workers.ai-dev-orchestrator.local"),
+        "oscar": ("Yannick", "oscar@workers.ai-dev-orchestrator.local"),
+        "milo": ("Nathaniel", "milo@workers.ai-dev-orchestrator.local"),
+    }
+    for worker_id, (name, email) in expected.items():
+        env = _worker_git_identity_env(registry.get(worker_id))
+        assert env["GIT_AUTHOR_NAME"] == name
+        assert env["GIT_COMMITTER_NAME"] == name
+        assert env["GIT_AUTHOR_EMAIL"] == email
+        assert env["GIT_COMMITTER_EMAIL"] == email
+
+
+def test_oscar_worker_never_uses_the_maintainer_email():
+    """Distinguishes the "Yannick" worker from the human maintainer
+    Yannick Ameur: the worker's Git identity must stay the stable,
+    clearly-non-human technical email, never yannick.ameur@gmail.com."""
+    from orchestrator.ralph_execution_engine import _worker_git_identity_env
+
+    registry = _load_default_registry()
+    env = _worker_git_identity_env(registry.get("oscar"))
+    assert env["GIT_AUTHOR_EMAIL"] == "oscar@workers.ai-dev-orchestrator.local"
+    assert env["GIT_COMMITTER_EMAIL"] == "oscar@workers.ai-dev-orchestrator.local"
+    assert "yannick.ameur@gmail.com" not in env["GIT_AUTHOR_EMAIL"]
+    assert "yannick.ameur@gmail.com" not in env["GIT_COMMITTER_EMAIL"]
+    assert "gmail.com" not in env["GIT_AUTHOR_EMAIL"]

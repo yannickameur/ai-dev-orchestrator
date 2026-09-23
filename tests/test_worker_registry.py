@@ -414,9 +414,11 @@ class TestShippedExampleConfig:
             assert len(workers) >= 2, f"provider {provider!r} has fewer than 2 enabled workers"
 
     def test_config_workers_yaml_secondary_workers_mirror_their_primary(self) -> None:
-        """Bob/Oscar must declare the same capabilities/profiles as
-        Alice/Victor — no artificial functional difference, only priority
-        differs (secondary workers are a fallback, not a distinct role)."""
+        """The secondary workers (worker_id bob/oscar) must declare the
+        same capabilities/profiles as the primary ones (alice/victor) —
+        no artificial functional difference, only priority differs
+        (secondary workers are a fallback, not a distinct role); this
+        holds regardless of either worker's own display_name."""
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
         for primary_id, secondary_id in (("alice", "bob"), ("victor", "oscar")):
             primary, secondary = registry.get(primary_id), registry.get(secondary_id)
