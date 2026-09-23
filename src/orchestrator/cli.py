@@ -51,9 +51,8 @@ from orchestrator.project_runtime import (
     ConfigRuntimeConflictError,
     ProjectRuntime,
     ProjectRuntimeError,
-    ProjectStatusReader,
 )
-from orchestrator.project_state import UnknownMVPError, WorkItemStatus
+from orchestrator.project_state import WorkItemStatus
 from orchestrator.worker_registry import UnknownWorkerError, WorkerRegistry, WorkerRegistryError
 
 DEFAULT_CONFIG_PATH = "./aido.yaml"
@@ -277,13 +276,16 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 def _cmd_status(args: argparse.Namespace) -> int:
     """STRICTLY READ-ONLY *unless* ``--probe`` is explicitly given: never
     creates ``state_dir`` or any store file, never runs ``CREATE TABLE``/a
-    migration, never writes a row — see ``ProjectStatusReader``. Never
-    uses the write-capable ``ProjectRuntime.open()`` composition (no
+    migration, never writes a row — see ``OrchestratorEngine.status()``.
+    Never uses the write-capable ``ProjectRuntime.open()`` composition (no
     QuotaManager/ProviderAdapter/WorkerSelector/RalphExecutionEngine/
     InternalQAEngine/GitGovernanceService are ever instantiated unless
     ``--probe`` is set, and even then only ``OrchestratorEngine.
     probe_workers()``'s own, already-tested QuotaManager/ProviderAdapter
-    composition — never a second one built here)."""
+    composition — never a second one built here). One ``OrchestratorEngine``
+    is built and reused for both ``.status()`` and (if requested)
+    ``.probe_workers()`` — never a second, independent traversal of
+    persisted state built directly in this module (REUSE FIRST, AUD-4)."""
     config = _load_config(args.config)
     if config is None:
         return 1
@@ -294,11 +296,11 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print(f"aido: invalid worker registry — {exc}", file=sys.stderr)
         return 1
 
-    _print_project_status(config)
+    engine = OrchestratorEngine(config, provider_adapters=getattr(args, "provider_adapters", None))
+    _print_project_status(engine)
 
     probes: tuple[Any, ...] | None = None
     if getattr(args, "probe", False):
-        engine = OrchestratorEngine(config, provider_adapters=getattr(args, "provider_adapters", None))
         try:
             probes = engine.probe_workers()
         except EngineConfigError as exc:
@@ -315,82 +317,57 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_project_status(config: ProjectConfig) -> None:
-    """The pre-existing project/MVP/WorkItem-counts rendering, unchanged —
-    factored out so ``_cmd_status`` can always continue to the workers
-    section below regardless of which case this hits."""
-    reader = ProjectStatusReader.open(config)
-    if reader is None:
+def _print_project_status(engine: OrchestratorEngine) -> None:
+    """Pure rendering over ``OrchestratorEngine.status()``'s own
+    ``ProjectStatusSnapshot`` — the exact same real, read-only status path
+    exposed to any other frontend (P13, e.g. AIDO Code), never a second,
+    independent traversal of ``ProjectStatusReader`` built here (REUSE
+    FIRST, AUD-4). A genuine read failure (corrupted state, I/O error, ...)
+    propagates rather than being folded into ``NOT_INITIALIZED`` (AUD-3):
+    only ``OrchestratorEngine.status()``'s own explicit, typed
+    "project truly never bootstrapped" case renders that message."""
+    snapshot = engine.status()
+    if not snapshot.initialized:
         print("NOT_INITIALIZED")
         print("Run `aido run` to initialize and start this project.")
         return
 
-    try:
-        try:
-            project = reader.project_store.get_project(config.project.id)
-        except Exception:
-            print("NOT_INITIALIZED")
-            print("Run `aido run` to initialize and start this project.")
-            return
+    print(f"project: {snapshot.project_id} ({snapshot.project_name})")
+    mvp = snapshot.mvp
+    if mvp is None or mvp.status is None:
+        print(f"mvp: {mvp.mvp_id if mvp is not None else '?'} (not yet created)")
+    else:
+        print(f"mvp: {mvp.mvp_id} status={mvp.status}")
 
-        print(f"project: {project.project_id} ({project.name})")
-        try:
-            mvp = reader.project_store.get_mvp(config.mvp.id)
-            print(f"mvp: {mvp.mvp_id} status={mvp.status.value}")
-        except UnknownMVPError:
-            print(f"mvp: {config.mvp.id} (not yet created)")
-            print("\nWorkItem status counts:")
-            for status in _REPORTED_STATUSES:
-                print(f"  {status.value}: 0")
-            return
+    counts = {status: 0 for status in WorkItemStatus}
+    for wi in snapshot.work_items:
+        counts[WorkItemStatus(wi.status)] += 1
+        line = f"  {wi.work_item_id}: {wi.status}"
+        if wi.blocked_reason:
+            line += f" (blocked_reason={wi.blocked_reason})"
+        print(line)
 
-        work_items = sorted(
-            reader.project_store.list_work_items(config.mvp.id), key=lambda w: w.work_item_id
-        )
-        waits = reader.list_waits_for_mvp(config.mvp.id)
-        registry = None
-        try:
-            registry = config.load_worker_registry()
-        except WorkerRegistryError:
-            pass  # display-name resolution below degrades to "unknown", never breaks status
+        if wi.last_execution is not None:
+            last = wi.last_execution
+            worker_label = (
+                f"{last.worker_display_name} [{last.worker_id}]"
+                if last.worker_display_name else f"{last.worker_id} [unknown display name]"
+            )
+            print(
+                f"      last execution: worker={worker_label} provider={last.provider} "
+                f"status={last.status} "
+                f"permission_mode={last.permission_mode or 'unknown'}"
+            )
+        if wi.wait is not None:
+            print(
+                f"      wait: phase={wi.wait.phase} "
+                f"eligible_at={wi.wait.eligible_at} "
+                f"providers={','.join(wi.wait.providers) or '(any)'}"
+            )
 
-        counts = {status: 0 for status in WorkItemStatus}
-        for wi in work_items:
-            counts[wi.status] += 1
-            line = f"  {wi.work_item_id}: {wi.status.value}"
-            if wi.blocked_reason:
-                line += f" (blocked_reason={wi.blocked_reason})"
-            print(line)
-
-            executions = reader.list_executions_for_work_item(wi.work_item_id)
-            if executions:
-                last = executions[-1]
-                display_name = None
-                if registry is not None:
-                    try:
-                        display_name = registry.get(last.worker_id).display_name
-                    except UnknownWorkerError:
-                        display_name = None
-                worker_label = f"{display_name} [{last.worker_id}]" if display_name else f"{last.worker_id} [unknown display name]"
-                print(
-                    f"      last execution: worker={worker_label} provider={last.provider} "
-                    f"status={last.status.value} "
-                    f"permission_mode={last.permission_mode or 'unknown'}"
-                )
-            item_waits = [w for w in waits if w.work_item_id == wi.work_item_id]
-            if item_waits:
-                latest_wait = max(item_waits, key=lambda w: w.created_at)
-                print(
-                    f"      wait: phase={latest_wait.phase.value} "
-                    f"eligible_at={latest_wait.eligible_at} "
-                    f"providers={','.join(latest_wait.providers) or '(any)'}"
-                )
-
-        print("\nWorkItem status counts:")
-        for status in _REPORTED_STATUSES:
-            print(f"  {status.value}: {counts[status]}")
-    finally:
-        reader.close()
+    print("\nWorkItem status counts:")
+    for status in _REPORTED_STATUSES:
+        print(f"  {status.value}: {counts[status]}")
 
 
 def _print_workers_section(registry: "WorkerRegistry", probes: "tuple[Any, ...] | None") -> None:

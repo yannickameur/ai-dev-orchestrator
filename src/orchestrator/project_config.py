@@ -58,6 +58,7 @@ entry point itself.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -73,7 +74,10 @@ DEFAULT_CONFIG_FILENAME = "aido.yaml"
 
 _FORBIDDEN_KEY_SUBSTRINGS = ("api_key", "apikey", "token", "secret", "password", "passwd", "credential")
 
-_TOP_LEVEL_KEYS = frozenset({"schema_version", "project", "workers", "execution", "git", "mvp", "work_items", "qa"})
+_TOP_LEVEL_KEYS = frozenset({
+    "schema_version", "project", "workers", "execution", "git", "mvp", "work_items", "qa",
+    "qa_protected_paths",
+})
 _PROJECT_KEYS = frozenset({"id", "name", "workspace", "state_dir"})
 _WORKERS_KEYS = frozenset({"registry"})
 _EXECUTION_KEYS = frozenset({"permission_mode"})
@@ -83,6 +87,15 @@ _WORK_ITEM_KEYS = frozenset({"id", "title", "required_capabilities", "dependenci
 _QA_KEYS = frozenset({"id", "kind", "argv", "timeout_seconds", "required"})
 
 _DEFAULT_BASE_BRANCH = "main"
+
+# AUD-7: project.id feeds _default_state_dir(project_id) directly (below)
+# when project.state_dir is omitted. Deliberately conservative — letters,
+# digits, '.', '_', '-' only, starting with a letter or digit — so it can
+# never contain a path separator or escape
+# ~/.local/state/ai-dev-orchestrator/projects/<project.id>/. This never
+# rewrites/slugifies a supplied id: an id outside this pattern fails
+# loudly (InvalidProjectConfigError), it is never silently coerced.
+_PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class ProjectConfigError(Exception):
@@ -172,6 +185,15 @@ def _optional_str_list(data: Mapping, key: str, *, context: str) -> tuple[str, .
     if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
         raise InvalidProjectConfigError(f"{context}: field {key!r} must be a list of non-empty strings")
     return tuple(value)
+
+
+def _validate_project_id(project_id: str) -> None:
+    if not _PROJECT_ID_PATTERN.fullmatch(project_id) or ".." in project_id:
+        raise InvalidProjectConfigError(
+            f"project.id {project_id!r} is invalid — only letters, digits, '.', '_', '-' are "
+            "allowed, must start with a letter or digit, and must never contain '..' or a path "
+            "separator (it is used to build the default state_dir path)"
+        )
 
 
 def _resolve_path(raw: str, *, base_dir: Path) -> Path:
@@ -341,13 +363,14 @@ class ProjectConfig:
 
     __slots__ = (
         "schema_version", "project", "workers_registry_path", "execution",
-        "git", "mvp", "work_items", "qa_commands", "source_path",
+        "git", "mvp", "work_items", "qa_commands", "qa_protected_paths", "source_path",
     )
 
     def __init__(
         self, *, schema_version: int, project: ProjectIdentity, workers_registry_path: Path,
         execution: ExecutionConfig, git: GitConfig, mvp: MVPConfig,
         work_items: tuple[WorkItemConfig, ...], qa_commands: tuple[ValidationCommand, ...],
+        qa_protected_paths: tuple[str, ...] = (),
         source_path: Path,
     ) -> None:
         self.schema_version = schema_version
@@ -358,6 +381,7 @@ class ProjectConfig:
         self.mvp = mvp
         self.work_items = work_items
         self.qa_commands = qa_commands
+        self.qa_protected_paths = qa_protected_paths
         self.source_path = source_path
 
     @classmethod
@@ -389,6 +413,7 @@ class ProjectConfig:
         project_data = _require_mapping(top.get("project"), context="project")
         _reject_unknown_keys(project_data, _PROJECT_KEYS, context="project")
         project_id = _require_str(project_data, "id", context="project")
+        _validate_project_id(project_id)
         project_name = _require_str(project_data, "name", context="project")
         workspace_raw = _require_str(project_data, "workspace", context="project")
         workspace = _resolve_path(workspace_raw, base_dir=base_dir)
@@ -451,10 +476,17 @@ class ProjectConfig:
             raise InvalidProjectConfigError("'qa' must be a list")
         qa_commands = tuple(_parse_qa_command(entry, index=i) for i, entry in enumerate(qa_raw))
 
+        # Optional, explicit only (YAGNI/KISS) — never auto-detected from a
+        # "tests/" naming convention or any ecosystem-specific heuristic;
+        # see qa_protection.py's own module docstring. Repo-relative paths,
+        # resolved against project.workspace by the caller
+        # (ProjectRuntime), never against this file's own directory.
+        qa_protected_paths = _optional_str_list(top, "qa_protected_paths", context="aido.yaml")
+
         return cls(
             schema_version=schema_version, project=project, workers_registry_path=workers_registry_path,
             execution=execution, git=git, mvp=mvp, work_items=work_items, qa_commands=qa_commands,
-            source_path=source_path,
+            qa_protected_paths=qa_protected_paths, source_path=source_path,
         )
 
     def load_worker_registry(self) -> WorkerRegistry:

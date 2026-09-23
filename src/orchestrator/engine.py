@@ -46,7 +46,7 @@ from orchestrator.project_runtime import (
     ProjectStatusReader,
     resolve_provider_adapters,
 )
-from orchestrator.project_state import UnknownMVPError, WorkItem, WorkItemStatus
+from orchestrator.project_state import UnknownMVPError, UnknownProjectError, WorkItem, WorkItemStatus
 from orchestrator.quota_manager import ProviderProbeError, QuotaManager, QuotaPolicy
 from orchestrator.worker_registry import UnknownWorkerError, WorkerRegistry, WorkerRegistryError
 
@@ -418,7 +418,7 @@ class OrchestratorEngine:
         cfg = self._config
         try:
             project = reader.project_store.get_project(cfg.project.id)
-        except Exception:
+        except UnknownProjectError:
             return ProjectStatusSnapshot(
                 initialized=False, project_id=cfg.project.id, project_name=None, mvp=None,
             )

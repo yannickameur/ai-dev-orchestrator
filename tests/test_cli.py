@@ -10,6 +10,7 @@ running a real command is the product's own design, never an LLM call.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
@@ -745,6 +746,223 @@ class TestRunEndToEnd:
         )
         out = capsys.readouterr().out
         assert "WARNING" not in out
+
+
+class TestProtectedTestPaths:
+    """AUD-1 remediation: ``qa_protected_paths`` must be real end to end —
+    ``aido.yaml`` -> ``ProjectConfig`` -> ``ProjectRuntime.bootstrap()`` ->
+    the real ``MVPManager`` it composes -> ``qa_protection.py`` -> a real
+    QA ``FAIL``. Never a manually-constructed ``MVPManager`` with
+    ``qa_protected_paths`` injected by the test itself (that would prove
+    only that ``qa_protection.py`` works in isolation, already covered by
+    ``tests/test_qa_protection.py`` — not that the real ``aido run`` path
+    actually wires it)."""
+
+    def _write_protected_config(self, tmp_path: Path) -> Path:
+        workspace = tmp_path / "proj"
+        workspace.mkdir()
+        (workspace / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
+        (workspace / "protected_test.py").write_text("assert 1 == 1\n")
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=str(workspace), check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=e2e@example.invalid", "-c", "user.name=E2E", "add", "-A"],
+            cwd=str(workspace), check=True,
+        )
+        subprocess.run(
+            ["git", "-c", "user.email=e2e@example.invalid", "-c", "user.name=E2E", "commit", "-q", "-m", "init"],
+            cwd=str(workspace), check=True,
+        )
+        (tmp_path / "workers.yaml").write_text(REGISTRY_TWO_WORKERS)
+        config_path = tmp_path / "aido.yaml"
+        config_path.write_text(
+            dedent(
+                f"""
+                schema_version: 1
+                project:
+                  id: demo-protected
+                  name: Demo Protected
+                  workspace: proj
+                  state_dir: state
+                workers:
+                  registry: workers.yaml
+                execution:
+                  permission_mode: standard
+                git:
+                  base_branch: main
+                mvp:
+                  id: mvp-1
+                  objective: Ship it
+                work_items:
+                  - id: wi-1
+                    title: Do the thing
+                    required_capabilities: [development]
+                qa:
+                  - id: qa-1
+                    kind: unit_test
+                    argv: ["{sys.executable}", "-c", "pass"]
+                qa_protected_paths:
+                  - protected_test.py
+                """
+            )
+        )
+        return config_path
+
+    def test_config_actually_parses_the_protected_paths_field(self, tmp_path: Path) -> None:
+        config_path = self._write_protected_config(tmp_path)
+        config = ProjectConfig.load(config_path)
+        assert config.qa_protected_paths == ("protected_test.py",)
+
+    def test_unmodified_protected_file_still_completes_normally(self, tmp_path: Path) -> None:
+        """Positive control: baseline capture/comparison must never false-
+        positive on an untouched protected file."""
+        config_path = self._write_protected_config(tmp_path)
+        config = ProjectConfig.load(config_path)
+        runner = _ScriptedRalphRunner(
+            [
+                {"topic": "work.completed", "mutate": _commit_action("feature.py", "x = 1\n", "DEV A")},
+                {"topic": "work.completed"},
+            ]
+        )
+        from orchestrator.project_runtime import ProjectRuntime
+
+        with ProjectRuntime.open(
+            config, provider_adapters={"anthropic": _FakeAdapter(available=True)}, subprocess_runner=runner,
+        ) as rt:
+            rt.bootstrap()
+            result = asyncio.run(rt.manager.run_next_work_item("mvp-1"))
+            assert result is not None
+            assert result.work_item.status is WorkItemStatus.COMPLETED
+
+    def test_weakened_protected_file_fails_qa_without_silent_pass(self, tmp_path: Path) -> None:
+        config_path = self._write_protected_config(tmp_path)
+        config = ProjectConfig.load(config_path)
+        runner = _ScriptedRalphRunner(
+            [
+                {
+                    "topic": "work.completed",
+                    "mutate": _commit_action(
+                        "protected_test.py", "assert True  # weakened by DEV A\n", "DEV A weakens the protected test",
+                    ),
+                },
+                {"topic": "work.completed"},
+            ]
+        )
+        from orchestrator.project_runtime import ProjectRuntime
+
+        with ProjectRuntime.open(
+            config, provider_adapters={"anthropic": _FakeAdapter(available=True)}, subprocess_runner=runner,
+        ) as rt:
+            rt.bootstrap()
+            result = asyncio.run(rt.manager.run_next_work_item("mvp-1"))
+            assert result is not None
+            # Never a silent PASS: the WorkItem must not reach COMPLETED,
+            # and the real QA verdict, recorded through the real path, is
+            # an explicit FAIL naming the unauthorized protected change —
+            # even though the configured QA command itself (`python -c
+            # "pass"`) always exits 0.
+            assert result.work_item.status is not WorkItemStatus.COMPLETED
+
+            runs = rt.qa_run_store.list_for_work_item("wi-1")
+            assert len(runs) == 1
+            verdict = runs[0].verdict
+            assert verdict is not None
+            assert verdict.status.value == "fail"
+            assert "protected test changed" in verdict.reason
+
+    def test_deleted_protected_file_fails_qa_without_silent_pass(self, tmp_path: Path) -> None:
+        def _delete_protected_file(cwd: Path) -> None:
+            (cwd / "protected_test.py").unlink()
+            subprocess.run(["git", "add", "-A"], cwd=str(cwd), check=True)
+            subprocess.run(
+                [
+                    "git", "-c", "user.email=e2e@example.invalid", "-c", "user.name=E2E",
+                    "commit", "-q", "-m", "DEV A deletes the protected test",
+                ],
+                cwd=str(cwd), check=True,
+            )
+
+        config_path = self._write_protected_config(tmp_path)
+        config = ProjectConfig.load(config_path)
+        runner = _ScriptedRalphRunner(
+            [
+                {"topic": "work.completed", "mutate": _delete_protected_file},
+                {"topic": "work.completed"},
+            ]
+        )
+        from orchestrator.project_runtime import ProjectRuntime
+
+        with ProjectRuntime.open(
+            config, provider_adapters={"anthropic": _FakeAdapter(available=True)}, subprocess_runner=runner,
+        ) as rt:
+            rt.bootstrap()
+            result = asyncio.run(rt.manager.run_next_work_item("mvp-1"))
+            assert result is not None
+            assert result.work_item.status is not WorkItemStatus.COMPLETED
+
+            runs = rt.qa_run_store.list_for_work_item("wi-1")
+            assert len(runs) == 1
+            verdict = runs[0].verdict
+            assert verdict is not None
+            assert verdict.status.value == "fail"
+            assert "protected test changed" in verdict.reason
+
+    def test_genuine_read_failure_never_prints_not_initialized(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """AUD-3/AUD-4: `aido status` renders `OrchestratorEngine.status()`
+        directly (never a second, independent traversal), so a real read
+        failure propagates instead of being reported as the misleading
+        `NOT_INITIALIZED` — the same guarantee proved at the engine level
+        in tests/test_engine.py."""
+        from orchestrator.project_state import ProjectStateStore
+
+        config_path = tmp_path / "aido.yaml"
+        state_dir = "state"
+        workspace = tmp_path / "proj"
+        _init_git_repo_with_pytest_marker(workspace)
+        (tmp_path / "workers.yaml").write_text(REGISTRY_TWO_WORKERS)
+        config_path.write_text(
+            dedent(
+                f"""
+                schema_version: 1
+                project:
+                  id: demo-corrupt
+                  name: Demo
+                  workspace: proj
+                  state_dir: {state_dir}
+                workers:
+                  registry: workers.yaml
+                execution:
+                  permission_mode: standard
+                git:
+                  base_branch: main
+                mvp:
+                  id: mvp-1
+                  objective: Ship it
+                work_items:
+                  - id: wi-1
+                    title: Do the thing
+                    required_capabilities: [development]
+                qa:
+                  - id: qa-1
+                    kind: unit_test
+                    argv: ["{sys.executable}", "-c", "pass"]
+                """
+            )
+        )
+        config = ProjectConfig.load(config_path)
+        from orchestrator.project_runtime import ProjectRuntime
+
+        with ProjectRuntime.open(config, clock=lambda: UTC_T0, provider_adapters={"anthropic": _FakeAdapter()}) as rt:
+            rt.bootstrap()
+
+        def _boom(self, project_id):
+            raise RuntimeError("simulated corrupted project store")
+
+        monkeypatch.setattr(ProjectStateStore, "get_project", _boom)
+
+        with pytest.raises(RuntimeError, match="simulated corrupted project store"):
+            _invoke(["status", str(config_path)], provider_adapters={"anthropic": _NeverCalledAdapter()})
 
 
 class TestRunWaitingAndResume:

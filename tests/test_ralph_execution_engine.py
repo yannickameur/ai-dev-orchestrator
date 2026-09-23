@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -813,6 +814,42 @@ class TestWorkerGitIdentityRealCommit:
             ["git", "config", "--local", "--list"], cwd=tmp_path, capture_output=True, text=True, check=True,
         )
         assert before.stdout == after.stdout
+
+
+class TestDefaultSubprocessRunnerTimeout:
+    """AUD-8: the real, production ``_default_subprocess_runner`` timeout/
+    kill path — every other test in this file exercises ``RalphTimeoutError``
+    only via a fake runner scripted to raise it directly, never the real
+    ``asyncio.wait_for``/``process.kill()`` mechanism. A real, local, fast,
+    portable slow subprocess (``python -c "... time.sleep(5) ..."``) proves
+    the process is genuinely terminated, not merely that the call raises
+    while a process keeps running in the background."""
+
+    def test_timeout_actually_kills_the_process_no_orphan(self, tmp_path: Path) -> None:
+        from orchestrator.ralph_execution_engine import RalphTimeoutError
+
+        finished_marker = tmp_path / "finished"
+        script = (
+            "import pathlib, time; "
+            "time.sleep(5); "
+            f"pathlib.Path({str(finished_marker)!r}).write_text('done')"
+        )
+
+        async def _run() -> float:
+            loop = asyncio.get_event_loop()
+            start = loop.time()
+            with pytest.raises(RalphTimeoutError):
+                await _default_subprocess_runner([sys.executable, "-c", script], tmp_path, 0.3)
+            elapsed = loop.time() - start
+            # A genuinely-still-running process gets ample extra time here
+            # to finish sleeping and write its post-sleep marker, if the
+            # kill above had not actually terminated it.
+            await asyncio.sleep(1.5)
+            return elapsed
+
+        elapsed = asyncio.run(_run())
+        assert elapsed < 2.0  # bounded by the timeout, never anywhere near the 5s sleep
+        assert not finished_marker.exists()  # never reached the post-sleep write: genuinely killed
 
 
 class TestNoForbiddenBehavior:
