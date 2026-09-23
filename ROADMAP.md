@@ -853,6 +853,94 @@ subprocess_runner`/`RalphExecutionEngine.execute()` avec un faux binaire
 attribué, identité imbriquée adverse détectée et fail-closed, config
 locale restaurée après un run réel, chemin faux-runner inchangé).
 
+### P13.3 — Status opérationnel complet, quotas riches, registry standalone, GPT-6 — `DONE` (2026-09-23)
+
+**Contexte** : le clean-install kata externe (String Calculator, voir
+AIDO Code) a prouvé `PACKAGE_INSTALL_PASS` mais révélé
+`STANDALONE_RUNTIME_PASS = FAIL` (aucun registry de workers livré). En
+parallèle, `aido status` restait sur le rendu P1 (sans vue workers,
+sans quota), alors qu'AIDO Code (M1.1) l'avait déjà dépassé côté
+frontend. Cette tâche corrige les deux, plus les modèles Codex GPT-6.
+
+**`aido status` enrichi** : affiche désormais TOUJOURS une section
+`Workers:` (tous les workers configurés, prénom/`display_name`,
+provider, backend, modèle du profil par défaut), en plus du rendu
+projet/MVP/WorkItems existant — inchangé, zéro appel provider. Le
+`worker=` de `last execution` résout maintenant le prénom depuis le
+registry courant (`Victor [victor]`), honnêtement `unknown display
+name` si ce `worker_id` n'existe plus. `aido status --probe` (nouveau
+flag, opt-in) ajoute un vrai probe explicite et une section `Provider
+quotas:` — un bloc par PROVIDER (jamais dupliqué par worker : Alice/Bob
+partagent `anthropic`, Victor/Oscar partagent `openai`), avec
+`utilization`/`remaining`/`reset_at` par fenêtre de quota et les reset
+credits observés, jamais consommés. `remaining` n'est calculé que si
+`utilization` est connu (`1.0 - utilization`) ; une valeur inconnue
+reste `unknown`, jamais fabriquée à 0%/100%. Un worker désactivé affiche
+`probe=disabled`, jamais un `unknown` trompeur laissant croire à un
+probe tenté.
+
+**`OrchestratorEngine.ProviderSnapshot` enrichi** (`src/orchestrator/
+engine.py`) : `quota_windows: tuple[QuotaWindowSnapshot, ...]` et
+`reset_credits: tuple[ResetCreditSnapshot, ...]`, nouveaux, avec
+défauts vides pour la compatibilité — l'ancien champ `reset_at` reste
+inchangé. Ces DTO projettent fidèlement `providers.contracts.
+QuotaWindow`/`ResetCredit` (déjà remontés par `CodexAdapter`/
+`ClaudeCodeAdapter` mais jusqu'ici perdus par `probe_workers()`) — aucune
+seconde infrastructure quota, `REUSE FIRST`. `ExecutionSnapshot` gagne
+`worker_display_name: str | None`, résolu depuis le `WorkerRegistry`
+courant par `.status()`, jamais fabriqué si le worker historique a
+disparu du registry.
+
+**Modèles Codex GPT-6** : la CLI Codex réelle (`codex-cli 0.155.1`,
+`codex doctor` confirme `gpt-6-sol` déjà configuré comme défaut ambiant
+de la machine) expose désormais `gpt-6-luna`/`gpt-6-sol`/`gpt-6-astra`.
+Les trois ont été validés par un vrai appel minimal
+(`codex exec -m <model> --sandbox read-only "Reply with exactly: OK"`,
+~2000 tokens chacun, aucun reset credit consommé) avant toute
+modification du registry. `victor`/`oscar` (`config/workers.yaml`) :
+`economy=gpt-6-luna`, `standard=gpt-6-sol`, `deep=gpt-6-astra` — Astra
+n'est jamais le profil par défaut du travail standard.
+
+**Registry de workers standalone** (le vrai gap comblé) :
+`src/orchestrator/resources/default_workers.yaml` (nouveau
+sous-package, livré dans le wheel via `[tool.setuptools.package-data]`)
+devient la source canonique — copie exacte de `config/workers.yaml`,
+garantie identique par `tests/test_default_worker_registry.py`
+(`config/workers.yaml` reste un chemin de compatibilité développement
+uniquement, jamais une seconde source qui pourrait diverger
+silencieusement). `aido init` sans `--workers-registry` : préfère
+toujours un `./config/workers.yaml` du répertoire courant s'il existe
+(convention dev inchangée), sinon matérialise
+`$XDG_CONFIG_HOME/ai-dev-orchestrator/workers.yaml` (ou
+`~/.config/ai-dev-orchestrator/workers.yaml`) depuis le template
+packagé — créé si absent, **jamais écrasé** s'il existe déjà. Aucun
+checkout source requis. Version moteur : **0.1.3**.
+
+**`MVP status=running` avec 100% des WorkItems `completed` — PAS un bug,
+confirmé par lecture directe du contrat existant** : `MVPStatus` n'a
+pas de valeur `COMPLETED` ; la seule progression au-delà de `RUNNING`
+est `RUNNING → VALIDATING → RELEASED`, exclusivement pilotée par
+`ReleaseManager` (Slice 10, `src/orchestrator/release_manager.py`) —
+"Kept deliberately separate from MVPManager... Merging the two would
+turn MVPManager into exactly the kind of god object this codebase
+avoids" (docstring du module lui-même). `MVPManager`/`aido run`
+n'appellent jamais `mark_validating`/`mark_released` : ce cycle
+release/planning reste **`À VOTER`** (P11, non productisé). `running`
+avec tous les WorkItems `completed` décrit donc honnêtement l'état réel
+: le travail de développement est fini, mais aucune release gate n'a
+encore été exécutée. Aucun test de régression ajouté (rien à corriger),
+aucun historique SQLite modifié.
+
+**Tests** : 20 nouveaux tests offline, aucun provider réel —
+`tests/test_cli.py` (`TestStatusWorkers`, `TestStatusProbe` : rendu
+workers/quota, provider partagé affiché une seule fois, `unknown` ne
+devient jamais 100%, `probe=disabled` pour un worker désactivé,
+`TestStandaloneWorkerRegistry` : création/non-écrasement du registry
+utilisateur, priorité conservée au `config/workers.yaml` du cwd) et
+`tests/test_default_worker_registry.py` (identité byte-à-byte avec
+`config/workers.yaml`, parsing réel, DeepSeek/Kimi désactivés, mapping
+GPT-6, aucune valeur secrète, présence réelle dans le wheel construit).
+
 ### P14 — Observabilité de consommation et efficacité économique — `APPROUVÉ`, après P13 (2026-09-19, non implémenté)
 
 **Décision produit** : approuvée, statut `APPROUVÉ — APRÈS P13`. Aucun
@@ -1026,6 +1114,7 @@ Invariants respectés par l'implémentation (`RalphExecutionEngine`,
 | P13 | Découplage moteur / externalisation AIDO Code | Le moteur headless doit-il être séparé d'une future interface terminal interactive (AIDO Code), pour rester réutilisable par un frontend externe ? | **`DONE`, priorité 1 (2026-09-19) — voir §3/§10, sous-section P13 ci-dessus** |
 | P13.1 | Première exécution réelle du WorkItem Flow sur AIDO Code (M1) — défaut moteur QA découvert et corrigé | Le run réel de M1 (WI-01..WI-07) a-t-il fonctionné, et qu'a-t-il révélé sur le moteur lui-même ? | **`DONE` (2026-09-21) — M1 complété fonctionnellement ; défaut réel de preuve QA (`FAIL`->`PASS` sur SHA identique via dérive d'environnement, hors Git) découvert et corrigé (`VALIDATION_ENVIRONMENT_CHANGED`) ; attribution Git par worker ajoutée — voir sous-section P13.1 ci-dessus** |
 | P13.2 | Attribution Git worker renforcée après un défaut réel découvert sur AIDO Code (M1.1) | Un commit fonctionnel réel d'un worker (M1.1, WI-M1.1-01) est resté attribué à l'identité ambiante du mainteneur au lieu du worker — l'injection d'environnement seule dans le subprocess `ralph` était-elle suffisante ? | **`DONE` (2026-09-22) — non, un `git commit` imbriqué peut ne pas hériter cet environnement ; config Git locale au workspace en défense indépendante + audit post-exécution fail-closed (`WorkerCommitIdentityMismatchError`) ajoutés — voir sous-section P13.2 ci-dessus** |
+| P13.3 | Status opérationnel complet, quotas riches, registry standalone, GPT-6 | Le kata externe a révélé `STANDALONE_RUNTIME_PASS = FAIL` (aucun registry livré) ; `aido status` restait en retard sur AIDO Code (M1.1) ; `MVP status=running` avec 100% WorkItems `completed` est-il un bug ? | **`DONE` (2026-09-23) — `aido status`/`--probe` enrichis (workers/prénoms/quota par provider) ; registry par défaut packagé + `aido init` standalone ; modèles Codex GPT-6 validés réellement ; `MVP status=running` confirmé NON bug (ReleaseManager/P11 séparé, `À VOTER`) — voir sous-section P13.3 ci-dessus** |
 | P14 | Observabilité de consommation et efficacité économique | Le moteur doit-il enregistrer, par exécution, les métriques réelles (tokens, durée, retries, coût observé/estimé) nécessaires pour identifier ensuite quelles phases/workers/providers sont les moins économiques ? | **APPROUVÉ — APRÈS P13** (2026-09-19). Aucun WorkItem d'implémentation créé à ce jour ; voir sous-section P14 ci-dessous pour le détail complet des critères |
 
 Les propositions encore `À VOTER` restent non planifiées ; aucun ordre entre
