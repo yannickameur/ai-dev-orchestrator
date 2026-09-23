@@ -41,9 +41,9 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - **v0.1.1** — **PUBLIÉE**, première release publique open source.
 - **MVP 0.1** : `DONE` (contrat d'acceptation : `MVP_SPEC.yaml` v4).
 - **Phase 1** : `DONE`.
-- Suite de tests offline : **1157 PASS** (1135 avant, 22 pour la façade
-  moteur `OrchestratorEngine` ; voir §13, sous-section P13, et
-  docs/status.md pour le détail).
+- Suite de tests offline : snapshot daté dans `docs/status.md` (ce
+  compte évolue à chaque changement ; voir §13 pour l'historique par
+  incrément, `pytest -q` pour le nombre exact courant).
 - **P12 (format de configuration de projet public + mode de permission
   d'exécution des workers) : `DONE`**, voir §10 et `docs/PROJECT_CONFIG.md`.
   **P1 (CLI publique `aido`) : `DONE`** (`aido init/validate/run/status`,
@@ -63,6 +63,16 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   `APPROUVÉ — APRÈS P13`** (2026-09-19), voir §13. Aucun WorkItem
   d'implémentation créé à ce jour ; capacité moteur, jamais recalculée
   côté AIDO Code.
+- **P13.4 (remédiation post-audit externe) : `DONE`** (2026-09-23), voir
+  §13. 8/11 findings corrigés (dont le seul HIGH : protection de tests
+  réellement câblée dans `aido run`), 2 documentés/différés (YAGNI), 1
+  classé P16 (candidat DELETE). Rapport complet :
+  `docs/reports/mistral-engine-audit-2026-09-23.md`.
+- **P15 (étude prompt optimization externe, Opik Optimizer) :
+  `APPROUVÉ POUR ÉTUDE`** (2026-09-23), voir §13. Pas d'intégration.
+- **P16 (revue YAGNI/REUSE FIRST structurée) : `APPROUVÉ POUR REVUE`**
+  (2026-09-23), voir §13. Pas de refactor global autorisé par ce seul
+  vote.
 
 ## 3. Ce qui existe aujourd'hui
 
@@ -941,6 +951,53 @@ utilisateur, priorité conservée au `config/workers.yaml` du cwd) et
 `config/workers.yaml`, parsing réel, DeepSeek/Kimi désactivés, mapping
 GPT-6, aucune valeur secrète, présence réelle dans le wheel construit).
 
+### P13.4 — Remédiation post-audit (Mistral) — `DONE` (2026-09-23)
+
+**Contexte** : un audit technique externe (méthode multi-agents, lecture
+directe du code, jamais de la doc seule) a été mené sur le SHA
+`75b3ef5e5d77f2fb0e516e2b4722dfcc1b8c2fbd` — voir
+[`docs/reports/mistral-engine-audit-2026-09-23.md`](docs/reports/mistral-engine-audit-2026-09-23.md)
+pour le rapport complet (11 findings, aucun CRITICAL, verdict `NO
+CONFIRMED BLOCKER FOUND` pour M2). Principe appliqué : *external audits
+are inputs, not authority* — chaque finding a été confirmé par lecture
+directe avant correction, jamais accepté tel quel (voir §14, P16).
+
+**Findings corrigés** :
+
+| ID | Sévérité | Décision | Correctif |
+|---|---|---|---|
+| AUD-1 | HIGH | `FIXED` | `qa_protected_paths` ajouté au schéma `aido.yaml` (`ProjectConfig`), propagé par `ProjectRuntime.bootstrap()` jusqu'au vrai `MVPManager` — la protection de tests existait déjà (`qa_protection.py`) mais n'était câblée nulle part dans le chemin réel ; voir `docs/PROJECT_CONFIG.md`, "Protected test paths". Preuve : test bout-en-bout réel (`tests/test_cli.py::TestProtectedTestPaths`), jamais une construction manuelle de `MVPManager` contournant le problème. |
+| AUD-2 | MEDIUM | déferré, documenté | Détection volontairement non construite dans cette tâche (voir "Non fait" ci-dessous) — reste un vrai gap connu, pas fermé silencieusement. |
+| AUD-3 | MEDIUM | `FIXED` | `except Exception` → `except UnknownProjectError` dans `OrchestratorEngine._read_status`/`cli._print_project_status` : une corruption réelle propage désormais, jamais confondue avec `NOT_INITIALIZED`. |
+| AUD-4 | MEDIUM | `FIXED` | `aido status` (CLI) consomme maintenant directement `OrchestratorEngine.status()` — la seconde traversée indépendante de `ProjectStatusReader` dans `cli.py` a été supprimée (REUSE FIRST). AUD-3 et AUD-4 corrigés dans le même changement, comme demandé : une seule source de vérité, un seul correctif suffit désormais. |
+| AUD-5 | MEDIUM | documenté, `DEFERRED` | Aucun fingerprint générique construit (YAGNI — aucun MVP non-Python réel n'a encore établi le besoin) ; la limite (empreinte Python uniquement) est maintenant documentée explicitement dans `docs/QA_STRATEGY.md` §8.3. |
+| AUD-6 | LOW | `FIXED` | `ClaudeCodeAdapter._availability_from_status` : seuls `"allowed"`/`"rejected"` (les deux seules valeurs réellement observées) sont mappés explicitement ; toute autre valeur reste `UNKNOWN`, jamais `QUOTA_EXHAUSTED` par défaut. |
+| AUD-7 | LOW | `FIXED` | `project.id` validé par un motif explicite (lettres/chiffres/`.`/`_`/`-`, jamais de séparateur de chemin ni de `..`) avant de construire `state_dir` — fail-closed, aucune slugification silencieuse d'un id fourni. |
+| AUD-8 | LOW | `FIXED` | Nouveau test réel (`tests/test_ralph_execution_engine.py::TestDefaultSubprocessRunnerTimeout`) : un vrai sous-processus lent local, timeout court, preuve que le process est réellement tué (jamais d'orphelin), pas seulement que l'exception est levée. |
+| AUD-9 | LOW | `FIXED` | `docs/status.md` mis à jour (date, compte de tests) et reformulé en snapshot explicite plutôt qu'un quasi-contrat de compte exact — pas de CI dédiée ajoutée pour ça (YAGNI). |
+| AUD-10 | LOW | classé `P16` | `Project.current_mvp_id` reste en l'état — candidat `DELETE` documenté, nécessite une analyse de compatibilité DB/API avant toute suppression ; voir §14, P16. |
+| AUD-11 | LOW | `FIXED` | Nouveau test d'intégration réel (`tests/test_project_runtime.py::TestMultiMVPSequential`) : trois MVP séquentiels sous le même `project.id`/`state_dir`, sans conflit, sans fuite de WorkItem, sans dépendance à `current_mvp_id`. |
+
+**Non fait, explicitement** :
+
+- AUD-2 (fichiers non suivis supprimés par un worker) : le besoin
+  (détecter, jamais bloquer automatiquement, jamais `git clean`, jamais
+  de restauration automatique) reste réel mais n'a pas été implémenté
+  dans cette tâche — un compromis explicite plutôt qu'une correction
+  précipitée d'un mécanisme touchant `RalphExecutionEngine`/
+  `GitGovernanceService`. Reste un `À VOTER` distinct, pas fermé.
+- Aucune nouvelle dépendance ajoutée par cette remédiation.
+- Aucun refactor au-delà du périmètre de chaque finding (AUD-3/AUD-4
+  corrigés ensemble parce que le rapport d'audit les liait
+  explicitement ; les autres corrections restent chacune locale à son
+  propre fichier).
+
+**Tests** : suite complète offline, aucune régression, tous les
+nouveaux tests ci-dessus exercent le vrai chemin de production
+(`ProjectConfig` → `ProjectRuntime`/`OrchestratorEngine` → `MVPManager`),
+jamais une construction manuelle contournant le problème corrigé. Voir
+`docs/status.md` pour le compte à jour.
+
 ### P14 — Observabilité de consommation et efficacité économique — `APPROUVÉ`, après P13 (2026-09-19, non implémenté)
 
 **Décision produit** : approuvée, statut `APPROUVÉ — APRÈS P13`. Aucun
@@ -1077,6 +1134,114 @@ Invariants respectés par l'implémentation (`RalphExecutionEngine`,
   subprocess (`UnsupportedPermissionModeError`), jamais une dégradation
   silencieuse.
 
+### P15 — Prompt optimization externe — `APPROUVÉ POUR ÉTUDE`, pas d'intégration (2026-09-23)
+
+**Décision produit** : approuvée pour étude uniquement. Aucune
+dépendance installée, aucun WorkItem d'implémentation. Candidat
+principal : **Opik Optimizer**. Comparaison complète des candidats
+étudiés : `docs/ECOSYSTEM.md`.
+
+**Besoin couvert, s'il est un jour implémenté** : prompt existant +
+dataset réel + métrique réelle → variantes générées → comparaison →
+candidat amélioré → **validation par notre propre QA déterministe**
+(`InternalQAEngine`, jamais l'auto-évaluation de l'outil d'optimisation
+lui-même). Séquence obligatoire, jamais inversée :
+
+```
+MESURER → IDENTIFIER → DATASET → OPTIMISER → QA → COMPARER → DÉCISION HUMAINE
+```
+
+**Jamais** : Opik (ou tout autre optimiseur) modifiant automatiquement
+un prompt en production. Toute adoption d'une variante reste une
+décision humaine explicite, jamais automatisée par cette capacité.
+
+**Contrat de dépendance avec P14** : P14 (observabilité de consommation,
+`APPROUVÉ — APRÈS P13`, non implémenté) est la seule source de
+télémétrie (tokens, durées, QA FAIL, DEV FIX, retries, coût). P15
+réutiliserait ces données telles quelles — **aucun second système de
+télémétrie** ne serait construit pour Opik. P15 reste donc lui-même
+non actionnable tant que P14 n'est pas implémenté.
+
+**Contraintes si jamais implémenté** (non construites ici, pour
+référence future) : Opik Optimizer reste optionnel, externe,
+désactivable, hors du cœur (`src/orchestrator/`), et jamais câblé dans
+le WorkItem Flow nominal (§5) — une capacité additionnelle invoquée
+explicitement, jamais enchaînée automatiquement, exactement comme
+`PlanningCoordinator`/`ApprovalCoordinator` (§10).
+
+### P16 — Revue de simplification YAGNI/REUSE FIRST — `APPROUVÉ POUR REVUE`, pas de refactor automatique (2026-09-23)
+
+**Décision produit** : approuvée pour une revue structurée, jamais une
+autorisation de réécrire le projet. Ordre obligatoire pour tout candidat
+de simplification ou toute recommandation d'audit externe :
+
+```
+1 DELETE
+2 STDLIB
+3 EXISTING PROJECT PRIMITIVE
+4 EXISTING DEPENDENCY
+5 MATURE EXTERNAL PACKAGE
+6 BUILD
+```
+
+**Principe** : *external audits are inputs, not authority.* Un finding
+d'audit ne déclenche jamais automatiquement un refactor, une dépendance,
+ou un changement d'architecture. Workflow obligatoire pour chaque
+finding :
+
+```
+AUDIT FINDING → REPRODUCE → CONFIRM → DELETE/STDLIB/REUSE/PACKAGE/BUILD → TEST → MEASURE → ACCEPT/REJECT
+```
+
+C'est exactement le processus suivi par P13.4 ci-dessus : chaque finding
+Mistral a été relu/reproduit dans le code réel avant toute correction
+(voir `docs/reports/mistral-engine-audit-2026-09-23.md`), jamais accepté
+tel quel.
+
+**Candidats déjà identifiés** (à traiter au fil de l'eau, jamais comme
+un refactor global d'un seul coup) :
+
+- **AUD-4** (duplication `aido status` CLI / `OrchestratorEngine.status()`)
+  — déjà corrigé par P13.4 (REUSE FIRST immédiat, pas différé).
+- **`Project.current_mvp_id`** (AUD-10) — candidat `DELETE` : écrit à
+  chaque `bootstrap()`, lu par aucune décision (`engine.py`/
+  `mvp_manager.py` utilisent tous `cfg.mvp.id`, jamais ce champ).
+  Suppression non faite ici : nécessite une analyse de compatibilité
+  SQLite/API avant tout retrait, pas justifiée sans preuve de gain net
+  pour ce seul correctif.
+- **Fingerprint d'environnement générique non-Python** (AUD-5) — chemin
+  `BUILD` explicitement rejeté tant qu'aucun MVP non-Python réel
+  n'établit le besoin (YAGNI) ; documenté comme limitation connue
+  plutôt que construit par anticipation.
+
+**Chaque candidat de simplification** doit démontrer un bénéfice concret
+avant correction — safety, correctness, maintainability, testability, ou
+future feature enablement — jamais "plus joli" comme seule
+justification. Format attendu pour toute proposition future :
+
+```
+BEFORE : LOC / fichiers / complexité / dépendances
+AFTER  : LOC / fichiers / complexité / dépendances
+NET GAIN
+```
+
+Une dépendance n'est jamais acceptée pour économiser quelques lignes
+simples ; évaluer aussi maintenance, licence, activité du projet,
+stabilité d'API, surface de supply-chain.
+
+**Enseignements étudiés sans adoption** (voir `docs/ECOSYSTEM.md` pour
+le détail) :
+
+- **Superpowers** (discipline de cadrage Claude Code, séparation
+  planning/exécution, review gates, patterns TDD) : `INSPIRE ONLY`,
+  jamais intégré. Comparé à ce que ce projet fait déjà (WorkItem Flow,
+  DEV B corrective review, QA déterministe) — pas de gap identifié
+  justifiant une dépendance.
+- **Ponytail** (YAGNI/stdlib-first comme benchmark intellectuel de
+  simplicité) : `REFERENCE / A-B BENCHMARK ONLY`, jamais intégré — les
+  principes qu'il incarne (stdlib avant dépendance, solution minimale)
+  sont déjà la politique explicite de ce projet (§1, `CONTRIBUTING.md`).
+
 ### Ordre approuvé
 
 1. P12 (`DONE`) puis P1 (`DONE`) : cycle productisation/onboarding,
@@ -1094,6 +1259,11 @@ Invariants respectés par l'implémentation (`RalphExecutionEngine`,
 5. P14 (`APPROUVÉ — APRÈS P13`, 2026-09-19) : observabilité de
    consommation et efficacité économique. Aucun WorkItem d'implémentation
    créé à ce jour. Voir sous-section P14 ci-dessus.
+6. P13.4 (`DONE`, 2026-09-23) : remédiation post-audit externe — voir
+   sous-section P13.4 ci-dessus.
+7. P15 (`APPROUVÉ POUR ÉTUDE`, 2026-09-23) et P16 (`APPROUVÉ POUR
+   REVUE`, 2026-09-23) : ni l'un ni l'autre n'est implémenté ; aucun des
+   deux ne bloque M2. Voir sous-sections P15/P16 ci-dessus.
 
 ### Table des propositions
 
@@ -1116,13 +1286,17 @@ Invariants respectés par l'implémentation (`RalphExecutionEngine`,
 | P13.2 | Attribution Git worker renforcée après un défaut réel découvert sur AIDO Code (M1.1) | Un commit fonctionnel réel d'un worker (M1.1, WI-M1.1-01) est resté attribué à l'identité ambiante du mainteneur au lieu du worker — l'injection d'environnement seule dans le subprocess `ralph` était-elle suffisante ? | **`DONE` (2026-09-22) — non, un `git commit` imbriqué peut ne pas hériter cet environnement ; config Git locale au workspace en défense indépendante + audit post-exécution fail-closed (`WorkerCommitIdentityMismatchError`) ajoutés — voir sous-section P13.2 ci-dessus** |
 | P13.3 | Status opérationnel complet, quotas riches, registry standalone, GPT-6 | Le kata externe a révélé `STANDALONE_RUNTIME_PASS = FAIL` (aucun registry livré) ; `aido status` restait en retard sur AIDO Code (M1.1) ; `MVP status=running` avec 100% WorkItems `completed` est-il un bug ? | **`DONE` (2026-09-23) — `aido status`/`--probe` enrichis (workers/prénoms/quota par provider) ; registry par défaut packagé + `aido init` standalone ; modèles Codex GPT-6 validés réellement ; `MVP status=running` confirmé NON bug (ReleaseManager/P11 séparé, `À VOTER`) — voir sous-section P13.3 ci-dessus** |
 | P14 | Observabilité de consommation et efficacité économique | Le moteur doit-il enregistrer, par exécution, les métriques réelles (tokens, durée, retries, coût observé/estimé) nécessaires pour identifier ensuite quelles phases/workers/providers sont les moins économiques ? | **APPROUVÉ — APRÈS P13** (2026-09-19). Aucun WorkItem d'implémentation créé à ce jour ; voir sous-section P14 ci-dessous pour le détail complet des critères |
+| P13.4 | Remédiation post-audit externe (Mistral) | Un audit technique externe a trouvé 11 findings (1 HIGH, 4 MEDIUM, 6 LOW) sur le SHA `75b3ef5` — combien sont réels, et corrigés comment ? | **`DONE` (2026-09-23)** — 8/11 corrigés (dont le HIGH), 2 documentés/différés (YAGNI), 1 classé P16 (candidat DELETE). Rapport : `docs/reports/mistral-engine-audit-2026-09-23.md` ; voir sous-section P13.4 ci-dessus |
+| P15 | Prompt optimization externe | Une capacité d'optimisation de prompts basée sur un dataset/métrique réels (candidat : Opik Optimizer) mérite-t-elle d'être étudiée, avant toute intégration ? | **APPROUVÉ POUR ÉTUDE** (2026-09-23). Pas d'intégration ; dépend de P14 (non implémenté) pour la télémétrie. Comparaison complète : `docs/ECOSYSTEM.md` ; voir sous-section P15 ci-dessus |
+| P16 | Revue de simplification YAGNI/REUSE FIRST | Une revue structurée (DELETE → STDLIB → REUSE → PACKAGE → BUILD) doit-elle encadrer toute recommandation de simplification, y compris celles d'un audit externe ? | **APPROUVÉ POUR REVUE** (2026-09-23). Pas de refactor global autorisé par ce seul vote ; candidats déjà identifiés : `Project.current_mvp_id` (DELETE, analyse compatibilité requise), fingerprint d'environnement non-Python (BUILD rejeté, YAGNI) ; voir sous-section P16 ci-dessus |
 
 Les propositions encore `À VOTER` restent non planifiées ; aucun ordre entre
 elles n'est impliqué. La prochaine étape pour celles-ci, si l'utilisateur le
 décide, est un vote explicite proposition par proposition, pas une
-sélection automatique par cette session ni une future session. P12, P1 et
-P13 sont `DONE`. P3 est `IMPLEMENTED`, validation réelle `PENDING`. P14
-est `APPROUVÉ — APRÈS P13`, sans WorkItem d'implémentation créé à ce
-jour. P4 est `RETIRÉ` : décision terminée, pas un report. Elle ne
-redevient pas un prérequis implicite d'une future proposition sans un
-nouveau vote explicite.
+sélection automatique par cette session ni une future session. P12, P1,
+P13 et P13.4 sont `DONE`. P3 est `IMPLEMENTED`, validation réelle
+`PENDING`. P14 est `APPROUVÉ — APRÈS P13`, sans WorkItem d'implémentation
+créé à ce jour. P15 est `APPROUVÉ POUR ÉTUDE`, P16 `APPROUVÉ POUR REVUE`
+— ni l'un ni l'autre n'est implémenté, ni ne bloque M2. P4 est `RETIRÉ` :
+décision terminée, pas un report. Elle ne redevient pas un prérequis
+implicite d'une future proposition sans un nouveau vote explicite.
