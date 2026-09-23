@@ -83,11 +83,13 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Awaitable, Callable, Iterator, Mapping, Sequence
 
 from orchestrator.execution_policy import ExecutionPermissionMode
 from orchestrator.execution_store import ExecutionRecord, ExecutionStore
+from orchestrator.qa_protection import hash_file
 from orchestrator.worker_selector import Worker
 
 Clock = Callable[[], datetime]
@@ -392,6 +394,27 @@ class RalphEvent:
     hat: str | None = None
 
 
+class UntrackedFileChangeKind(str, Enum):
+    """AUD-2: what happened to a pre-existing untracked file during one
+    execution. Detection/observability only — never auto-restored, and
+    never itself a reason to fail or block the execution."""
+
+    DELETED = "PREEXISTING_UNTRACKED_DELETED"
+    MODIFIED = "PREEXISTING_UNTRACKED_MODIFIED"
+
+
+@dataclass(frozen=True, slots=True)
+class UntrackedFileChange:
+    """One pre-existing untracked file found deleted or modified between
+    the start and end of one execution. A file the worker itself created
+    (and possibly later removed again) is never reported here — it was
+    never part of the baseline, by construction (see
+    ``_diff_untracked_files``)."""
+
+    path: str
+    kind: UntrackedFileChangeKind
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionResult:
     """The outcome of one ``RalphExecutionEngine.execute()`` call."""
@@ -401,6 +424,11 @@ class ExecutionResult:
     exit_code: int | None = None
     stdout: str = ""
     stderr: str = ""
+    #: AUD-2 — pre-existing untracked files found deleted/modified by this
+    #: execution. Purely observational: never persisted (``ExecutionResult``
+    #: itself is never written to a store), never restored automatically,
+    #: never a reason to fail this execution by itself.
+    untracked_changes: tuple[UntrackedFileChange, ...] = ()
 
 
 _FRACTIONAL_SECONDS_RE = re.compile(r"\.(\d+)")
@@ -484,6 +512,59 @@ def _git_head_sha(workspace: Path) -> str | None:
         return None
     sha = result.stdout.strip()
     return sha or None
+
+
+def _list_untracked_files_with_hashes(workspace: Path) -> dict[str, str]:
+    """AUD-2: every currently untracked file (``git ls-files --others
+    --exclude-standard`` — respects ``.gitignore`` exactly as Git itself
+    does, never a second, parallel ignore-rule implementation), mapped to
+    its SHA-256 content digest via ``qa_protection.hash_file`` — the same
+    hashing convention already used for protected-test detection, never a
+    second one. ``-z`` (NUL-separated output, no quoting) so a path
+    containing a space or other unusual character is never misparsed.
+    Returns ``{}`` on any Git failure — the same fail-soft shape as
+    ``_git_head_sha`` above; this is observability, never a reason to
+    abort an execution."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=str(workspace),
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+    paths = (raw.decode() for raw in result.stdout.split(b"\0") if raw)
+    hashes: dict[str, str] = {}
+    for path in paths:
+        digest = hash_file(workspace / path)
+        if digest is not None:
+            hashes[path] = digest
+    return hashes
+
+
+def _diff_untracked_files(
+    before: Mapping[str, str], after: Mapping[str, str]
+) -> tuple[UntrackedFileChange, ...]:
+    """Only paths present in ``before`` are ever considered: a file the
+    worker itself created — and possibly removed again — never appears in
+    ``before`` and is therefore never reported here, by construction, not
+    by a special case."""
+    changes = [
+        UntrackedFileChange(
+            path=path,
+            kind=(
+                UntrackedFileChangeKind.DELETED
+                if path not in after
+                else UntrackedFileChangeKind.MODIFIED
+            ),
+        )
+        for path, digest_before in sorted(before.items())
+        if path not in after or after[path] != digest_before
+    ]
+    return tuple(changes)
 
 
 def _read_optional_text(path: Path) -> str | None:
@@ -917,6 +998,7 @@ class RalphExecutionEngine:
         offline tests of both mechanisms via the real ``git`` binary."""
         is_real_runner = self._run_subprocess is _default_subprocess_runner
         git_sha_before = _git_head_sha(request.workspace)
+        untracked_before = _list_untracked_files_with_hashes(request.workspace)
 
         record = self._execution_store.create(
             execution_id=request.execution_id,
@@ -960,7 +1042,10 @@ class RalphExecutionEngine:
                     updated = self._execution_store.mark_interrupted(
                         request.execution_id, ralph_loop_id=loop_id, finished_at=self._clock()
                     )
-                    return ExecutionResult(record=updated)
+                    untracked_changes = _diff_untracked_files(
+                        untracked_before, _list_untracked_files_with_hashes(request.workspace)
+                    )
+                    return ExecutionResult(record=updated, untracked_changes=untracked_changes)
                 except FileNotFoundError as exc:
                     self._execution_store.mark_failed(request.execution_id, finished_at=self._clock())
                     raise RalphLaunchError(f"could not launch {self._ralph_binary!r}: {exc}") from exc
@@ -976,6 +1061,9 @@ class RalphExecutionEngine:
 
         git_sha_after = _git_head_sha(request.workspace)
         ralph_loop_id = _read_ralph_loop_id(request.workspace)
+        untracked_changes = _diff_untracked_files(
+            untracked_before, _list_untracked_files_with_hashes(request.workspace)
+        )
 
         if is_real_runner:
             try:
@@ -1024,6 +1112,7 @@ class RalphExecutionEngine:
             exit_code=exit_code,
             stdout=_bounded(stdout),
             stderr=_bounded(stderr),
+            untracked_changes=untracked_changes,
         )
 
     def _build_ralph_args(self, runtime_dir: Path, request: ExecutionRequest) -> list[str]:
