@@ -55,14 +55,14 @@ def _write(path: Path, text: str) -> Path:
 
 def _minimal_project(
     tmp_path: Path, *, workspace_dir: str = "proj", registry_file: str = "workers.yaml",
-    extra_top: str = "", permission_mode: str = "standard",
+    extra_top: str = "", permission_mode: str = "standard", project_id: str = "demo",
 ) -> Path:
     _init_git_repo(tmp_path / workspace_dir)
     _write(tmp_path / registry_file, VALID_REGISTRY)
     config_text = f"""
     schema_version: 1
     project:
-      id: demo
+      id: {project_id}
       name: Demo Project
       workspace: {workspace_dir}
     workers:
@@ -103,6 +103,14 @@ class TestValidConfigs:
         assert len(config.qa_commands) == 1
         assert config.qa_commands[0].kind is ValidationKind.UNIT_TEST
         assert config.qa_commands[0].argv == ("pytest", "-q")
+
+    @pytest.mark.parametrize("project_id", ["demo", "aido-code", "ai_dev_orchestrator", "a.b-c1"])
+    def test_realistic_project_ids_are_preserved_verbatim(self, tmp_path: Path, project_id: str) -> None:
+        """AUD-7 must never slugify/rewrite a supplied id — only reject an
+        unsafe one."""
+        path = _minimal_project(tmp_path, project_id=project_id)
+        config = ProjectConfig.load(path)
+        assert config.project.id == project_id
 
     def test_complete_config_with_dependencies_and_multiple_work_items(self, tmp_path: Path) -> None:
         _init_git_repo(tmp_path / "proj")
@@ -250,6 +258,28 @@ class TestInvalidConfigs:
 
     def test_unknown_permission_value_fails(self, tmp_path: Path) -> None:
         path = _minimal_project(tmp_path, permission_mode="yolo")
+        with pytest.raises(InvalidProjectConfigError):
+            ProjectConfig.load(path)
+
+    @pytest.mark.parametrize(
+        "project_id",
+        [
+            "../evil",
+            "../../etc/passwd",
+            "a/b",
+            "a\\b",
+            "..",
+            "foo..bar",
+            "/absolute",
+            "",
+            ".leading-dot",
+        ],
+    )
+    def test_unsafe_project_id_fails_closed(self, tmp_path: Path, project_id: str) -> None:
+        """AUD-7: project.id feeds the default state_dir path directly —
+        a path separator or '..' component must fail loudly, never be
+        silently accepted or slugified."""
+        path = _minimal_project(tmp_path, project_id=project_id)
         with pytest.raises(InvalidProjectConfigError):
             ProjectConfig.load(path)
 

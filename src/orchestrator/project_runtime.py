@@ -252,6 +252,7 @@ class ProjectRuntime:
                 project_store, handoff_store, worker_selector, execution_engine,
                 wait_store=wait_store, execution_store=execution_store, git_governance_service=git_service,
                 qa_engine=qa_engine, qa_policy=QAPolicy(), qa_run_store=qa_run_store,
+                qa_protected_paths=config.qa_protected_paths,
                 clock=clock,
             )
         except Exception:

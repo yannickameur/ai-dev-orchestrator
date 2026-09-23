@@ -249,16 +249,27 @@ def _select_rate_limit_event(rate_limit_events: Sequence[dict]) -> dict:
 def _availability_from_status(
     status: str | None, observed_at: datetime
 ) -> ProviderAvailability:
+    # Only two `rate_limit_info.status` values have ever actually been
+    # observed (docs/SPIKE_RALPH.md, tests/providers/test_claude_code_
+    # adapter.py): "allowed" and "rejected" (its real, confirmed
+    # semantics is quota exhaustion). A status this adapter has never
+    # actually seen (e.g. a future Anthropic-side addition, or a
+    # malformed value) is reported honestly as UNKNOWN — never coerced
+    # into QUOTA_EXHAUSTED, which would fabricate a specific cause this
+    # code has no evidence for (AUD-6).
     if status is None:
         return ProviderAvailability(
             available=False, observed_at=observed_at, reason=UnavailabilityReason.UNKNOWN
         )
-    if status.lower() == "allowed":
+    normalized = status.lower()
+    if normalized == "allowed":
         return ProviderAvailability(available=True, observed_at=observed_at)
+    if normalized == "rejected":
+        return ProviderAvailability(
+            available=False, observed_at=observed_at, reason=UnavailabilityReason.QUOTA_EXHAUSTED,
+        )
     return ProviderAvailability(
-        available=False,
-        observed_at=observed_at,
-        reason=UnavailabilityReason.QUOTA_EXHAUSTED,
+        available=False, observed_at=observed_at, reason=UnavailabilityReason.UNKNOWN,
     )
 
 

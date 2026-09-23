@@ -316,6 +316,33 @@ class TestStatus:
         engine = OrchestratorEngine.open(str(config_path))
         engine.status()  # would raise via the patched __init__ if status ever built a real adapter
 
+    def test_genuine_read_failure_never_masquerades_as_not_initialized(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """AUD-3: a real read failure (corrupted state, I/O error, a bug —
+        anything other than the project genuinely never having been
+        bootstrapped) must propagate, never be silently folded into
+        ``initialized=False``. Only the one real, typed "project truly
+        does not exist yet" case (``UnknownProjectError``) may produce
+        that snapshot."""
+        from orchestrator.project_state import ProjectStateStore
+
+        config_path = _write_config(tmp_path)
+        config = ProjectConfig.load(config_path)
+        from orchestrator.project_runtime import ProjectRuntime
+
+        with ProjectRuntime.open(config, clock=lambda: UTC_T0, provider_adapters={"anthropic": _FakeAdapter()}) as rt:
+            rt.bootstrap()
+
+        def _boom(self, project_id):
+            raise RuntimeError("simulated corrupted project store")
+
+        monkeypatch.setattr(ProjectStateStore, "get_project", _boom)
+
+        engine = OrchestratorEngine.open(str(config_path), provider_adapters={"anthropic": _NeverCalledAdapter()})
+        with pytest.raises(RuntimeError, match="simulated corrupted project store"):
+            engine.status()
+
 
 class TestProbeWorkers:
     def test_probe_returns_a_snapshot_per_provider_of_enabled_workers(self, tmp_path: Path) -> None:

@@ -358,6 +358,21 @@ validation *observé*. Ce n'est **jamais** une preuve d'hermiticité totale
 complète (conteneur, venv immuable) reste une évolution séparée,
 volontairement non construite ici (KISS/YAGNI — voir aussi §16).
 
+**Limite connue (audit externe, AUD-5, §13 P13.4 du `ROADMAP.md`)** :
+l'empreinte d'environnement n'est réellement riche (interpréteur, version,
+`sys.prefix`, empreinte de paquets) que lorsque `argv[0]` est reconnu
+comme Python — voir `_resolve_python_executable`/`_default_environment_probe`
+(`src/orchestrator/validation.py`). Pour une commande QA non-Python
+(`npm test`, `cargo test`, `go test`, ...), seuls l'exécutable résolu et
+le `PATH` brut sont capturés : le défaut exact que cette Slice corrige
+(même SHA + même commande + environnement différent → faux `PASS`)
+resterait aujourd'hui indétectable pour une telle stack. Aucun
+fingerprint générique n'est construit tant qu'aucun MVP réel non-Python
+n'établit ce besoin (YAGNI) — deviner un fichier de lock
+(`package-lock.json`/`Cargo.lock`/`go.sum`) à partir du seul nom d'une
+commande serait une heuristique dangereuse, jamais introduite sans un
+contrat projet explicite.
+
 ## 9. INCONCLUSIVE — statut de premier ordre
 
 `INCONCLUSIVE` n'est **jamais** équivalent à `PASS`. Exemples :

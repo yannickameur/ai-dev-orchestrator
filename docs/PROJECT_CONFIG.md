@@ -65,6 +65,11 @@ qa:
     argv: ["pytest", "-q"]       # always a list — never a shell string
     timeout_seconds: 300
     required: true
+
+# Optional. Repo-relative paths, explicit only — see "Protected test
+# paths" below. Omit entirely (or leave as []) to opt out.
+qa_protected_paths:
+  - tests/test_core_contract.py
 ```
 
 Schema v1 is deliberately minimal (KISS/YAGNI): exactly **one** configured
@@ -120,6 +125,32 @@ does not duplicate `config/workers.yaml`'s role.
 shape used elsewhere in this project, never a second, parallel concept.
 `argv` is always a list of strings, executed with `shell=False` — never a
 shell string.
+
+## Protected test paths
+
+`qa_protected_paths` (optional, defaults to `[]`) is a plain list of
+repo-relative file paths a project wants protected from silent weakening
+(`src/orchestrator/qa_protection.py`, Slice 22): once populated, DEV
+A/DEV B/DEV FIX can still change these files, but any content change
+(modification or deletion, hashed with SHA-256 against the exact
+`base_sha` each WorkItem started from) is treated as an unauthorized
+protected-test change and fails QA
+(`orchestrator.qa.evaluate_qa_verdict`'s `unauthorized_protected_change`)
+— never a silent `PASS` on a test that was quietly weakened or removed to
+make QA pass.
+
+This is deliberately **explicit only**, never auto-detected from a
+`tests/`-style naming convention: different ecosystems (Python, JS, Go,
+...) disagree on what a "test file" is, and guessing would either miss
+real regression tests or protect unrelated files by accident. A project
+lists exactly the files it wants protected. Omitting this field (or an
+empty list) opts a project out entirely — the same behavior as before
+this field existed.
+
+`aido run` (`ProjectRuntime.bootstrap()`) always passes this list
+through to the real `MVPManager` it constructs; there is no separate
+"protected QA" engine or code path — this is the existing
+`qa_protection.py` mechanism, wired to the one real `aido run` path.
 
 ## Execution permission mode
 

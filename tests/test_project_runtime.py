@@ -410,6 +410,97 @@ class TestBootstrapIdempotency:
             assert rt.manager is not None
 
 
+class TestMultiMVPSequential:
+    """AUD-11: the real transition this project's own MVPs have gone
+    through (mvp-0.1 -> mvp-0.1.1 -> mvp-0.1.2, and AIDO Code's own
+    mvp-0.1/0.1.1/0.1.2 history) depends structurally on this working:
+    successive MVPs under the exact same ``project.id``/``state_dir``,
+    never conflicting, never leaking one MVP's WorkItems into another,
+    and never depending on a single "current MVP" pointer (see AUD-10:
+    ``Project.current_mvp_id`` is write-only bookkeeping, read by nothing
+    below — this test proves that by construction, never asserting on
+    that field itself)."""
+
+    @staticmethod
+    def _config_text(*, mvp_id: str, work_item_id: str, state_dir: str) -> str:
+        return dedent(
+            f"""
+            schema_version: 1
+            project:
+              id: demo-multi-mvp
+              name: Demo Multi MVP
+              workspace: proj
+              state_dir: {state_dir}
+            workers:
+              registry: workers.yaml
+            execution:
+              permission_mode: standard
+            git:
+              base_branch: main
+            mvp:
+              id: {mvp_id}
+              objective: Ship it
+            work_items:
+              - id: {work_item_id}
+                title: Do the {mvp_id} thing
+                required_capabilities: [development]
+            qa: []
+            """
+        )
+
+    def test_three_sequential_mvps_never_conflict_or_leak(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "proj"
+        _init_git_repo(workspace)
+        (tmp_path / "workers.yaml").write_text(REGISTRY_TWO_WORKERS)
+        state_dir = "state"
+
+        plan = [("mvp-A", "wi-a-1"), ("mvp-B", "wi-b-1"), ("mvp-C", "wi-c-1")]
+        configs: dict[str, ProjectConfig] = {}
+        for mvp_id, wi_id in plan:
+            config_path = tmp_path / f"aido-{mvp_id}.yaml"
+            config_path.write_text(self._config_text(mvp_id=mvp_id, work_item_id=wi_id, state_dir=state_dir))
+            configs[mvp_id] = ProjectConfig.load(config_path)
+
+        # Bootstrap mvp-A, then mvp-B, then mvp-C — sequentially, same
+        # project.id/state_dir each time, exactly like a real project
+        # advancing from one milestone's aido.yaml to the next's.
+        for mvp_id, _ in plan:
+            with ProjectRuntime.open(
+                configs[mvp_id], clock=lambda: UTC_T0, provider_adapters={"anthropic": _FakeAdapter()},
+            ) as rt:
+                rt.bootstrap()
+
+        # Re-bootstrapping the OLDEST config is still idempotent — no
+        # duplication, no conflict — even though it is no longer the most
+        # recently bootstrapped MVP.
+        with ProjectRuntime.open(
+            configs["mvp-A"], clock=lambda: UTC_T0, provider_adapters={"anthropic": _FakeAdapter()},
+        ) as rt:
+            rt.bootstrap()
+            assert [wi.work_item_id for wi in rt.project_store.list_work_items("mvp-A")] == ["wi-a-1"]
+
+        # Every MVP's own WorkItems stay correctly scoped — no leakage in
+        # either direction — and every MVP's own status is independently
+        # correct regardless of which config's ProjectRuntime is used to
+        # read it (store operations are keyed by mvp_id, never by "the
+        # config that happens to be currently loaded").
+        with ProjectRuntime.open(
+            configs["mvp-C"], clock=lambda: UTC_T0, provider_adapters={"anthropic": _FakeAdapter()},
+        ) as rt:
+            assert [wi.work_item_id for wi in rt.project_store.list_work_items("mvp-A")] == ["wi-a-1"]
+            assert [wi.work_item_id for wi in rt.project_store.list_work_items("mvp-B")] == ["wi-b-1"]
+            assert [wi.work_item_id for wi in rt.project_store.list_work_items("mvp-C")] == ["wi-c-1"]
+
+            for mvp_id, _ in plan:
+                mvp = rt.project_store.get_mvp(mvp_id)
+                assert mvp.mvp_id == mvp_id
+                assert mvp.project_id == "demo-multi-mvp"
+
+            # One shared Project record, never duplicated per MVP.
+            project = rt.project_store.get_project("demo-multi-mvp")
+            assert project.project_id == "demo-multi-mvp"
+
+
 class TestConfigRuntimeConflicts:
     def test_conflicting_persisted_workspace_fails_closed(self, tmp_path: Path) -> None:
         config = _write_project(tmp_path, state_dir="state")
