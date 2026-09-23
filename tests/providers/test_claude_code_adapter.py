@@ -141,6 +141,16 @@ class TestAvailabilityFromStatus:
         assert state.availability.available is False
         assert state.availability.reason is UnavailabilityReason.UNKNOWN
 
+    def test_unrecognized_status_is_unknown_never_quota_exhausted(self) -> None:
+        """AUD-6: only "allowed"/"rejected" have ever actually been
+        observed (docs/SPIKE_RALPH.md). A status this adapter has never
+        seen must never be fabricated into QUOTA_EXHAUSTED."""
+        state = parse_claude_stream(
+            self._lines_with_status("service_degraded"), observed_at=UTC_NOW
+        )
+        assert state.availability.available is False
+        assert state.availability.reason is UnavailabilityReason.UNKNOWN
+
 
 class TestMultipleRateLimitEvents:
     def test_last_rate_limit_event_wins(self) -> None:
