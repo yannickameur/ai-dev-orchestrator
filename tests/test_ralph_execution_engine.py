@@ -39,6 +39,8 @@ from orchestrator.ralph_execution_engine import (
     UnsupportedBackendError,
     UnsupportedPermissionModeError,
     UnsupportedProfileOptionError,
+    UntrackedFileChange,
+    UntrackedFileChangeKind,
     WorkerCommitIdentityMismatchError,
     _audit_worker_commit_identity,
     _claude_code_permission_args,
@@ -1099,6 +1101,166 @@ class TestScopedWorkerGitIdentity:
             assert self._local_config(tmp_path, "user.name") == "Victor"
 
         assert self._local_config(tmp_path, "user.name") is None
+
+
+class TestUntrackedFileChangeDetection:
+    """AUD-2: pre-existing untracked files found deleted/modified during a
+    real ``execute()`` call must be reported on ``ExecutionResult.
+    untracked_changes`` — detection/observability only, never an automatic
+    restore, never itself a reason to fail the execution. Runs through the
+    real ``RalphExecutionEngine.execute()`` with a fake subprocess runner
+    (never a real Ralph/provider) whose ``on_call`` hook mutates the real
+    on-disk workspace exactly like a real worker would, so the git-level
+    detection itself is exercised for real.
+
+    The governed workspace (a real git repo) and the execution store's own
+    SQLite file are deliberately kept in separate directories, exactly
+    like real usage (workspace vs. state_dir are always distinct) — the
+    store's own file must never itself be seen as an untracked file
+    inside the repo it is reporting on."""
+
+    def _init_repo(self, path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+        (path / ".gitignore").write_text("ignored.txt\n")
+        subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=Seed", "-c", "user.email=seed@example.com",
+             "commit", "-q", "-m", "seed"],
+            cwd=path, check=True,
+        )
+
+    def _engine(self, tmp_path: Path, *, on_call=None) -> RalphExecutionEngine:
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=on_call)
+        return RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+    def test_unchanged_preexisting_untracked_file_reports_nothing(self, tmp_path: Path) -> None:
+        # 1.
+        workspace = tmp_path / "workspace"
+        self._init_repo(workspace)
+        (workspace / "notes.txt").write_text("hello")
+
+        engine = self._engine(tmp_path)
+        result = asyncio.run(engine.execute(_request(workspace)))
+
+        assert result.untracked_changes == ()
+
+    def test_deleted_preexisting_untracked_file_is_detected(self, tmp_path: Path) -> None:
+        # 2.
+        workspace = tmp_path / "workspace"
+        self._init_repo(workspace)
+        (workspace / "notes.txt").write_text("hello")
+
+        def _delete(args, cwd, timeout):
+            (Path(cwd) / "notes.txt").unlink()
+
+        engine = self._engine(tmp_path, on_call=_delete)
+        result = asyncio.run(engine.execute(_request(workspace)))
+
+        assert result.untracked_changes == (
+            UntrackedFileChange(path="notes.txt", kind=UntrackedFileChangeKind.DELETED),
+        )
+
+    def test_modified_preexisting_untracked_file_is_detected(self, tmp_path: Path) -> None:
+        # 3.
+        workspace = tmp_path / "workspace"
+        self._init_repo(workspace)
+        (workspace / "notes.txt").write_text("hello")
+
+        def _modify(args, cwd, timeout):
+            (Path(cwd) / "notes.txt").write_text("changed")
+
+        engine = self._engine(tmp_path, on_call=_modify)
+        result = asyncio.run(engine.execute(_request(workspace)))
+
+        assert result.untracked_changes == (
+            UntrackedFileChange(path="notes.txt", kind=UntrackedFileChangeKind.MODIFIED),
+        )
+
+    def test_worker_created_file_is_never_flagged(self, tmp_path: Path) -> None:
+        # 4.
+        workspace = tmp_path / "workspace"
+        self._init_repo(workspace)
+
+        def _create(args, cwd, timeout):
+            (Path(cwd) / "new_file.txt").write_text("brand new")
+
+        engine = self._engine(tmp_path, on_call=_create)
+        result = asyncio.run(engine.execute(_request(workspace)))
+
+        assert result.untracked_changes == ()
+
+    def test_worker_created_then_deleted_file_is_never_flagged(self, tmp_path: Path) -> None:
+        # 5.
+        workspace = tmp_path / "workspace"
+        self._init_repo(workspace)
+
+        def _create_and_delete(args, cwd, timeout):
+            scratch = Path(cwd) / "scratch.txt"
+            scratch.write_text("temp")
+            scratch.unlink()
+
+        engine = self._engine(tmp_path, on_call=_create_and_delete)
+        result = asyncio.run(engine.execute(_request(workspace)))
+
+        assert result.untracked_changes == ()
+
+    def test_multiple_files_are_all_reported_independently(self, tmp_path: Path) -> None:
+        # 6.
+        workspace = tmp_path / "workspace"
+        self._init_repo(workspace)
+        (workspace / "a.txt").write_text("a")
+        (workspace / "b.txt").write_text("b")
+        (workspace / "c.txt").write_text("c")
+
+        def _mutate(args, cwd, timeout):
+            (Path(cwd) / "a.txt").unlink()
+            (Path(cwd) / "b.txt").write_text("b-changed")
+            # c.txt deliberately left untouched.
+
+        engine = self._engine(tmp_path, on_call=_mutate)
+        result = asyncio.run(engine.execute(_request(workspace)))
+
+        by_path = {c.path: c.kind for c in result.untracked_changes}
+        assert by_path == {
+            "a.txt": UntrackedFileChangeKind.DELETED,
+            "b.txt": UntrackedFileChangeKind.MODIFIED,
+        }
+
+    def test_path_with_spaces_is_handled_correctly(self, tmp_path: Path) -> None:
+        # 7.
+        workspace = tmp_path / "workspace"
+        self._init_repo(workspace)
+        (workspace / "my notes file.txt").write_text("hello")
+
+        def _delete(args, cwd, timeout):
+            (Path(cwd) / "my notes file.txt").unlink()
+
+        engine = self._engine(tmp_path, on_call=_delete)
+        result = asyncio.run(engine.execute(_request(workspace)))
+
+        assert result.untracked_changes == (
+            UntrackedFileChange(path="my notes file.txt", kind=UntrackedFileChangeKind.DELETED),
+        )
+
+    def test_gitignored_file_is_never_reported_even_if_deleted(self, tmp_path: Path) -> None:
+        # 8. `ignored.txt` is listed in .gitignore by `_init_repo` above —
+        # git ls-files --others --exclude-standard must never see it, so
+        # it can never enter the baseline, so its deletion is never
+        # reported: the exact semantics of `--exclude-standard`, never a
+        # second, parallel ignore-rule implementation.
+        workspace = tmp_path / "workspace"
+        self._init_repo(workspace)
+        (workspace / "ignored.txt").write_text("local scratch state")
+
+        def _delete(args, cwd, timeout):
+            (Path(cwd) / "ignored.txt").unlink()
+
+        engine = self._engine(tmp_path, on_call=_delete)
+        result = asyncio.run(engine.execute(_request(workspace)))
+
+        assert result.untracked_changes == ()
 
 
 class TestWorkerCommitIdentityAudit:
