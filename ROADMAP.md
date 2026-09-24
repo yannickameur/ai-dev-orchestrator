@@ -65,6 +65,11 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   `APPROUVÉ — APRÈS P13`** (2026-09-19), voir §13. Aucun WorkItem
   d'implémentation créé à ce jour ; capacité moteur, jamais recalculée
   côté AIDO Code.
+- **P13.5 (frontière moteur/librairie : injection du `WorkerRegistry`,
+  `workers:` optionnel) : `DONE`** (2026-09-24), voir §13. `aido.yaml` ne
+  possède plus obligatoirement le pool de workers ; `OrchestratorEngine`/
+  `ProjectRuntime` acceptent un `WorkerRegistry` injecté par l'appelant,
+  chemin legacy fichier intégralement conservé.
 - **P13.4 (remédiation post-audit externe) : `DONE`** (2026-09-23), voir
   §13. 8/11 findings corrigés (dont le seul HIGH : protection de tests
   réellement câblée dans `aido run`), 2 documentés/différés (YAGNI), 1
@@ -111,13 +116,17 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - Reporting d'activité/réalisation (`ActivityReport`/`RealizationReport`).
 - Capacités optionnelles de planning/approbation/application de roadmap
   (voir §10 — construites, jamais enchaînées automatiquement).
-- `ProjectConfig` (P12) — format de configuration public `aido.yaml`
-  schema v1 : identité de projet, référence (jamais copie) au pool de
-  workers, mode de permission d'exécution project-controlled, politique
-  Git, MVP/WorkItems, commandes QA déterministes. `ExecutionPermissionMode`
+- `ProjectConfig` (P12, `workers:` optionnel depuis P13.5) — format de
+  configuration public `aido.yaml` schema v1 : identité de projet,
+  référence *optionnelle et legacy* (jamais copie) au pool de workers,
+  mode de permission d'exécution project-controlled, politique Git,
+  MVP/WorkItems, commandes QA déterministes. `ExecutionPermissionMode`
   (`standard`/`unrestricted`), traduit en flags CLI réels et vérifiés
   exclusivement à la frontière `RalphExecutionEngine` (`docs/PROJECT_CONFIG.md`)
-  — Vibe n'est plus jamais unconditionnellement `--auto-approve`.
+  — Vibe n'est plus jamais unconditionnellement `--auto-approve`. Un
+  `aido.yaml` sans section `workers:` est un `ProjectConfig` moderne
+  valide dont le `WorkerRegistry` est fourni à l'exécution par
+  l'application appelante (§10, P13.5) — jamais requis pour l'API moteur.
 - CLI publique `aido` (P1) — `aido init/validate/run/status`, plus besoin
   de harnais Python pour l'usage normal. `run` est aussi la reprise (pas
   de commande `resume` séparée). Voir §10 pour le détail complet.
@@ -130,7 +139,11 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   `WorkerSelector`/`QuotaManager`/`ProviderAdapter`/`GitGovernanceService`/
   `InternalQAEngine`/toute Store derrière des snapshots typés,
   sérialisables, jamais un objet interne. Le CLI `aido` existant reste
-  intact et n'est pas migré vers cette façade par P13. Voir §10.
+  intact et n'est pas migré vers cette façade par P13. Depuis P13.5,
+  `.open()`/`__init__` acceptent un `worker_registry:
+  WorkerRegistry | None` injecté par l'appelant — `WorkerSelector` reste
+  l'unique propriétaire de la sélection, jamais réimplémentée dans la
+  façade. Voir §10.
 
 Seules les capacités qui existent réellement dans le dépôt au commit
 `47ab4da` (et après) sont listées ici.
@@ -1031,6 +1044,86 @@ nouveaux tests ci-dessus exercent le vrai chemin de production
 jamais une construction manuelle contournant le problème corrigé. Voir
 `docs/status.md` pour le compte à jour.
 
+### P13.5 — Frontière moteur/librairie : injection du `WorkerRegistry`, `workers:` optionnel — `DONE` (2026-09-24)
+
+**Décision produit** : correction de frontière architecturale, évolution
+directe du découplage P13/P1.1 — jamais une nouvelle architecture
+parallèle. `ai-dev-orchestrator` ne doit plus considérer `aido.yaml`
+comme la source de configuration complète du produit utilisateur ; le
+moteur exécute désormais un plan (`ProjectConfig`) et un pool de workers
+(`WorkerRegistry`) que l'application appelante (AIDO Code) peut construire
+et fournir elle-même, sans jamais passer par un fichier `workers.yaml`
+sur disque.
+
+**Propriété inchangée** (comme P13) : `ai-dev-orchestrator` reste seul
+propriétaire du **type/runtime** `WorkerRegistry`, de `WorkerSelector`
+(seul propriétaire de la sélection DEV A/DEV B), de `QuotaManager`, des
+`ProviderAdapter`s, de `RalphExecutionEngine`, de `MVPManager`/WorkItem
+Flow, de la QA déterministe, de `GitGovernanceService`, et de l'état
+persistant. Rien de tout cela n'est déplacé vers AIDO Code — seule
+l'**instanciation** du `WorkerRegistry` pour un projet donné peut
+désormais venir de l'appelant plutôt que d'un chemin de fichier lu par le
+moteur.
+
+**Changements (REUSE FIRST, changement minimal — aucun nouveau
+framework DI, aucun loader universel)** :
+
+- `ProjectConfig` (`project_config.py`) : la section `workers:` d'
+  `aido.yaml` devient **optionnelle**. Absente, `workers_registry_path`
+  reste `None` et `ProjectConfig` est un plan valide et complet pour la
+  frontière moteur moderne — aucune régression pour un `aido.yaml`
+  existant qui déclare encore `workers:` (chemin legacy entièrement
+  conservé, testé, inchangé). `load_worker_registry()` lève désormais
+  `NoWorkerRegistryConfiguredError` (sous-classe de `WorkerRegistryError`,
+  jamais une seconde hiérarchie d'erreurs) quand aucun registry n'est
+  configuré ni injecté.
+- `OrchestratorEngine.__init__`/`.open()` acceptent un `worker_registry:
+  WorkerRegistry | None = None` : quand fourni, utilisé pour
+  `.workers()`/`.validate()`/`.probe_workers()`/`.run()`/la résolution du
+  nom d'affichage worker dans `.status()` — jamais lu depuis
+  `aido.yaml` dans ce cas. `None` retombe sur le chemin legacy
+  (`ProjectConfig.load_worker_registry()`).
+- `ProjectRuntime.open()` accepte le même `worker_registry=` et le
+  transmet tel quel à la construction de `WorkerSelector` — **aucune
+  logique de sélection n'est dupliquée ou réimplémentée** : c'est
+  exactement la même construction `WorkerSelector(enabled_workers,
+  quota_manager)` qu'avant, juste alimentée par un registry dont la
+  provenance (fichier ou objet injecté) lui est indifférente.
+- `ProjectConfig`'s propre constructeur Python (déjà public :
+  `ProjectIdentity`/`ExecutionConfig`/`GitConfig`/`MVPConfig`/
+  `WorkItemConfig`/`ValidationCommand`) sert directement de contrat
+  « plan d'exécution typé » — **aucun second type introduit** pour ça, ni
+  renommage (`ProjectConfig` reste le nom ; le distinguo legacy/moderne se
+  fait uniquement sur la présence ou non de `workers_registry_path`).
+- CLI historique `aido` (`cli.py`) : **inchangée fonctionnellement**,
+  explicitement documentée comme surface legacy/transitoire dans son
+  propre docstring de module — continue de lire `workers.registry`
+  depuis `aido.yaml` comme avant, jamais migrée vers l'API moteur
+  moderne par cette tâche. `orchestrator/resources/default_workers.yaml`
+  documenté comme template legacy consommé uniquement par `aido init`,
+  jamais la source de configuration worker du produit moderne.
+
+**Tests** (`tests/test_project_config.py::TestOptionalWorkersSection`,
+`tests/test_engine.py::TestWorkerRegistryInjection`/
+`TestEngineLibraryBoundaryIntegration`,
+`tests/test_project_runtime.py::TestWorkerRegistryInjection`) : injection
+prouvée jusqu'au `WorkerSelector` réel (introspection directe de
+`MVPManager._worker_selector`), un `ProjectConfig` sans section
+`workers:` prouvé indépendant de tout chemin `workers.yaml`, deux projets
+distincts partageant un seul `WorkerRegistry` injecté, le chemin legacy
+prouvé toujours fonctionnel, et un test d'intégration bout en bout
+construisant `WorkerRegistry` + `ProjectConfig` entièrement en Python
+(aucun `aido.yaml`/`workers.yaml` sur disque) jusqu'à un WorkItem Flow
+complet `COMPLETED`. Suite complète : voir `docs/status.md` pour le
+compte à jour, zéro régression.
+
+**Non fait, explicitement, par cette tâche** : ni GitLabRoadmap, ni M2
+AIDO Code (sessions), ni CLI AIDO Code, ni framework DI/plugin, ni
+parsing Markdown, ni suppression de la CLI `aido` historique, ni
+déplacement du `WorkerRegistry`/`WorkerSelector`/`QuotaManager`/
+`RalphExecutionEngine`/`MVPManager`/QA déterministe/`GitGovernanceService`
+hors d'`ai-dev-orchestrator`.
+
 ### P14 — Observabilité de consommation et efficacité économique — `APPROUVÉ`, après P13 (2026-09-19, non implémenté)
 
 **Décision produit** : approuvée, statut `APPROUVÉ — APRÈS P13`. Aucun
@@ -1297,6 +1390,9 @@ le détail) :
 7. P15 (`APPROUVÉ POUR ÉTUDE`, 2026-09-23) et P16 (`APPROUVÉ POUR
    REVUE`, 2026-09-23) : ni l'un ni l'autre n'est implémenté ; aucun des
    deux ne bloque M2. Voir sous-sections P15/P16 ci-dessus.
+8. P13.5 (`DONE`, 2026-09-24) : frontière moteur/librairie — injection du
+   `WorkerRegistry`, `workers:` optionnel dans `aido.yaml`. Voir
+   sous-section P13.5 ci-dessus.
 
 ### Table des propositions
 
@@ -1323,14 +1419,16 @@ le détail) :
 | P13.4 | Remédiation post-audit externe (Mistral) | Un audit technique externe a trouvé 11 findings (1 HIGH, 4 MEDIUM, 6 LOW) sur le SHA `75b3ef5` — combien sont réels, et corrigés comment ? | **`DONE` (2026-09-23)** — 8/11 corrigés (dont le HIGH), 2 documentés/différés (YAGNI), 1 classé P16 (candidat DELETE). Rapport : `docs/reports/mistral-engine-audit-2026-09-23.md` ; voir sous-section P13.4 ci-dessus |
 | P15 | Prompt optimization externe | Une capacité d'optimisation de prompts basée sur un dataset/métrique réels (candidat : Opik Optimizer) mérite-t-elle d'être étudiée, avant toute intégration ? | **APPROUVÉ POUR ÉTUDE** (2026-09-23). Pas d'intégration ; dépend de P14 (non implémenté) pour la télémétrie. Comparaison complète : `docs/ECOSYSTEM.md` ; voir sous-section P15 ci-dessus |
 | P16 | Revue de simplification YAGNI/REUSE FIRST | Une revue structurée (DELETE → STDLIB → REUSE → PACKAGE → BUILD) doit-elle encadrer toute recommandation de simplification, y compris celles d'un audit externe ? | **APPROUVÉ POUR REVUE** (2026-09-23). Pas de refactor global autorisé par ce seul vote ; candidats déjà identifiés : `Project.current_mvp_id` (DELETE, analyse compatibilité requise), fingerprint d'environnement non-Python (BUILD rejeté, YAGNI) ; voir sous-section P16 ci-dessus |
+| P13.5 | Frontière moteur/librairie : injection du `WorkerRegistry`, `workers:` optionnel | `aido.yaml` doit-il rester la source de configuration complète du pool de workers, ou le moteur doit-il accepter un `WorkerRegistry` construit/injecté par l'application appelante (AIDO Code) ? | **`DONE`** (2026-09-24) — `workers:` optionnel dans `ProjectConfig` ; `OrchestratorEngine`/`ProjectRuntime` acceptent `worker_registry=` ; `WorkerSelector` reste seul propriétaire de la sélection ; chemin legacy fichier intégralement conservé et testé ; voir sous-section P13.5 ci-dessus |
 
 Les propositions encore `À VOTER` restent non planifiées ; aucun ordre entre
 elles n'est impliqué. La prochaine étape pour celles-ci, si l'utilisateur le
 décide, est un vote explicite proposition par proposition, pas une
 sélection automatique par cette session ni une future session. P12, P1,
-P1.1, P13 et P13.4 sont `DONE`. P3 est `IMPLEMENTED`, validation réelle
-`PENDING`. P14 est `APPROUVÉ — APRÈS P13`, sans WorkItem d'implémentation
-créé à ce jour. P15 est `APPROUVÉ POUR ÉTUDE`, P16 `APPROUVÉ POUR REVUE`
-— ni l'un ni l'autre n'est implémenté, ni ne bloque M2. P4 est `RETIRÉ` :
-décision terminée, pas un report. Elle ne redevient pas un prérequis
-implicite d'une future proposition sans un nouveau vote explicite.
+P1.1, P13, P13.4 et P13.5 sont `DONE`. P3 est `IMPLEMENTED`, validation
+réelle `PENDING`. P14 est `APPROUVÉ — APRÈS P13`, sans WorkItem
+d'implémentation créé à ce jour. P15 est `APPROUVÉ POUR ÉTUDE`, P16
+`APPROUVÉ POUR REVUE` — ni l'un ni l'autre n'est implémenté, ni ne bloque
+M2. P4 est `RETIRÉ` : décision terminée, pas un report. Elle ne redevient
+pas un prérequis implicite d'une future proposition sans un nouveau vote
+explicite.

@@ -34,6 +34,18 @@ Only ``aido run`` ever causes a real provider probe or worker execution.
 ``init``/``validate``/``status`` are provider-call-free by construction —
 none of them ever call ``ProjectRuntime.open()`` and ``bootstrap()``
 followed by ``MVPManager.run_next_work_item(...)``.
+
+LEGACY/TRANSITIONAL SURFACE: this CLI is ``ai-dev-orchestrator``'s own
+historical product surface, kept working for existing users/tests, but it
+is not this project's product going forward — ``ai-dev-orchestrator`` is
+now positioned as an engine/library an embedding application (AIDO Code)
+drives through ``orchestrator.engine.OrchestratorEngine`` instead (see
+ROADMAP.md, "engine/library boundary"). This module is never extended
+with new product-facing responsibility; it still relies on the legacy,
+file-based ``workers.registry`` reading every ``aido.yaml`` it loads
+(``ProjectConfig.load_worker_registry()``) — the modern engine API does
+not require this and instead expects an injected ``WorkerRegistry``
+(``OrchestratorEngine(..., worker_registry=...)``).
 """
 
 from __future__ import annotations

@@ -17,7 +17,7 @@ from textwrap import dedent
 import pytest
 
 from orchestrator.execution_policy import ExecutionPermissionMode
-from orchestrator.project_config import ProjectConfig
+from orchestrator.project_config import NoWorkerRegistryConfiguredError, ProjectConfig
 from orchestrator.project_runtime import (
     ConfigRuntimeConflictError,
     ProjectRuntime,
@@ -27,6 +27,8 @@ from orchestrator.project_runtime import (
 from orchestrator.project_state import WorkItemStatus
 from orchestrator.providers.adapter import ProviderAdapter
 from orchestrator.providers.contracts import ProviderAvailability, ProviderState
+from orchestrator.worker_registry import WorkerRegistry
+from orchestrator.worker_selector import Worker
 
 UTC_T0 = datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc)
 
@@ -78,17 +80,26 @@ REGISTRY_TWO_WORKERS = dedent(
 
 def _write_project(
     tmp_path: Path, *, registry: str = REGISTRY_TWO_WORKERS, work_items: str | None = None,
-    state_dir: str | None = "state", permission_mode: str = "standard",
+    state_dir: str | None = "state", permission_mode: str = "standard", project_id: str = "demo",
+    include_workers_section: bool = True,
 ) -> ProjectConfig:
     """``state_dir`` always defaults to an isolated ``tmp_path``
     subdirectory — NEVER omit it (pass ``state_dir=None`` explicitly, and
     only inside a test that also monkeypatches ``HOME``) or a test will
     silently read/write the real
     ``~/.local/state/ai-dev-orchestrator/projects/<id>/`` on the machine
-    actually running the suite."""
+    actually running the suite.
+
+    ``include_workers_section=False`` writes an ``aido.yaml`` with no
+    ``workers:`` section at all (engine/library boundary: the caller
+    injects its own ``WorkerRegistry`` into ``ProjectRuntime.open()``
+    instead)."""
     workspace = tmp_path / "proj"
     _init_git_repo(workspace)
-    (tmp_path / "workers.yaml").write_text(registry)
+    workers_yaml = ""
+    if include_workers_section:
+        (tmp_path / "workers.yaml").write_text(registry)
+        workers_yaml = "workers:\n  registry: workers.yaml\n"
     work_items_yaml = work_items if work_items is not None else dedent(
         """
         work_items:
@@ -102,12 +113,10 @@ def _write_project(
         f"""
         schema_version: 1
         project:
-          id: demo
+          id: {project_id}
           name: Demo
           workspace: proj
         {state_dir_line}
-        workers:
-          registry: workers.yaml
         execution:
           permission_mode: {permission_mode}
         git:
@@ -116,7 +125,7 @@ def _write_project(
           id: mvp-1
           objective: Ship it
         """
-    ) + work_items_yaml + "\nqa: []\n"
+    ) + workers_yaml + work_items_yaml + "\nqa: []\n"
     config_path = tmp_path / "aido.yaml"
     config_path.write_text(config_text)
     return ProjectConfig.load(config_path)
@@ -408,6 +417,75 @@ class TestBootstrapIdempotency:
             # workers from workers.yaml — proven end to end (DEV A != DEV
             # B, both anthropic) in test_cli.py's run test.
             assert rt.manager is not None
+
+
+class TestWorkerRegistryInjection:
+    """Engine/library boundary: ``ProjectRuntime.open(..., worker_registry=...)``
+    accepts a caller-built ``WorkerRegistry`` directly, entirely
+    independent of ``ProjectConfig.load_worker_registry()``/a
+    ``workers.registry`` path."""
+
+    def test_injected_registry_reaches_worker_selector_unchanged(self, tmp_path: Path) -> None:
+        """The exact same WorkerSelector-construction path — no selection
+        logic is reimplemented anywhere for the injected case."""
+        config = _write_project(tmp_path, include_workers_section=False)
+        registry = WorkerRegistry([
+            Worker.with_single_profile(
+                worker_id=worker_id, display_name=worker_id.title(), provider="anthropic",
+                backend="claude_code", model="sonnet", capabilities=["development"],
+            )
+            for worker_id in ("carol", "dave")
+        ])
+        with ProjectRuntime.open(
+            config, clock=lambda: UTC_T0, worker_registry=registry,
+            provider_adapters={"anthropic": _FakeAdapter()},
+        ) as rt:
+            selected_ids = {w.worker_id for w in rt.manager._worker_selector._workers}
+            assert selected_ids == {"carol", "dave"}
+
+    def test_project_config_needs_no_workers_yaml_path_for_the_modern_api(self, tmp_path: Path) -> None:
+        config = _write_project(tmp_path, include_workers_section=False)
+        assert config.workers_registry_path is None
+        registry = WorkerRegistry([
+            Worker.with_single_profile(
+                worker_id="alice", display_name="Alice", provider="anthropic",
+                backend="claude_code", model="sonnet", capabilities=["development"],
+            )
+        ])
+        with ProjectRuntime.open(
+            config, clock=lambda: UTC_T0, worker_registry=registry,
+            provider_adapters={"anthropic": _FakeAdapter()},
+        ) as rt:
+            assert rt.manager is not None
+        assert not (tmp_path / "workers.yaml").exists()
+
+    def test_without_injection_and_without_workers_section_fails_closed(self, tmp_path: Path) -> None:
+        config = _write_project(tmp_path, include_workers_section=False)
+        with pytest.raises(NoWorkerRegistryConfiguredError):
+            ProjectRuntime.open(config, clock=lambda: UTC_T0, provider_adapters={"anthropic": _FakeAdapter()})
+
+    def test_two_project_configs_share_one_injected_registry(self, tmp_path: Path) -> None:
+        registry = WorkerRegistry([
+            Worker.with_single_profile(
+                worker_id="alice", display_name="Alice", provider="anthropic",
+                backend="claude_code", model="sonnet", capabilities=["development"],
+            )
+        ])
+        config_a = _write_project(
+            tmp_path / "a", project_id="proj-a", include_workers_section=False,
+        )
+        config_b = _write_project(
+            tmp_path / "b", project_id="proj-b", include_workers_section=False,
+        )
+        with ProjectRuntime.open(
+            config_a, clock=lambda: UTC_T0, worker_registry=registry,
+            provider_adapters={"anthropic": _FakeAdapter()},
+        ) as rt_a, ProjectRuntime.open(
+            config_b, clock=lambda: UTC_T0, worker_registry=registry,
+            provider_adapters={"anthropic": _FakeAdapter()},
+        ) as rt_b:
+            assert {w.worker_id for w in rt_a.manager._worker_selector._workers} == {"alice"}
+            assert {w.worker_id for w in rt_b.manager._worker_selector._workers} == {"alice"}
 
 
 class TestMultiMVPSequential:
