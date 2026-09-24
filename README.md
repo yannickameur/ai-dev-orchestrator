@@ -174,15 +174,70 @@ disponible. Elle consomme le format de configuration public `aido.yaml`
 remplace le besoin d'un harnais Python pour l'usage normal.
 
 ```bash
-# Depuis la racine du projet cible (un dépôt Git existant) :
-aido init --workers-registry /chemin/vers/config/workers.yaml
-# -> édite le aido.yaml généré : objectif du MVP, WorkItems, critères
-#    d'acceptation — AIDO ne les invente jamais à votre place.
+cd ~/projects
+aido init . roadmaplab
+cd roadmaplab
 
-aido validate          # charge/valide aido.yaml, imprime les faits, aucun effet de bord
-aido run                # bootstrap idempotent + fait avancer WorkItem Flow
-aido status             # lit l'état persistant — aucun appel provider
+# Éditer README.md / ROADMAP.md / aido.yaml avant tout développement.
+aido validate
+git add README.md ROADMAP.md aido.yaml
+git commit -m "Define initial project"
+aido run
+aido status
 ```
+
+`aido init <parent-path> <project-name>` crée un projet local avec
+`README.md`, `ROADMAP.md`, `aido.yaml` et `.gitignore`, puis un dépôt Git
+sur `main` et le commit `Initialize AIDO project`. Le répertoire cible
+doit être absent ou vide ; un répertoire non vide est refusé sans
+modification. `~` est développé ; le nom doit être un simple nom de
+répertoire, jamais un chemin. Aucun `--force`.
+
+`init` n'appelle aucun provider, worker, Ralph ou probe, ne crée aucun
+état métier et ne lance aucun développement. Il ne crée aucun remote et
+ne pousse rien. Les CLI providers/Ralph ne sont nécessaires qu'au moment
+d'une exécution explicite avec `aido run`.
+
+Le README décrit le contexte humain ; ROADMAP porte la vision produit ;
+`aido.yaml` définit le MVP exécutable (objectif, critères d'acceptation,
+WorkItems, commandes QA). Les TODO sont à remplir par l'utilisateur :
+aucune synchronisation ni extraction automatique depuis ROADMAP.
+Le registry existant est référencé, pas copié dans le nouveau projet :
+`--workers-registry` explicite, sinon `config/workers.yaml` du répertoire
+courant s'il existe, sinon configuration utilisateur globale créée ou
+réutilisée (`$XDG_CONFIG_HOME/ai-dev-orchestrator/workers.yaml`, par défaut
+`~/.config/ai-dev-orchestrator/workers.yaml`).
+
+**Git absent ou en échec** : les fichiers sont conservés, `init` retourne
+un code non nul et affiche l'étape en échec ainsi que les commandes de
+reprise. Après installation de Git (et configuration de votre identité
+Git si le commit l'exige), terminer manuellement :
+
+```bash
+cd /chemin/absolu/vers/roadmaplab
+git init -b main
+git add .
+git commit -m "Initialize AIDO project"
+```
+
+AIDO n'installe jamais Git et ne change pas sa configuration globale.
+Reprendre ensuite l'édition des trois fichiers et `aido validate`.
+
+**Compatibilité / dépôt existant** : zéro ou un argument positionnel
+conserve la création historique du seul `aido.yaml`, sans initialisation
+Git ni README/ROADMAP :
+
+```bash
+# Depuis un dépôt existant :
+aido init
+# Ou avec chemin de configuration et registry explicites :
+aido init ./aido.yaml --workers-registry /chemin/vers/workers.yaml
+```
+
+Les options historiques restent disponibles dans ce mode. Avec deux
+arguments positionnels, le parent et le nom définissent le workspace et
+le nom humain ; `--workspace` et `--project-name` sont donc refusés.
+`--project-id`, `--workers-registry` et `--permission-mode` restent utilisables.
 
 `aido run` est à la fois le démarrage **et** la reprise : le relancer
 plus tard, contre le même `aido.yaml`, rouvre le même état persistant

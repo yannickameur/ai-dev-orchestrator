@@ -12,7 +12,8 @@ This document describes the configuration format and its loader
 (`ProjectConfig.load(path)`), a typed, reusable API. The public `aido`
 CLI (P1, `src/orchestrator/cli.py`) is the real consumer:
 
-- `aido init` writes a starting `aido.yaml`.
+- `aido init <parent-path> <project-name>` bootstraps a complete local project.
+  Zero or one positional argument retains the historical config-only mode.
 - `aido validate` loads/validates one and prints its facts — no side effects.
 - `aido run` loads it, composes the real runtime
   (`orchestrator.project_runtime.ProjectRuntime`), bootstraps
@@ -21,6 +22,76 @@ CLI (P1, `src/orchestrator/cli.py`) is the real consumer:
   no provider calls, no mutation.
 
 See the main [`README.md`](../README.md) for CLI usage examples.
+
+## Guided project bootstrap (P1.1)
+
+```bash
+cd ~/projects
+aido init . roadmaplab
+cd roadmaplab
+# Edit README.md, ROADMAP.md and aido.yaml.
+aido validate
+git add README.md ROADMAP.md aido.yaml
+git commit -m "Define initial project"
+aido run
+```
+
+Two positional arguments mean `<parent-path> <project-name>`. Paths expand
+`~` and resolve to an absolute location. The name must be one directory
+component (starting with a letter or digit; letters, digits, underscores,
+spaces, dots and hyphens afterward; no trailing dot/space). Paths such as
+`../evil` or `/tmp/evil`, and symlink targets, are rejected. The target may
+be absent or empty; a nonempty target is refused without changing files.
+There is no force option.
+
+Created files:
+
+- `README.md`: human project context, purpose, users and constraints.
+- `ROADMAP.md`: versioned product vision and first milestone.
+- `aido.yaml`: executable current MVP, with objective, acceptance criteria,
+  WorkItems and QA TODOs. Uses the existing init template, sanitized project
+  id, supplied human name, `workspace: "."`, and standard permissions by default.
+- `.gitignore`: local Ralph runtime noise (`/.ralph/`) and environment files.
+
+These roles remain separate. No roadmap parsing, automatic synchronization,
+or invented product acceptance criteria. The user edits all three documents
+before explicitly starting `aido run`.
+
+The existing registry lookup is shared by both modes: explicit
+`--workers-registry`, otherwise the caller's `config/workers.yaml` if present,
+otherwise `$XDG_CONFIG_HOME/ai-dev-orchestrator/workers.yaml` (default
+`~/.config/ai-dev-orchestrator/workers.yaml`). A missing user registry is
+materialized from the packaged default; existing registries are reused.
+Only a reference is written to the project, never another registry copy.
+
+After writing files, init detects Git in PATH and executes, without a shell:
+
+```bash
+git init -b main
+git add .
+git commit -m "Initialize AIDO project"
+```
+
+No remote, push, Git installation or global Git configuration change occurs.
+If Git is missing, or any step fails (including an unconfigured identity),
+the scaffold is retained and exit status is nonzero. Output identifies the
+failure and gives the absolute `cd` plus all three commands above for manual
+completion, followed by onboarding. Configure your Git identity if requested,
+then retry the commit. `validate` also provides Git setup instructions when
+the existing workspace is not a Git repository, through a typed
+`MissingGitWorkspaceError` from the existing configuration loader.
+
+Init is entirely local: no provider resolution, LLM, probe, worker, Ralph,
+runtime construction or persisted Project/MVP/WorkItem. Only an explicit
+`aido run` starts development.
+
+### Historical configuration-only mode
+
+`aido init` or `aido init <config-path>` still writes only the configuration,
+refusing to overwrite it. Existing options remain supported, including
+`--workspace` and `--project-name`. In complete bootstrap mode these two
+options are rejected because the positional arguments define them;
+`--project-id`, `--workers-registry` and `--permission-mode` remain available.
 
 ## Schema v1
 

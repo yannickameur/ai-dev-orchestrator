@@ -109,6 +109,14 @@ class InvalidProjectConfigError(ProjectConfigError):
         super().__init__(f"invalid project configuration: {detail}")
 
 
+class MissingGitWorkspaceError(InvalidProjectConfigError):
+    """An existing workspace needs Git setup before it can be governed."""
+
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+        super().__init__(f"project.workspace {str(workspace)!r} is not inside a Git working tree")
+
+
 class UnsupportedSchemaVersionError(ProjectConfigError):
     def __init__(self, version: Any) -> None:
         super().__init__(
@@ -420,9 +428,7 @@ class ProjectConfig:
         if not workspace.is_dir():
             raise InvalidProjectConfigError(f"project.workspace {str(workspace)!r} is not an existing directory")
         if not _is_inside_git_work_tree(workspace):
-            raise InvalidProjectConfigError(
-                f"project.workspace {str(workspace)!r} is not inside a Git working tree"
-            )
+            raise MissingGitWorkspaceError(workspace)
         state_dir_raw = project_data.get("state_dir")
         state_dir = (
             _resolve_path(state_dir_raw, base_dir=base_dir)

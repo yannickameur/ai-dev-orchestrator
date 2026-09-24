@@ -10,7 +10,7 @@ authoritative).
 
 Four commands, deliberately no more (KISS/YAGNI):
 
-- ``aido init``     — write a starting ``aido.yaml`` template.
+- ``aido init``     — scaffold a project, or write an ``aido.yaml`` template.
 - ``aido validate`` — load/validate a config, print facts, no side effects.
 - ``aido run``      — bootstrap (idempotent) + drive WorkItem Flow to
   completion/WAITING/max-cycles. Also the resume operation — there is no
@@ -41,12 +41,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import re
+import shlex
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 from orchestrator.engine import EngineConfigError, OrchestratorEngine
 from orchestrator.execution_policy import ExecutionPermissionMode
-from orchestrator.project_config import ProjectConfig, ProjectConfigError
+from orchestrator.project_config import MissingGitWorkspaceError, ProjectConfig, ProjectConfigError
 from orchestrator.project_runtime import (
     ConfigRuntimeConflictError,
     ProjectRuntime,
@@ -82,6 +85,11 @@ def _load_config(path: str) -> ProjectConfig | None:
     ordinary bad config/worker-registry problem."""
     try:
         return ProjectConfig.load(path)
+    except MissingGitWorkspaceError as exc:
+        print("aido: this project is not initialized as a Git repository.", file=sys.stderr)
+        _print_git_recovery(exc.workspace)
+        print(f"Then retry:\n  aido validate {shlex.quote(str(Path(path).resolve()))}")
+        return None
     except (ProjectConfigError, WorkerRegistryError) as exc:
         print(f"aido: invalid project configuration — {exc}", file=sys.stderr)
         return None
@@ -128,6 +136,7 @@ work_items:
       - "TODO: state, concretely, what 'done' means for this WorkItem."
 
 qa:
+  # TODO: define the real QA commands for this project.
   # A common default, only if your project actually uses pytest —
   # replace or remove this if it does not. AIDO never guesses your real
   # QA commands beyond this one safe, widely-applicable template.
@@ -177,7 +186,7 @@ def _materialize_user_worker_registry() -> Path:
     return path
 
 
-def _cmd_init(args: argparse.Namespace) -> int:
+def _write_init_config(args: argparse.Namespace) -> int:
     config_path = Path(args.config).expanduser().resolve()
     if config_path.exists():
         print(f"aido init: {config_path} already exists — refusing to overwrite.", file=sys.stderr)
@@ -238,6 +247,171 @@ def _cmd_init(args: argparse.Namespace) -> int:
     print("Edit it — especially mvp.objective/acceptance_criteria and work_items "
           "— then run `aido validate`.")
     return 0
+
+
+_README_TEMPLATE = """# {name}
+
+## Purpose
+
+TODO: What problem does this project solve?
+
+## Users
+
+TODO: Who is this project for?
+
+## Main constraints
+
+TODO: Technical, functional or operational constraints.
+
+## Development
+
+This project is developed through AI Dev Orchestrator.
+
+See:
+- ROADMAP.md
+- aido.yaml
+"""
+
+_ROADMAP_TEMPLATE = """# ROADMAP — {name}
+
+## Vision
+
+TODO: Describe the target outcome.
+
+## M1 — First usable increment
+
+### Objective
+
+TODO
+
+### Acceptance criteria
+
+- TODO
+
+### Scope
+
+TODO
+
+### Out of scope
+
+TODO
+"""
+
+# Runtime noise convention shared with GitGovernanceService; state databases
+# normally live outside the project in the user's state directory.
+_INIT_GITIGNORE = "/.ralph/\n.env\n.env.*\n"
+
+
+def _print_git_recovery(workspace: Path) -> None:
+    print(f'\nFrom {workspace} run:\n\n  cd {shlex.quote(str(workspace))}\n'
+          '  git init -b main\n  git add .\n'
+          '  git commit -m "Initialize AIDO project"\n')
+
+
+def _initialize_project_git(workspace: Path) -> bool:
+    git = shutil.which("git")
+    if git is None:
+        print("WARNING: Git is not installed or is not available in PATH.")
+        print("\nAIDO requires a Git repository before governed development can start.")
+        print("After installing Git:")
+        _print_git_recovery(workspace)
+        return False
+    for command in (["init", "-b", "main"], ["add", "."],
+                    ["commit", "-m", "Initialize AIDO project"]):
+        try:
+            subprocess.run([git, *command], cwd=workspace, check=True,
+                           capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"aido init: Git step '{command[0]}' failed. Scaffold preserved.", file=sys.stderr)
+            detail = str(getattr(exc, "stderr", "") or exc)
+            print(detail, file=sys.stderr)
+            if any(marker in detail.lower() for marker in
+                   ("identity", "user.email", "user.name", "auto-detect email", "who you are")):
+                print("Configure your Git identity before retrying the commit.", file=sys.stderr)
+            _print_git_recovery(workspace)
+            return False
+    return True
+
+
+def _cmd_init(args: argparse.Namespace) -> int:
+    try:
+        if args.new_project is None:
+            return _write_init_config(args)
+        return _scaffold_project(args)
+    except (OSError, ValueError) as exc:
+        print(f"aido init: {exc}", file=sys.stderr)
+        return 1
+
+
+def _scaffold_project(args: argparse.Namespace) -> int:
+    name = args.new_project
+    # One portable directory component, never a path, option or control text.
+    if not re.fullmatch(r"[^\W_][\w .-]*", name) or name.endswith((".", " ")):
+        print("aido init: project-name must be a single directory name, not a path. "
+              "No file was modified.", file=sys.stderr)
+        return 1
+    if args.workspace is not None or args.project_name is not None:
+        print("aido init: --workspace and --project-name belong to the legacy config mode; "
+              "the two positional arguments define the new project. No file was modified.",
+              file=sys.stderr)
+        return 1
+    parent = Path(args.config).expanduser().resolve()
+    target = parent / name
+    if target.is_symlink():
+        print(f"aido init: {target} is a symlink. No file was modified.", file=sys.stderr)
+        return 1
+    if target.exists() and (not target.is_dir() or any(target.iterdir())):
+        print(f"aido init: {target} already exists and is not empty.\nNo file was modified.",
+              file=sys.stderr)
+        return 1
+    target.mkdir(parents=True, exist_ok=True)
+    config_args = argparse.Namespace(**vars(args))
+    config_args.config = str(target / "aido.yaml")
+    config_args.workspace = str(target)
+    config_args.project_name = name
+    if _write_init_config(config_args) != 0:
+        return 1
+    for filename, content in (("README.md", _README_TEMPLATE.format(name=name)),
+                              ("ROADMAP.md", _ROADMAP_TEMPLATE.format(name=name)),
+                              (".gitignore", _INIT_GITIGNORE)):
+        (target / filename).write_text(content, encoding="utf-8")
+    git_ready = _initialize_project_git(target)
+    print("\nAIDO — project initialized" if git_ready else "\nAIDO — scaffold created; Git setup incomplete")
+    print(f"\nProject: {name}\nDirectory: {target}")
+    if git_ready:
+        print("Git: initialized on branch main\nInitial commit: created")
+    print("\nFiles created:\n  README.md\n  ROADMAP.md\n  aido.yaml\n  .gitignore")
+    print(f"""
+Next steps:
+
+1. cd {shlex.quote(str(target))}
+
+2. Edit README.md
+   Describe what the project is, its purpose and its main constraints.
+
+3. Edit ROADMAP.md
+   Define the first milestone, objective and expected outcomes.
+
+4. Edit aido.yaml
+   Define the first executable MVP:
+   - objective
+   - acceptance criteria
+   - work items
+   - QA commands
+
+5. Validate (after completing Git setup if needed):
+   aido validate
+
+6. Commit your project definition:
+   git add README.md ROADMAP.md aido.yaml
+   git commit -m "Define initial project"
+
+7. Start governed development:
+   aido run
+
+No development has been started.
+""")
+    return 0 if git_ready else 1
 
 
 def _relpath(target: Path, base: Path) -> str:
@@ -512,8 +686,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="aido", description=_SHORT_DESCRIPTION)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    init_parser = subparsers.add_parser("init", help="Write a starting aido.yaml template.")
-    init_parser.add_argument("config", nargs="?", default=DEFAULT_CONFIG_PATH)
+    init_parser = subparsers.add_parser("init", help="Create a project, or write a starting aido.yaml template.")
+    init_parser.add_argument("config", nargs="?", default=DEFAULT_CONFIG_PATH,
+                             metavar="config-or-parent", help="Legacy config path, or new project's parent.")
+    init_parser.add_argument("new_project", nargs="?", metavar="project-name",
+                             help="Create a complete project under the parent path.")
     init_parser.add_argument("--workers-registry", default=None)
     init_parser.add_argument("--project-id", default=None)
     init_parser.add_argument("--project-name", default=None)
