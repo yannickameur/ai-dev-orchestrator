@@ -184,14 +184,13 @@ def _write_config(
 
 
 class TestEntrypoint:
-    def test_pyproject_entry_point_matches_real_main(self) -> None:
-        # No TOML parser dependency (this project has none, and
-        # ``tomllib`` is 3.11+ only while this project supports 3.10+) —
-        # a plain text check of the exact declared line is sufficient and
-        # fully portable.
-        repo_root = Path(__file__).resolve().parent.parent
-        text = (repo_root / "pyproject.toml").read_text()
-        assert 'aido = "orchestrator.cli:main"' in text
+    def test_legacy_cli_main_stays_importable_and_callable(self) -> None:
+        # Since the engine/library boundary's product cutover (AIDO Code
+        # now owns the "aido" console script, see pyproject.toml/
+        # tests/test_packaging.py), this module is no longer installed as
+        # a console script by this distribution — it stays importable for
+        # existing tests/internal compatibility, per this project's own
+        # README.md ("engine/library boundary").
         assert callable(cli.main)
 
     def test_top_level_help(self, capsys: pytest.CaptureFixture) -> None:

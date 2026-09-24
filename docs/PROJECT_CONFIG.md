@@ -9,8 +9,11 @@ mode depended entirely on machine-local CLI configuration rather than an
 explicit, project-declared policy.
 
 This document describes the configuration format and its loader
-(`ProjectConfig.load(path)`), a typed, reusable API. The public `aido`
-CLI (P1, `src/orchestrator/cli.py`) is the real consumer:
+(`ProjectConfig.load(path)`), a typed, reusable API. The legacy,
+internal `orchestrator.cli` module (P1, `src/orchestrator/cli.py`) is
+the real, original consumer — **since P13.6, no longer installed as the
+`aido` console script** (AIDO Code owns that command now; see "Engine/
+library boundary" below):
 
 - `aido init <parent-path> <project-name>` bootstraps a complete local project.
   Zero or one positional argument retains the historical config-only mode.
@@ -23,12 +26,15 @@ CLI (P1, `src/orchestrator/cli.py`) is the real consumer:
 
 See the main [`README.md`](../README.md) for CLI usage examples.
 
-## Engine/library boundary (P13.5)
+## Engine/library boundary (P13.5, P13.6)
 
-`ai-dev-orchestrator` is an **engine/library**; the public `aido` CLI
-documented above is its own legacy, transitional product surface, not
-the project's only consumer. **AIDO** (the embedding product/application
-— e.g. AIDO Code) drives the same engine through
+`ai-dev-orchestrator` is an **engine/library**; the legacy `orchestrator.
+cli` module documented above is its own historical, internal-only
+surface (P13.6: no longer installed as a console script by this
+distribution at all) — never the project's product surface, and never
+its only consumer. **AIDO** (the embedding product/application — AIDO
+Code, which now owns the real `aido` command) drives the same engine
+through
 `orchestrator.engine.OrchestratorEngine` instead, and is never required
 to describe its worker pool through `aido.yaml`/`workers.registry`: it
 constructs its own `orchestrator.worker_registry.WorkerRegistry` and

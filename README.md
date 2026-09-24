@@ -121,15 +121,21 @@ pour la source de vérité fonctionnelle complète.
 
 ### Frontière moteur/librairie
 
-`ai-dev-orchestrator` **est le moteur/librairie** ; le CLI `aido` décrit
-ci-dessous en est la surface produit historique, désormais legacy/
-transitoire, jamais le seul consommateur possible. Une application
-embarquante (**AIDO**, ex. AIDO Code) pilote le même moteur via
-`orchestrator.engine.OrchestratorEngine` et lui fournit son propre plan
-de projet et son propre `WorkerRegistry` construit en Python — `aido.yaml`
-n'est plus obligatoirement la source de configuration complète du produit
-utilisateur. Voir [`docs/PROJECT_CONFIG.md`](docs/PROJECT_CONFIG.md),
-« Engine/library boundary », et `ROADMAP.md` §13 (P13.5).
+**`ai-dev-orchestrator` est le moteur/librairie embarqué par AIDO.**
+L'application produit (**AIDO**, [AIDO Code](https://github.com/yannickameur/aido-code))
+pilote ce moteur via `orchestrator.engine.OrchestratorEngine` et lui
+fournit son propre plan de projet et son propre `WorkerRegistry`
+construit en Python — `aido.yaml` n'est plus obligatoirement la source
+de configuration complète du produit utilisateur (P13.5). **Depuis le
+cutover produit (AIDO Code, M1.4/M8), ce dépôt n'installe plus aucune
+commande console** : la commande `aido` appartient désormais uniquement
+à AIDO Code. La CLI historique `orchestrator.cli` (`init`/`validate`/
+`run`/`status`) reste dans le code source, importable, pour compatibilité
+interne uniquement — jamais réinstallée comme surface produit. P13 (le
+découplage initial) et P13.5 (l'injection `WorkerRegistry`) restent les
+jalons historiques ayant rendu ce découplage possible ; voir
+[`docs/PROJECT_CONFIG.md`](docs/PROJECT_CONFIG.md), « Engine/library
+boundary », et `ROADMAP.md` §13.
 
 ## Providers intégrés
 
@@ -178,12 +184,23 @@ Tests offline (aucun appel provider réel, aucun quota consommé) :
 pytest
 ```
 
-### Utiliser la CLI `aido` (P1)
+**Pour utiliser AIDO comme produit** (lancer un vrai projet gouverné),
+installez [AIDO Code](https://github.com/yannickameur/aido-code) : c'est
+elle qui possède désormais la commande `aido` (voir « Frontière moteur/
+librairie » ci-dessous). Ce dépôt (`ai-dev-orchestrator`) n'installe plus
+aucune commande console — il n'est destiné qu'à être embarqué comme
+dépendance, ou développé/testé directement (ci-dessous).
 
-Une fois le package installé (ci-dessus), la commande `aido` est
-disponible. Elle consomme le format de configuration public `aido.yaml`
-(P12 — voir [`docs/PROJECT_CONFIG.md`](docs/PROJECT_CONFIG.md)) et
-remplace le besoin d'un harnais Python pour l'usage normal.
+### CLI historique `orchestrator.cli` (legacy, interne)
+
+**N'installe plus de commande console.** Cette CLI (`init`/`validate`/
+`run`/`status`) reste dans le code source pour compatibilité interne —
+tests existants, développement de l'engine lui-même en checkout sibling
+(voir `aido-code`'s `CONTRIBUTING.md`) — jamais comme surface produit.
+Invoquez-la directement en Python (`python -c "from orchestrator.cli
+import main; main([...])"`) ou via `python -m orchestrator.cli` si
+besoin ; elle consomme le même format de configuration `aido.yaml`
+(P12 — voir [`docs/PROJECT_CONFIG.md`](docs/PROJECT_CONFIG.md)).
 
 ```bash
 cd ~/projects
@@ -197,6 +214,11 @@ git commit -m "Define initial project"
 aido run
 aido status
 ```
+
+*(Le reste de cette section garde la forme `aido ...` pour rester lisible
+— ce dépôt n'installant plus la commande, il s'agit toujours en réalité
+de `python -m orchestrator.cli ...`/l'appel direct à `cli.main([...])`,
+jamais un exécutable `aido` réellement présent sur le `PATH`.)*
 
 `aido init <parent-path> <project-name>` crée un projet local avec
 `README.md`, `ROADMAP.md`, `aido.yaml` et `.gitignore`, puis un dépôt Git
