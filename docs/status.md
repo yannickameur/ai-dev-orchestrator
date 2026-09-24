@@ -1,6 +1,6 @@
 # Status
 
-Snapshot factuel court — mis à jour le 2026-09-24. Pas un journal ;
+Snapshot factuel court — mis à jour le 2026-09-24 (P13.5). Pas un journal ;
 l'historique détaillé daté (Slices, incidents, diagnostics) vit dans
 l'historique Git (`git log`) et dans les rapports sous `docs/reports/`.
 Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
@@ -21,7 +21,7 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   (deepseek/kimi via `claude_code` redirigé, `development` uniquement,
   **`enabled: false`**, clé API requise, pas encore de preuve
   d'exécution réelle ; voir `ROADMAP.md` §7/§13).
-- **Tests offline** : 1290 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
+- **Tests offline** : 1306 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
   2026-09-24), 1 avertissement de collecte préexistant
   (`TestChangeAuthorization`). Snapshot, pas un contrat ; le compte
   courant fait foi dans la sortie de `pytest -q`.
@@ -89,6 +89,16 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   `APPROUVÉ — APRÈS P13` (2026-09-19). Aucun WorkItem d'implémentation
   créé à ce jour ; voir `ROADMAP.md` §13. Toutes les autres propositions
   restent `À VOTER`.
+- **P13.5 (frontière moteur/librairie : injection du `WorkerRegistry`,
+  `workers:` optionnel)** : `DONE` (2026-09-24). `ai-dev-orchestrator` ne
+  considère plus `aido.yaml` comme la source de configuration complète du
+  produit : `workers:` devient optionnel dans `ProjectConfig` ;
+  `OrchestratorEngine`/`ProjectRuntime` acceptent un `WorkerRegistry`
+  injecté par l'appelant (`worker_registry=`), `WorkerSelector` restant
+  seul propriétaire de la sélection ; chemin legacy fichier intégralement
+  conservé et testé ; CLI `aido` documentée comme surface legacy/
+  transitoire. Voir `ROADMAP.md` §13, sous-section P13.5, et
+  `docs/PROJECT_CONFIG.md`, "Engine/library boundary".
 
 ## Historique synthétique
 
@@ -178,5 +188,12 @@ Chronologie détaillée entièrement récupérable via `git log` et
   `aido init` standalone ; `aido status`/`--probe` enrichis (workers,
   quotas par provider) ; Victor/Oscar sur GPT-6 ; `MVP status=running`
   confirmé non-bug (2026-09-23). Voir `ROADMAP.md` §13.
+- P13.5 : frontière moteur/librairie — `workers:` rendu optionnel dans
+  `ProjectConfig` (`NoWorkerRegistryConfiguredError` si absent et non
+  injecté) ; `OrchestratorEngine`/`ProjectRuntime` acceptent un
+  `WorkerRegistry` construit et injecté par l'appelant, sans jamais lire
+  `workers.yaml` dans ce cas ; `WorkerSelector` reste l'unique
+  propriétaire de la sélection ; chemin legacy fichier inchangé et
+  toujours testé (2026-09-24). Voir `ROADMAP.md` §13.
 
 Ce fichier reste court et factuel : pas de duplication de `ROADMAP.md`.

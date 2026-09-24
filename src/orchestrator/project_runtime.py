@@ -77,6 +77,7 @@ from orchestrator.quota_manager import QuotaManager, QuotaPolicy
 from orchestrator.ralph_execution_engine import RalphExecutionEngine
 from orchestrator.validation import QualityGateRunner, ValidationStore
 from orchestrator.wait import WaitStore
+from orchestrator.worker_registry import WorkerRegistry
 from orchestrator.worker_selector import WorkerSelector
 
 Clock = Callable[[], datetime]
@@ -184,6 +185,7 @@ class ProjectRuntime:
     @classmethod
     def open(
         cls, config: ProjectConfig, *, clock: Clock | None = None,
+        worker_registry: WorkerRegistry | None = None,
         provider_adapters: dict[str, ProviderAdapter] | None = None,
         subprocess_runner: object | None = None,
     ) -> "ProjectRuntime":
@@ -191,6 +193,14 @@ class ProjectRuntime:
         NOT bootstrap Project/MVP/WorkItems — call ``.bootstrap()``
         explicitly (kept separate so a read-only caller, e.g. ``aido
         status``, can open a runtime without ever creating rows).
+
+        ``worker_registry``, when given, is used as-is instead of the
+        legacy ``config.load_worker_registry()`` path — the modern engine
+        boundary: the caller constructs/owns its ``WorkerRegistry`` and
+        this runtime never needs ``config`` to reference a
+        ``workers.registry`` file at all. ``WorkerSelector`` remains built
+        from exactly this registry's ``enabled_workers()`` either way —
+        never a second, parallel selection path.
 
         ``provider_adapters``/``subprocess_runner`` are the smallest test
         injection seams this layer offers (§22) — production callers (the
@@ -211,7 +221,7 @@ class ProjectRuntime:
         git_store = GitWorkItemStore(state_dir / STORE_FILENAMES["git_governance"], clock=clock)
 
         try:
-            registry = config.load_worker_registry()
+            registry = worker_registry if worker_registry is not None else config.load_worker_registry()
             enabled_workers = list(registry.enabled_workers())
             adapters = (
                 provider_adapters if provider_adapters is not None

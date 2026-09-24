@@ -29,6 +29,15 @@ opens and closes whatever it needs for the duration of that one call,
 exactly like ``aido status``/``aido validate``/``aido run`` already do.
 ``.close()`` exists for API symmetry and safe ``with``/``finally`` usage,
 not because there is a live resource to release.
+
+Engine/library boundary: the ``WorkerRegistry`` this façade uses is
+injected by the caller (``worker_registry=`` on ``__init__``/``.open()``)
+rather than owned by ``ProjectConfig``/``aido.yaml``. ``WorkerSelector``
+remains the sole owner of *which* worker gets picked — injection only
+supplies *what's available*, never a caller-side selection decision. A
+``None`` falls back to the legacy, file-based ``ProjectConfig.
+load_worker_registry()`` path for a config that still declares a
+``workers:`` section (see ``project_config.py``'s own module docstring).
 """
 
 from __future__ import annotations
@@ -273,10 +282,20 @@ class OrchestratorEngine:
 
     def __init__(
         self, config: ProjectConfig, *,
+        worker_registry: WorkerRegistry | None = None,
         provider_adapters: dict[str, Any] | None = None,
         subprocess_runner: object | None = None,
     ) -> None:
         self._config = config
+        # The modern injection seam (engine/library boundary): the
+        # embedding application (AIDO Code, or any future caller)
+        # constructs/owns its WorkerRegistry and hands it here directly —
+        # never loaded from a `workers.registry` path in the project's own
+        # configuration when set. `None` falls back to the legacy,
+        # file-based `config.load_worker_registry()` path (see
+        # `_load_worker_registry()`), for a `ProjectConfig` that still
+        # carries a `workers:` section.
+        self._worker_registry = worker_registry
         # Test-only seams, the same shape/purpose as
         # ``ProjectRuntime.open()``'s own ``provider_adapters``/
         # ``subprocess_runner``: production callers never set these. A
@@ -288,19 +307,30 @@ class OrchestratorEngine:
     @classmethod
     def open(
         cls, config_path: str, *,
+        worker_registry: WorkerRegistry | None = None,
         provider_adapters: dict[str, Any] | None = None,
         subprocess_runner: object | None = None,
     ) -> "OrchestratorEngine":
-        """Loads and validates ``aido.yaml`` (and its referenced worker
-        registry) eagerly, read-only: no ``state_dir``/SQLite/provider
-        call. Raises ``EngineConfigError`` on any structural problem,
-        never a bare ``ProjectConfigError``/``WorkerRegistryError`` a
-        frontend was never meant to import."""
+        """Loads and validates ``aido.yaml`` eagerly, read-only: no
+        ``state_dir``/SQLite/provider call. Raises ``EngineConfigError`` on
+        any structural problem, never a bare ``ProjectConfigError``/
+        ``WorkerRegistryError`` a frontend was never meant to import.
+
+        ``worker_registry``, when given, is used for every worker-facing
+        call (``.workers()``, ``.validate()``, ``.probe_workers()``,
+        ``.run()``, worker display-name resolution in ``.status()``)
+        instead of a legacy ``workers.registry`` path read from
+        ``aido.yaml`` — the modern engine boundary never requires
+        ``config_path`` to reference one at all (see ``ProjectConfig``'s
+        own module docstring)."""
         try:
             config = ProjectConfig.load(config_path)
         except (ProjectConfigError, WorkerRegistryError) as exc:
             raise EngineConfigError(str(exc)) from exc
-        return cls(config, provider_adapters=provider_adapters, subprocess_runner=subprocess_runner)
+        return cls(
+            config, worker_registry=worker_registry,
+            provider_adapters=provider_adapters, subprocess_runner=subprocess_runner,
+        )
 
     def validate(self) -> ProjectSnapshot:
         """Loads/validates the configuration and its worker registry; no
@@ -494,6 +524,7 @@ class OrchestratorEngine:
         try:
             runtime = ProjectRuntime.open(
                 self._config,
+                worker_registry=self._worker_registry,
                 provider_adapters=self._provider_adapters,
                 subprocess_runner=self._subprocess_runner,
             )
@@ -553,6 +584,8 @@ class OrchestratorEngine:
         )
 
     def _load_worker_registry(self) -> WorkerRegistry:
+        if self._worker_registry is not None:
+            return self._worker_registry
         try:
             return self._config.load_worker_registry()
         except WorkerRegistryError as exc:
