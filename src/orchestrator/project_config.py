@@ -17,12 +17,18 @@ REUSE FIRST — this module invents nothing that already exists elsewhere:
   ``ValidationKind`` — never a second, parallel "QA command" shape.
 - The execution permission mode is exactly
   ``orchestrator.execution_policy.ExecutionPermissionMode``.
-- The worker pool is never redefined here — ``workers.registry`` is a
-  path to an existing ``orchestrator.worker_registry.WorkerRegistry``-
-  shaped YAML file (typically the project's own ``config/workers.yaml``),
-  loaded and validated eagerly at ``ProjectConfig.load()`` time. Schema v1
-  deliberately supports exactly one such reference — no per-project copy
-  of the worker pool, ever.
+- The worker pool is never redefined here. ``workers.registry`` (a path to
+  an existing ``orchestrator.worker_registry.WorkerRegistry``-shaped YAML
+  file, loaded and validated eagerly at ``ProjectConfig.load()`` time) is
+  now an OPTIONAL, legacy, file-based reference — never required by the
+  modern engine boundary. ``OrchestratorEngine``/``ProjectRuntime`` expect
+  the embedding application (AIDO Code, or any future caller) to
+  construct/own a ``WorkerRegistry`` itself and inject it directly
+  (``OrchestratorEngine(..., worker_registry=...)``); a config with no
+  ``workers:`` section is a fully valid, modern ``ProjectConfig``, and its
+  ``load_worker_registry()`` raises ``NoWorkerRegistryConfiguredError`` if
+  ever called. Schema v1 deliberately supports at most one such legacy
+  reference — no per-project copy of the worker pool, ever.
 
 Schema v1 is deliberately minimal (KISS/YAGNI): exactly one configured
 MVP. Multi-MVP configuration is not built here.
@@ -145,6 +151,24 @@ class WorkItemDependencyCycleError(ProjectConfigError):
     def __init__(self, cycle: Sequence[str]) -> None:
         super().__init__(f"work_item dependency cycle detected: {' -> '.join(cycle)}")
         self.cycle = tuple(cycle)
+
+
+class NoWorkerRegistryConfiguredError(WorkerRegistryError):
+    """Raised by ``ProjectConfig.load_worker_registry()`` when this config
+    has no ``workers.registry`` (the legacy, file-based worker source) —
+    schema v1's ``workers:`` section is now optional (see the engine/
+    library boundary, ROADMAP.md). The modern engine API never reads a
+    worker registry from a project's own configuration: the embedding
+    application constructs/owns its ``WorkerRegistry`` and injects it
+    directly (``OrchestratorEngine(..., worker_registry=...)``/
+    ``ProjectRuntime.open(..., worker_registry=...)``)."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "this ProjectConfig has no workers.registry configured (legacy, file-based "
+            "path) — inject an already-built WorkerRegistry into OrchestratorEngine/"
+            "ProjectRuntime instead of calling ProjectConfig.load_worker_registry()"
+        )
 
 
 def _reject_secrets(data: Any, *, path: str = "") -> None:
@@ -375,7 +399,7 @@ class ProjectConfig:
     )
 
     def __init__(
-        self, *, schema_version: int, project: ProjectIdentity, workers_registry_path: Path,
+        self, *, schema_version: int, project: ProjectIdentity, workers_registry_path: Path | None = None,
         execution: ExecutionConfig, git: GitConfig, mvp: MVPConfig,
         work_items: tuple[WorkItemConfig, ...], qa_commands: tuple[ValidationCommand, ...],
         qa_protected_paths: tuple[str, ...] = (),
@@ -437,16 +461,28 @@ class ProjectConfig:
         )
         project = ProjectIdentity(id=project_id, name=project_name, workspace=workspace, state_dir=state_dir)
 
-        workers_data = _require_mapping(top.get("workers"), context="workers")
-        _reject_unknown_keys(workers_data, _WORKERS_KEYS, context="workers")
-        registry_raw = _require_str(workers_data, "registry", context="workers")
-        workers_registry_path = _resolve_path(registry_raw, base_dir=base_dir)
-        try:
-            WorkerRegistry.load(workers_registry_path)
-        except OSError as exc:
-            raise InvalidProjectConfigError(f"workers.registry {str(workers_registry_path)!r}: {exc}") from exc
-        except WorkerRegistryError:
-            raise  # already a clear, typed domain error — never double-wrapped
+        # Legacy, optional (engine/library boundary): a project's own
+        # aido.yaml no longer needs to own the worker pool — the modern
+        # OrchestratorEngine/ProjectRuntime API expects the embedding
+        # application to inject an already-built WorkerRegistry instead.
+        # When present, this section keeps its full historical validation
+        # (a bad/missing referenced file still fails config loading
+        # itself); when absent, workers_registry_path stays None and
+        # load_worker_registry() raises NoWorkerRegistryConfiguredError.
+        workers_raw = top.get("workers")
+        if workers_raw is None:
+            workers_registry_path: Path | None = None
+        else:
+            workers_data = _require_mapping(workers_raw, context="workers")
+            _reject_unknown_keys(workers_data, _WORKERS_KEYS, context="workers")
+            registry_raw = _require_str(workers_data, "registry", context="workers")
+            workers_registry_path = _resolve_path(registry_raw, base_dir=base_dir)
+            try:
+                WorkerRegistry.load(workers_registry_path)
+            except OSError as exc:
+                raise InvalidProjectConfigError(f"workers.registry {str(workers_registry_path)!r}: {exc}") from exc
+            except WorkerRegistryError:
+                raise  # already a clear, typed domain error — never double-wrapped
 
         execution_data = _require_mapping(top.get("execution"), context="execution")
         _reject_unknown_keys(execution_data, _EXECUTION_KEYS, context="execution")
@@ -496,7 +532,13 @@ class ProjectConfig:
         )
 
     def load_worker_registry(self) -> WorkerRegistry:
-        """Convenience re-load — ``load()`` already validated this
-        eagerly; a caller wanting the live ``WorkerRegistry`` object calls
-        this explicitly rather than this class caching a stale one."""
+        """Convenience re-load of the legacy, file-based ``workers.registry``
+        — ``load()`` already validated this eagerly; a caller wanting the
+        live ``WorkerRegistry`` object calls this explicitly rather than
+        this class caching a stale one. Raises
+        ``NoWorkerRegistryConfiguredError`` when this config has no
+        ``workers.registry`` (the modern path: the caller injects its own
+        ``WorkerRegistry`` into the engine instead of calling this)."""
+        if self.workers_registry_path is None:
+            raise NoWorkerRegistryConfiguredError()
         return WorkerRegistry.load(self.workers_registry_path)

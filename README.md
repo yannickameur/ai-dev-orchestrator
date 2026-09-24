@@ -119,6 +119,18 @@ Voir `ROADMAP.md` — vision, état actuel du produit, architecture,
 WorkItem Flow, invariants, validations réelles et propositions à voter —
 pour la source de vérité fonctionnelle complète.
 
+### Frontière moteur/librairie
+
+`ai-dev-orchestrator` **est le moteur/librairie** ; le CLI `aido` décrit
+ci-dessous en est la surface produit historique, désormais legacy/
+transitoire, jamais le seul consommateur possible. Une application
+embarquante (**AIDO**, ex. AIDO Code) pilote le même moteur via
+`orchestrator.engine.OrchestratorEngine` et lui fournit son propre plan
+de projet et son propre `WorkerRegistry` construit en Python — `aido.yaml`
+n'est plus obligatoirement la source de configuration complète du produit
+utilisateur. Voir [`docs/PROJECT_CONFIG.md`](docs/PROJECT_CONFIG.md),
+« Engine/library boundary », et `ROADMAP.md` §13 (P13.5).
+
 ## Providers intégrés
 
 | Provider | CLI/Backend | Statut |

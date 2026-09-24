@@ -18,6 +18,7 @@ from orchestrator.execution_policy import ExecutionPermissionMode
 from orchestrator.project_config import (
     DuplicateWorkItemError,
     InvalidProjectConfigError,
+    NoWorkerRegistryConfiguredError,
     ProjectConfig,
     UnknownWorkItemDependencyError,
     UnsupportedSchemaVersionError,
@@ -531,3 +532,55 @@ class TestWorkerRegistryReference:
         )
         with pytest.raises(InvalidProjectConfigError):
             ProjectConfig.load(tmp_path / "aido.yaml")
+
+
+class TestOptionalWorkersSection:
+    """Engine/library boundary: ``workers:`` is now an OPTIONAL, legacy
+    section — a config with none is a fully valid, modern
+    ``ProjectConfig`` whose ``WorkerRegistry`` the caller injects directly
+    into the engine, never read via ``load_worker_registry()``."""
+
+    def _write_config_without_workers(self, tmp_path: Path) -> Path:
+        _init_git_repo(tmp_path / "proj")
+        return _write(
+            tmp_path / "aido.yaml",
+            """
+            schema_version: 1
+            project: {id: demo, name: Demo, workspace: proj}
+            execution: {permission_mode: standard}
+            mvp: {id: mvp-1, objective: x}
+            work_items: []
+            qa: []
+            """,
+        )
+
+    def test_config_without_workers_section_loads_successfully(self, tmp_path: Path) -> None:
+        path = self._write_config_without_workers(tmp_path)
+        config = ProjectConfig.load(path)
+        assert config.workers_registry_path is None
+        assert config.project.id == "demo"
+
+    def test_load_worker_registry_fails_closed_without_a_configured_registry(self, tmp_path: Path) -> None:
+        path = self._write_config_without_workers(tmp_path)
+        config = ProjectConfig.load(path)
+        with pytest.raises(NoWorkerRegistryConfiguredError):
+            config.load_worker_registry()
+
+    def test_no_worker_registry_configured_error_is_a_worker_registry_error(self, tmp_path: Path) -> None:
+        """A caller that already catches WorkerRegistryError (the legacy,
+        file-based failure) catches this one too — never a second,
+        unrelated exception hierarchy to learn."""
+        path = self._write_config_without_workers(tmp_path)
+        config = ProjectConfig.load(path)
+        with pytest.raises(WorkerRegistryError):
+            config.load_worker_registry()
+
+    def test_legacy_workers_section_still_fully_works(self, tmp_path: Path) -> None:
+        """The pre-existing, file-based path is unaffected: still eagerly
+        validated at load() time, still loadable via
+        load_worker_registry()."""
+        path = _minimal_project(tmp_path)
+        config = ProjectConfig.load(path)
+        assert config.workers_registry_path is not None
+        registry = config.load_worker_registry()
+        assert [w.worker_id for w in registry.all_workers()] == ["alice"]

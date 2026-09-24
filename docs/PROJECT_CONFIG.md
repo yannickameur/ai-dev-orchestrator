@@ -23,6 +23,35 @@ CLI (P1, `src/orchestrator/cli.py`) is the real consumer:
 
 See the main [`README.md`](../README.md) for CLI usage examples.
 
+## Engine/library boundary (P13.5)
+
+`ai-dev-orchestrator` is an **engine/library**; the public `aido` CLI
+documented above is its own legacy, transitional product surface, not
+the project's only consumer. **AIDO** (the embedding product/application
+— e.g. AIDO Code) drives the same engine through
+`orchestrator.engine.OrchestratorEngine` instead, and is never required
+to describe its worker pool through `aido.yaml`/`workers.registry`: it
+constructs its own `orchestrator.worker_registry.WorkerRegistry` and
+injects it directly —
+
+```python
+engine = OrchestratorEngine.open(
+    config_path,               # or OrchestratorEngine(config, ...) for a
+                                # ProjectConfig already built in Python
+    worker_registry=registry,  # caller-built WorkerRegistry — never read
+                                # from a `workers.registry` path when given
+)
+```
+
+The engine never owns AIDO's own configuration/roadmap documents or
+worker choices — it receives a typed plan (`ProjectConfig`, this
+document's own schema, built either by `ProjectConfig.load(aido.yaml)`
+or directly via its plain Python constructor) and a `WorkerRegistry`,
+and executes them. `WorkerSelector` remains the sole owner of *which*
+worker is picked; injection only supplies *what's available*. See
+"Worker registry reference" below, and `ROADMAP.md` §13, sub-section
+P13.5, for the full rationale.
+
 ## Guided project bootstrap (P1.1)
 
 ```bash
@@ -106,6 +135,10 @@ project:
   # state_dir: ~/.local/state/ai-dev-orchestrator/projects/my-project/
   #   optional — see "Persistent state" below; this is the computed default
 
+# Optional (P13.5) and legacy — a caller of the modern engine API
+# (OrchestratorEngine/ProjectRuntime) injects its own WorkerRegistry
+# instead and omits this section entirely. When present, still eagerly
+# validated exactly as before. See "Engine/library boundary" above.
 workers:
   registry: ../config/workers.yaml   # a WorkerRegistry-shaped YAML file — a
                                        # REFERENCE, never inline Worker definitions
@@ -180,14 +213,24 @@ which is not the same guarantee as simple inter-process survival). If
 
 ## Worker registry reference
 
-`workers.registry` is a **path to an existing** `config/workers.yaml`-
-shaped file, loaded and validated eagerly (via
+`workers` is now **optional** (P13.5): a config with no `workers:`
+section is a fully valid, modern `ProjectConfig` — see "Engine/library
+boundary" above. When present (the legacy, file-based path, still fully
+supported and tested), `workers.registry` is a **path to an existing**
+`config/workers.yaml`-shaped file, loaded and validated eagerly (via
 `orchestrator.worker_registry.WorkerRegistry.load`) as part of
 `ProjectConfig.load()` — a bad reference fails configuration loading
 itself, not some later step. The project configuration **never**
 redefines individual `Worker` objects inline; worker pool configuration
 and target-project configuration are different concerns, and schema v1
 does not duplicate `config/workers.yaml`'s role.
+
+`ProjectConfig.load_worker_registry()` re-loads this legacy path; it
+raises `NoWorkerRegistryConfiguredError` (a `WorkerRegistryError`
+subclass) when no `workers:` section exists — the modern engine API
+never calls it in that case, since the caller injects its own
+`WorkerRegistry` directly into `OrchestratorEngine`/`ProjectRuntime`
+instead.
 
 ## QA commands
 

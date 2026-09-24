@@ -27,9 +27,21 @@ from orchestrator.engine import (
     ProjectSnapshot,
     ProjectStatusSnapshot,
 )
-from orchestrator.project_config import ProjectConfig
+from orchestrator.execution_policy import ExecutionPermissionMode
+from orchestrator.project_config import (
+    ExecutionConfig,
+    GitConfig,
+    MVPConfig,
+    NoWorkerRegistryConfiguredError,
+    ProjectConfig,
+    ProjectIdentity,
+    WorkItemConfig,
+)
 from orchestrator.providers.adapter import ProviderAdapter
 from orchestrator.providers.contracts import ProviderAvailability, ProviderState, UnavailabilityReason
+from orchestrator.validation import ValidationCommand, ValidationKind
+from orchestrator.worker_registry import WorkerRegistry
+from orchestrator.worker_selector import Worker
 
 UTC_T0 = datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc)
 
@@ -132,17 +144,17 @@ REGISTRY_TWO_WORKERS = dedent(
 
 def _write_config(
     tmp_path: Path, *, state_dir: str = "state", permission_mode: str = "standard",
-    registry: str = REGISTRY_TWO_WORKERS,
+    registry: str = REGISTRY_TWO_WORKERS, project_id: str = "demo",
+    include_workers_section: bool = True,
 ) -> Path:
     _init_git_repo(tmp_path / "proj")
-    (tmp_path / "workers.yaml").write_text(registry)
-    config_path = tmp_path / "aido.yaml"
-    config_path.write_text(
-        dedent(
+    if include_workers_section:
+        (tmp_path / "workers.yaml").write_text(registry)
+        body = dedent(
             f"""
             schema_version: 1
             project:
-              id: demo
+              id: {project_id}
               name: Demo
               workspace: proj
               state_dir: {state_dir}
@@ -165,8 +177,51 @@ def _write_config(
                 argv: ["{sys.executable}", "-c", "pass"]
             """
         )
-    )
+    else:
+        # No `workers:` section at all — the modern engine boundary: the
+        # caller injects a WorkerRegistry directly, and this ProjectConfig
+        # never needs a workers.registry path to be valid.
+        body = dedent(
+            f"""
+            schema_version: 1
+            project:
+              id: {project_id}
+              name: Demo
+              workspace: proj
+              state_dir: {state_dir}
+            execution:
+              permission_mode: {permission_mode}
+            git:
+              base_branch: main
+            mvp:
+              id: mvp-1
+              objective: Ship it
+            work_items:
+              - id: wi-1
+                title: Do the thing
+                required_capabilities: [development]
+            qa:
+              - id: qa-1
+                kind: unit_test
+                argv: ["{sys.executable}", "-c", "pass"]
+            """
+        )
+    config_path = tmp_path / "aido.yaml"
+    config_path.write_text(body)
     return config_path
+
+
+def _worker_registry(*worker_ids: str) -> WorkerRegistry:
+    """A ``WorkerRegistry`` built directly in Python — never read from a
+    YAML file — exactly the shape an embedding application (AIDO Code)
+    constructs/owns itself and injects into ``OrchestratorEngine``."""
+    return WorkerRegistry([
+        Worker.with_single_profile(
+            worker_id=worker_id, display_name=worker_id.title(), provider="anthropic",
+            backend="claude_code", model="sonnet", capabilities=["development"],
+        )
+        for worker_id in worker_ids
+    ])
 
 
 class TestOpen:
@@ -465,3 +520,155 @@ class TestRun:
             # No eligible worker and no diagnosable reset -> NoEligibleWorkerError
             # propagates, exactly like the underlying MVPManager/CLI behavior.
             engine.run()
+
+
+class TestWorkerRegistryInjection:
+    """Engine/library boundary: a caller-constructed ``WorkerRegistry`` can
+    be injected directly into ``OrchestratorEngine``, entirely independent
+    of any ``workers.registry`` path in ``aido.yaml`` — see
+    ``project_config.py``'s module docstring."""
+
+    def test_injected_registry_is_used_without_a_workers_section(self, tmp_path: Path) -> None:
+        config_path = _write_config(tmp_path, include_workers_section=False)
+        assert not (tmp_path / "workers.yaml").exists()
+        engine = OrchestratorEngine.open(
+            str(config_path), worker_registry=_worker_registry("alice", "bob"),
+            provider_adapters={"anthropic": _NeverCalledAdapter()},
+        )
+        workers = engine.workers()
+        assert {w.worker_id for w in workers} == {"alice", "bob"}
+
+    def test_injected_registry_reaches_validate_and_probe(self, tmp_path: Path) -> None:
+        config_path = _write_config(tmp_path, include_workers_section=False)
+        engine = OrchestratorEngine.open(
+            str(config_path), worker_registry=_worker_registry("alice"),
+            provider_adapters={"anthropic": _FakeAdapter(available=True)},
+        )
+        snapshot = engine.validate()
+        assert snapshot.enabled_worker_count == 1
+        assert snapshot.providers == ("anthropic",)
+        probes = engine.probe_workers()
+        assert [p.provider for p in probes] == ["anthropic"]
+
+    def test_project_without_workers_section_is_independent_of_any_registry_path(
+        self, tmp_path: Path,
+    ) -> None:
+        config_path = _write_config(tmp_path, include_workers_section=False)
+        config = ProjectConfig.load(config_path)
+        assert config.workers_registry_path is None
+        with pytest.raises(NoWorkerRegistryConfiguredError):
+            config.load_worker_registry()
+
+    def test_engine_without_injection_and_without_workers_section_fails_closed(
+        self, tmp_path: Path,
+    ) -> None:
+        config_path = _write_config(tmp_path, include_workers_section=False)
+        engine = OrchestratorEngine.open(str(config_path), provider_adapters={})
+        with pytest.raises(EngineConfigError):
+            engine.workers()
+
+    def test_legacy_workers_section_still_works_when_no_registry_is_injected(
+        self, tmp_path: Path,
+    ) -> None:
+        config_path = _write_config(tmp_path)  # includes workers: registry: workers.yaml
+        engine = OrchestratorEngine.open(str(config_path), provider_adapters={"anthropic": _NeverCalledAdapter()})
+        assert {w.worker_id for w in engine.workers()} == {"alice", "bob"}
+
+    def test_two_projects_share_one_injected_registry(self, tmp_path: Path) -> None:
+        registry = _worker_registry("alice")
+        config_a = _write_config(
+            tmp_path / "a", project_id="proj-a", state_dir="state", include_workers_section=False,
+        )
+        config_b = _write_config(
+            tmp_path / "b", project_id="proj-b", state_dir="state", include_workers_section=False,
+        )
+        engine_a = OrchestratorEngine.open(
+            str(config_a), worker_registry=registry, provider_adapters={"anthropic": _NeverCalledAdapter()},
+        )
+        engine_b = OrchestratorEngine.open(
+            str(config_b), worker_registry=registry, provider_adapters={"anthropic": _NeverCalledAdapter()},
+        )
+        assert engine_a.validate().project_id == "proj-a"
+        assert engine_b.validate().project_id == "proj-b"
+        assert {w.worker_id for w in engine_a.workers()} == {"alice"}
+        assert {w.worker_id for w in engine_b.workers()} == {"alice"}
+
+    def test_run_completes_workitem_flow_using_only_an_injected_registry(self, tmp_path: Path) -> None:
+        """Selection is unchanged end to end: DEV A != DEV B still holds
+        with two injected workers, and no workers.yaml is ever written or
+        read — the exact same WorkItem Flow WorkerSelector already runs,
+        never a second, façade-reimplemented selection."""
+        config_path = _write_config(tmp_path, include_workers_section=False)
+        runner = _ScriptedRalphRunner(
+            [
+                {"topic": "work.completed", "mutate": _commit_action("feature.py", "x = 1\n", "DEV A")},
+                {"topic": "work.completed"},
+            ]
+        )
+        engine = OrchestratorEngine.open(
+            str(config_path), worker_registry=_worker_registry("alice", "bob"),
+            provider_adapters={"anthropic": _FakeAdapter(available=True)}, subprocess_runner=runner,
+        )
+        result = engine.run()
+        assert result.all_terminal is True
+        assert result.work_items[0].status == "completed"
+        assert not (tmp_path / "workers.yaml").exists()
+
+
+class TestEngineLibraryBoundaryIntegration:
+    """§11: one offline integration test proving a caller can build its
+    own WorkerRegistry + its own typed project plan (``ProjectConfig``'s
+    own plain constructor — never a second, parallel "plan" type, REUSE
+    FIRST) and open a valid OrchestratorEngine runtime from them, without
+    ``aido.yaml``/``workers.yaml`` ever being read from disk."""
+
+    def test_registry_and_plan_built_entirely_in_python_produce_a_valid_runtime(
+        self, tmp_path: Path,
+    ) -> None:
+        workspace = tmp_path / "proj"
+        _init_git_repo(workspace)
+        state_dir = tmp_path / "state"
+
+        config = ProjectConfig(
+            schema_version=1,
+            project=ProjectIdentity(id="demo", name="Demo", workspace=workspace, state_dir=state_dir),
+            execution=ExecutionConfig(permission_mode=ExecutionPermissionMode.STANDARD),
+            git=GitConfig(base_branch="main"),
+            mvp=MVPConfig(id="mvp-1", objective="Ship it", acceptance_criteria=()),
+            work_items=(
+                WorkItemConfig(
+                    id="wi-1", title="Do the thing", required_capabilities=("development",),
+                    dependencies=(), acceptance_criteria=(),
+                ),
+            ),
+            qa_commands=(
+                ValidationCommand(
+                    validation_id="qa-1", kind=ValidationKind.UNIT_TEST,
+                    argv=(sys.executable, "-c", "pass"), timeout_seconds=300.0, required=True,
+                ),
+            ),
+            source_path=tmp_path / "in-memory-plan",
+        )
+        assert config.workers_registry_path is None
+
+        registry = _worker_registry("alice", "bob")
+        runner = _ScriptedRalphRunner(
+            [
+                {"topic": "work.completed", "mutate": _commit_action("feature.py", "x = 1\n", "DEV A")},
+                {"topic": "work.completed"},
+            ]
+        )
+        engine = OrchestratorEngine(
+            config, worker_registry=registry,
+            provider_adapters={"anthropic": _FakeAdapter(available=True)}, subprocess_runner=runner,
+        )
+
+        snapshot = engine.validate()
+        assert snapshot.project_id == "demo"
+        assert snapshot.enabled_worker_count == 2
+
+        result = engine.run()
+        assert result.all_terminal is True
+        assert result.work_items[0].status == "completed"
+        assert not (tmp_path / "workers.yaml").exists()
+        assert not (tmp_path / "aido.yaml").exists()
