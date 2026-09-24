@@ -1,6 +1,6 @@
 # Status
 
-Snapshot factuel court — mis à jour le 2026-09-23. Pas un journal ;
+Snapshot factuel court — mis à jour le 2026-09-24. Pas un journal ;
 l'historique détaillé daté (Slices, incidents, diagnostics) vit dans
 l'historique Git (`git log`) et dans les rapports sous `docs/reports/`.
 Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
@@ -21,10 +21,10 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   (deepseek/kimi via `claude_code` redirigé, `development` uniquement,
   **`enabled: false`**, clé API requise, pas encore de preuve
   d'exécution réelle ; voir `ROADMAP.md` §7/§13).
-- **Tests offline** : ~1260 PASS as of 2026-09-23 (snapshot, not a
-  contract — see `pytest -q`'s own real count for the current figure;
-  history/breakdown by change lives in `ROADMAP.md` §13 and `git log`,
-  not duplicated here).
+- **Tests offline** : 1290 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
+  2026-09-24), 1 avertissement de collecte préexistant
+  (`TestChangeAuthorization`). Snapshot, pas un contrat ; le compte
+  courant fait foi dans la sortie de `pytest -q`.
 - **Roman Numerals** (pilote externe) : `PASS`.
 - **Mistral / Vibe** : ✅ `VALIDATED`.
 - **Morpion Web 3D** (pilote externe) : `DONE`. SHA final :
@@ -35,6 +35,13 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
 - **P1** (CLI publique `aido init/validate/run/status`) : `DONE` — plus
   besoin de harnais Python pour l'usage normal ; `aido run` est aussi la
   reprise. Cycle productisation/onboarding terminé.
+- **P1.1 (guided project bootstrap / onboarding)** : `DONE` (2026-09-24).
+  `aido init <parent-path> <project-name>` crée les quatre fichiers projet,
+  initialise Git sur `main` et commite ; Git absent/en échec conserve le
+  scaffold avec instructions de reprise et exit non nul. Mode historique
+  conservé, aucun provider/runtime lancé. Test manuel réel : bootstrap,
+  commit, working tree propre et `aido validate` OK. Voir `ROADMAP.md` §13
+  et `docs/PROJECT_CONFIG.md`.
 - **Développement actif** : aucun.
 - **5 providers implémentés, 3 validés, 2 en attente de validation réelle** :
   Anthropic/OpenAI/Mistral `VALIDATED` ; DeepSeek/Kimi `IMPLEMENTED — REAL

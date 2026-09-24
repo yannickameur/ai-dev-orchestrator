@@ -48,6 +48,8 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   d'exécution des workers) : `DONE`**, voir §10 et `docs/PROJECT_CONFIG.md`.
   **P1 (CLI publique `aido`) : `DONE`** (`aido init/validate/run/status`,
   voir §10). Cycle productisation/onboarding terminé.
+  **P1.1 (guided project bootstrap / onboarding) : `DONE`** (2026-09-24),
+  extension locale de `aido init`, voir §13.
 - **P3 (DeepSeek + Kimi comme providers de premier niveau) :
   `IMPLEMENTED` (2026-09-19), validation réelle `PENDING`**, voir §7 et
   §13. **P4 (étude Mammouth) : `RETIRÉ`** : étude menée, agrégateur jugé
@@ -119,6 +121,9 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - CLI publique `aido` (P1) — `aido init/validate/run/status`, plus besoin
   de harnais Python pour l'usage normal. `run` est aussi la reprise (pas
   de commande `resume` séparée). Voir §10 pour le détail complet.
+- Bootstrap projet guidé (P1.1) — `aido init <parent-path> <project-name>` :
+  README/ROADMAP/configuration/Git local, onboarding et reprise manuelle si
+  Git manque ou échoue. Mode historique conservé ; aucune exécution IA.
 - Façade moteur publique `orchestrator.engine.OrchestratorEngine` (P13) —
   `.open()`/`.validate()`/`.status()`/`.workers()`/`.probe_workers()`/
   `.run()`/`.close()`, masquant `ProjectRuntime`/`MVPManager`/
@@ -416,7 +421,9 @@ explicitement par un appelant :
 - **CLI publique `aido`** (`src/orchestrator/cli.py`, P1, point d'entrée
   `[project.scripts]`) — `aido init/validate/run/status`. C'est
   maintenant le point d'entrée produit normal (plus besoin de harnais
-  Python) ; seul `aido run` provoque un appel provider réel ou une
+  Python). P1.1 étend `init` avec le bootstrap projet complet et guidé
+  (`aido init <parent-path> <project-name>`), en conservant le mode
+  config seul historique (voir §13 et `docs/PROJECT_CONFIG.md`) ; seul `aido run` provoque un appel provider réel ou une
   exécution Ralph — `init`/`validate`/`status` en sont exclus par
   construction. `aido run` est aussi l'opération de reprise : aucune
   commande `aido resume` séparée n'existe — relancer `aido run` contre le
@@ -477,6 +484,8 @@ Jalons majeurs seulement — pas de journal Slice par Slice :
   workers project-controlled — implémenté (2026-09-19).
 - P1 — CLI publique `aido` (`init`/`validate`/`run`/`status`) —
   implémenté, cycle productisation/onboarding `DONE` (2026-09-19).
+- P1.1 — bootstrap projet guidé dans le `aido init` existant, Git local et
+  reprise manuelle en cas d’échec, compatibilité préservée (2026-09-24).
 - P4 (étude Mammouth) menée puis close `RETIRÉ` : agrégateur jugé d'intérêt
   économique/architectural insuffisant face à l'intégration directe de
   providers (décision utilisateur, 2026-09-19).
@@ -543,6 +552,30 @@ mainteneur — **implémenté**, voir ci-dessous.
   scénario complet DEV A → DEV B → QA déterministe → merge gouverné →
   `COMPLETED`, une reprise multi-process après `WAITING`, et la preuve
   qu'aucun appel provider ne se produit pour `init`/`validate`/`status`.
+
+### P1.1 — Guided project bootstrap / onboarding — `DONE` (2026-09-24)
+
+Extension explicitement approuvée de P1, dans la CLI `aido` existante
+(ai-dev-orchestrator, aucun changement dans AIDO Code).
+`aido init <parent-path> <project-name>` crée README, ROADMAP, `aido.yaml`
+et `.gitignore`, puis un dépôt Git sur `main` avec le commit
+`Initialize AIDO project`. Répertoire absent ou vide seulement ; noms
+contenant un chemin et cibles symlink refusés. Zéro ou un argument conserve
+la génération historique du seul fichier de configuration.
+
+La génération de configuration et le registry utilisateur existants sont
+réutilisés. README porte le contexte humain, ROADMAP la trajectoire produit,
+`aido.yaml` le MVP exécutable ; aucune synchronisation automatique.
+Aucun provider, probe, worker, Ralph, état métier, remote ou push pendant
+init. Git absent/en échec : scaffold conservé, code non nul, étape en échec
+et commandes de reprise affichées, puis onboarding édition/validation/
+commit de définition/run explicite. Aucun lancement de M2.
+
+**Validation** : suite offline complète verte ; tests CLI avec vrais dépôts
+Git temporaires, erreurs Git simulées, sécurité des chemins, compatibilité
+et garde contre la construction du runtime/résolution provider. Bootstrap
+manuel via le binaire `aido` : branche `main`, commit initial exact, working
+tree propre, `aido validate` OK. Compte courant dans `docs/status.md`.
 
 ### P3 — DeepSeek + Kimi — implémentation `DONE`, validation réelle `PENDING` (2026-09-19)
 
@@ -1270,6 +1303,7 @@ le détail) :
 | ID | Proposition | Valeur / question à trancher | Statut |
 |----|-------------|------------------------------|--------|
 | P1 | CLI / productisation | Le projet doit-il exposer une CLI publique pour qu'un utilisateur n'ait plus besoin d'un harnais Python ? | **`DONE` — voir §3/§10, `README.md`** |
+| P1.1 | Guided project bootstrap / onboarding | Créer un projet local complet et guider son premier usage avec le `aido init` existant | **`DONE` (2026-09-24), extension de P1 — voir §13 et `docs/PROJECT_CONFIG.md`** |
 | P2 | Ollama / provider local | Un provider gratuit/local est-il assez utile pour justifier un adaptateur ? | À VOTER |
 | P3 | Providers supplémentaires | Quels autres providers devraient rejoindre le pool ? Étendu par décision utilisateur explicite (2026-09-19) au-delà du cadre d'origine « coût marginal nul » : DeepSeek (facturé à la consommation) et Kimi (abonnement Kimi Code) | **Implémentation `DONE`, validation réelle `PENDING` (2026-09-19) : DeepSeek + Kimi, voir §7 et la sous-section P3 ci-dessus** |
 | P4 | Étude build-vs-reuse Mammouth AI | Offre-t-il des capacités multi-provider utiles à réutiliser plutôt qu'à construire ? | **`RETIRÉ` (2026-09-19)** : étude menée, agrégateur jugé d'intérêt économique/architectural insuffisant face à l'intégration directe ; décision terminée, pas un report ; DeepSeek/Kimi (P3) intégrés directement sur cette base ; aucune dépendance gateway/agrégateur multi-modèles |
@@ -1294,7 +1328,7 @@ Les propositions encore `À VOTER` restent non planifiées ; aucun ordre entre
 elles n'est impliqué. La prochaine étape pour celles-ci, si l'utilisateur le
 décide, est un vote explicite proposition par proposition, pas une
 sélection automatique par cette session ni une future session. P12, P1,
-P13 et P13.4 sont `DONE`. P3 est `IMPLEMENTED`, validation réelle
+P1.1, P13 et P13.4 sont `DONE`. P3 est `IMPLEMENTED`, validation réelle
 `PENDING`. P14 est `APPROUVÉ — APRÈS P13`, sans WorkItem d'implémentation
 créé à ce jour. P15 est `APPROUVÉ POUR ÉTUDE`, P16 `APPROUVÉ POUR REVUE`
 — ni l'un ni l'autre n'est implémenté, ni ne bloque M2. P4 est `RETIRÉ` :
