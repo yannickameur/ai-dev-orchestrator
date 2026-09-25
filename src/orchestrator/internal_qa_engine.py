@@ -1,10 +1,23 @@
 """InternalQAEngine — the first real ``QAEngine`` implementation (Slice 23).
 
-Python/pytest only, and honestly scoped as such: this MVP never claims to
-support JavaScript/Java/mobile/browser/Playwright/BrowserStack/TestSprite/
-Momentic. A project with none of ``pyproject.toml``/``pytest.ini``/
-``setup.cfg``/``tox.ini`` is an unsupported stack — the engine never
-attempts a command, and the run resolves to ``INCONCLUSIVE`` (never
+Stack-agnostic for explicitly configured QA (P13.8): a project's own
+``qa:`` commands (``ValidationCommand`` — ``unit_test``/
+``integration_test``/``lint``/``typecheck``/``build``/``smoke``/
+``custom``) always run through ``QualityGateRunner``, exactly like any
+Python command, regardless of workspace stack — ``["bundle", "exec",
+"rspec", ...]``, ``["yarn", "jest", ...]``, ``["curl", ...]``, ``["git",
+"diff", "--check"]`` are all just an argv this engine executes the same
+way. This module never learns Ruby/Node/Rails/Vue/REST/browser itself —
+it only ever calls whatever ``argv`` the project's own configuration
+declared.
+
+Only *automatic* pytest command construction (Part Q's deterministic
+test-impact fallback, below) stays honestly Python/pytest-only: a
+project with none of ``pyproject.toml``/``pytest.ini``/``setup.cfg``/
+``tox.ini`` never gets a fabricated ``python -m pytest ...`` command,
+but its own explicitly configured commands still run. A workspace with
+neither a recognized Python stack nor any configured QA command has
+truly nothing to execute — the run resolves to ``INCONCLUSIVE`` (never
 ``PASS``, never silently skipped).
 
 THIN BY DESIGN — never a second implementation of what already exists:
@@ -134,11 +147,14 @@ class InternalQAEngineError(Exception):
 
 
 class UnsupportedStackError(InternalQAEngineError):
-    """No Python/pytest marker file found in the workspace — this MVP is
-    Python/pytest only, honestly. Never attempted as a command; the
-    caller (``run_qa_cycle``) turns this into a ``FAILED`` run, which
-    ``evaluate_qa_verdict`` already maps to ``INCONCLUSIVE`` — never a
-    silent ``PASS``."""
+    """No Python/pytest marker file found in the workspace — kept only as
+    ``stack_supported()``'s own domain error for a caller that explicitly
+    wants to know "can this engine auto-build pytest commands here?".
+    Since P13.8, this is never raised by ``run_async()``/
+    ``run_final_verification()`` themselves: a workspace with no Python
+    stack but a real, explicitly configured QA command still runs that
+    command through ``QualityGateRunner`` exactly like any other. See
+    ``NoEvidenceAvailableError`` for the actual "nothing to run" signal."""
 
     def __init__(self, workspace: Path) -> None:
         super().__init__(f"no Python/pytest stack marker found under {workspace}")
@@ -277,6 +293,11 @@ class InternalQAEngine:
     # -- stack detection ---------------------------------------------------
 
     def stack_supported(self, workspace: str | Path) -> bool:
+        """Answers exactly one question: can this engine auto-build
+        ``python -m pytest ...`` commands for this workspace? (P13.8 —
+        never "is this workspace allowed to run QA at all": an explicitly
+        configured ``ValidationCommand`` always runs regardless of this
+        result; see ``build_plan()``.)"""
         workspace = Path(workspace)
         return any((workspace / name).is_file() for name in _PYTEST_STACK_MARKERS)
 
@@ -306,16 +327,22 @@ class InternalQAEngine:
         flaky_selected = tuple(t for t in selected_tests if t in flaky_ids)
         normal_selected = tuple(t for t in selected_tests if t not in flaky_ids)
 
+        # P13.8: automatic pytest command construction stays honestly
+        # Python/pytest-only — never fabricated for a workspace
+        # `stack_supported()` doesn't recognize. An explicitly configured
+        # `ValidationCommand` (below, `regression_commands`) is entirely
+        # unaffected by this gate and always runs.
+        pytest_stack = self.stack_supported(workspace)
         targeted_commands: list[ValidationCommand] = []
         flaky_by_validation_id: dict[str, KnownFlakyEntry] = {}
-        if normal_selected:
+        if pytest_stack and normal_selected:
             targeted_commands.append(
                 ValidationCommand(
                     validation_id="qa-targeted-pytest", kind=ValidationKind.UNIT_TEST,
                     argv=(sys.executable, "-m", "pytest", "-q", *normal_selected), required=True,
                 )
             )
-        for test_id in flaky_selected:
+        for test_id in (flaky_selected if pytest_stack else ()):
             entry = next(e for e in knowledge_base.known_flaky if e.test_id == test_id)
             vid = f"qa-flaky-{len(targeted_commands)}"
             targeted_commands.append(
@@ -329,10 +356,14 @@ class InternalQAEngine:
         regression_commands: tuple[ValidationCommand, ...] = ()
         if phase is QAPhase.FINAL_VERIFICATION:
             regression_commands = self._validation_store.get_project_commands(request.project_id)
-        elif not selected_tests:
-            # Part Q fallback: nothing selected but QA is presumably
-            # required — fall back to the project's configured
-            # regression suite if one exists.
+        elif not selected_tests or not pytest_stack:
+            # Part Q fallback: nothing selected (or selected but this
+            # workspace can't run it as pytest — P13.8: .qa/ knowledge is
+            # stack-agnostic path matching, so a non-Python workspace can
+            # still "select" a test id with no pytest command ever built
+            # for it, see the pytest_stack gate above) but QA is
+            # presumably required — fall back to the project's
+            # configured regression suite if one exists.
             regression_commands = self._validation_store.get_project_commands(request.project_id)
 
         return InternalQAPlan(
@@ -370,10 +401,15 @@ class InternalQAEngine:
         provider-independent caller (``MVPManager``) reach the read-only
         Final Verification path through the single Protocol method,
         without ever needing engine-specific knowledge of
-        ``run_final_verification``."""
-        workspace = Path(request.workspace)
-        if not self.stack_supported(workspace):
-            raise UnsupportedStackError(workspace)
+        ``run_final_verification``.
+
+        P13.8: never gated on ``stack_supported()`` — a workspace with no
+        recognized Python stack still runs its own explicitly configured
+        QA commands (``build_plan()``'s ``regression_commands``) exactly
+        like any other. ``NoEvidenceAvailableError`` (raised deeper, in
+        ``_execute_plan``/``run_final_verification``) is the actual
+        "nothing to run" signal, never this method deciding upfront that
+        an unrecognized stack may not even try."""
         if request.phase is QAPhase.FINAL_VERIFICATION:
             result, read_only_violation, read_only_unprovable = await self.run_final_verification(request, plan=plan)
             return replace(
@@ -388,10 +424,11 @@ class InternalQAEngine:
         """Read-only Final Verification — reuses
         ``qa.run_final_verification_gate`` verbatim (Slice 21.5's
         ``verify_repository_unchanged``). Returns
-        ``(result, read_only_violation, read_only_unprovable)``."""
+        ``(result, read_only_violation, read_only_unprovable)``.
+
+        P13.8: never gated on ``stack_supported()`` — see ``run_async()``'s
+        own docstring for why."""
         workspace = Path(request.workspace)
-        if not self.stack_supported(workspace):
-            raise UnsupportedStackError(workspace)
         plan = plan or self.build_plan(request, phase=QAPhase.FINAL_VERIFICATION)
         commands = (*plan.targeted_commands, *plan.regression_commands, *plan.static_checks)
         if not commands:
