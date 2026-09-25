@@ -530,9 +530,17 @@ class MVPManager:
         On rework (a previous QA FAIL that still has attempts left):
         ``DEV FIX -> QA`` directly, never a second DEV B review. On a
         fresh attempt: ``DEV A -> DEV B corrective review -> QA``.
+
+        P13.7: every pre-execution prerequisite that can fail closed
+        (workspace lookup, Git preparation, profile resolution) runs
+        *before* this WorkItem/its MVP are marked RUNNING — never after.
+        A prerequisite failure here must leave the WorkItem exactly in
+        its prior state (READY/NEEDS_REWORK/RECOVERY_REQUIRED, whichever
+        the caller passed in), never a RUNNING WorkItem with zero
+        ExecutionRecord for `RecoveryCoordinator` to reconcile against
+        (see `ROADMAP.md`, P13.7, and the real WI-M8-01 case in
+        AIDO Code's own `ROADMAP.md` that revealed this).
         """
-        self._project_state_store.mark_mvp_running(mvp_id)
-        work_item = self._project_state_store.mark_work_item_running(work_item.work_item_id)
         project = self._project_state_store.get_project(mvp.project_id)
 
         base_sha: str | None = None
@@ -547,6 +555,11 @@ class MVPManager:
         if dev_model is None:
             dev_profile = dev_worker.profile()
             dev_model, dev_reasoning_effort = dev_profile.model, dev_profile.reasoning_effort
+
+        # Every prerequisite above succeeded — this attempt genuinely
+        # begins only now.
+        self._project_state_store.mark_mvp_running(mvp_id)
+        work_item = self._project_state_store.mark_work_item_running(work_item.work_item_id)
 
         if is_rework:
             latest_handoff = self._handoff_store.latest_for_work_item(work_item.work_item_id)
@@ -655,7 +668,16 @@ class MVPManager:
         """Resumes a DEV_B_REVIEW wait — DEV A already succeeded before
         this wait was ever recorded, so resuming re-enters RUNNING
         directly (never READY) and re-selects DEV B; DEV A is never
-        re-run."""
+        re-run.
+
+        P13.7: the wait is resolved and the WorkItem marked RUNNING only
+        after ``_reconcile_governed_head`` succeeds — that call is
+        fail-closed (``GitHeadDriftError``) and, unlike ``prepare_work_item``
+        earlier in ``_execute_work_item``, DEV A's own prior
+        ``ExecutionRecord`` already exists here, so ``RecoveryCoordinator``
+        would see it as already-terminal (SUCCEEDED) and do nothing — a
+        WorkItem marked RUNNING before this call could fail can orphan
+        exactly like the real WI-M8-01 case (see ``ROADMAP.md``, P13.7)."""
         handoff = self._handoff_store.latest_for_work_item(work_item.work_item_id)
         if handoff is None:
             self._wait_coordinator.resolve(due.wait_id, resolution="gave up: no recovery handoff available")
@@ -676,14 +698,20 @@ class MVPManager:
                 due=due, diagnostics=exc.diagnostics,
             )
 
-        self._wait_coordinator.resolve(
-            due.wait_id, resolution=f"resumed with DEV B worker {dev_b_worker.worker_id!r}"
-        )
-        work_item = self._project_state_store.mark_work_item_running(work_item.work_item_id)
         base_sha = handoff.git_sha_after
         if self._git_governance_service is not None:
             record = self._reconcile_governed_head(work_item.work_item_id, project.workspace)
             base_sha = record.base_sha
+
+        # Reconciliation succeeded — only now does this resume attempt
+        # actually begin (and only now is the wait consumed): a failure
+        # above leaves both the wait and the WorkItem's own WAITING
+        # status untouched, so the exact same resume is retried cleanly
+        # next time, never orphaned.
+        self._wait_coordinator.resolve(
+            due.wait_id, resolution=f"resumed with DEV B worker {dev_b_worker.worker_id!r}"
+        )
+        work_item = self._project_state_store.mark_work_item_running(work_item.work_item_id)
         return await self._run_dev_b_onward(
             project=project, mvp_id=mvp_id, work_item=work_item, dev_a_worker_id=handoff.worker_id,
             dev_b_worker=dev_b_worker, head_after_a=handoff.git_sha_after, base_sha=base_sha,

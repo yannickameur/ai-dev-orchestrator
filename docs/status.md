@@ -1,6 +1,6 @@
 # Status
 
-Snapshot factuel court — mis à jour le 2026-09-24 (P13.6). Pas un journal ;
+Snapshot factuel court — mis à jour le 2026-09-25 (P13.7). Pas un journal ;
 l'historique détaillé daté (Slices, incidents, diagnostics) vit dans
 l'historique Git (`git log`) et dans les rapports sous `docs/reports/`.
 Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
@@ -21,8 +21,8 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   (deepseek/kimi via `claude_code` redirigé, `development` uniquement,
   **`enabled: false`**, clé API requise, pas encore de preuve
   d'exécution réelle ; voir `ROADMAP.md` §7/§13).
-- **Tests offline** : 1306 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
-  2026-09-24), 1 avertissement de collecte préexistant
+- **Tests offline** : 1310 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
+  2026-09-25), 1 avertissement de collecte préexistant
   (`TestChangeAuthorization`). Snapshot, pas un contrat ; le compte
   courant fait foi dans la sortie de `pytest -q`.
 - **Roman Numerals** (pilote externe) : `PASS`.
@@ -107,6 +107,14 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   (tests, développement dual-repo), jamais supprimés. Aucun binaire de
   compatibilité ajouté (YAGNI). Voir `ROADMAP.md` §13, sous-section
   P13.6.
+- **P13.7 (pre-execution state safety)** : `DONE` (2026-09-25). Défaut
+  réel révélé par le cutover M8 d'AIDO Code (`WI-M8-01` resté `RUNNING`
+  durablement, sans `ExecutionRecord`) corrigé : `mark_mvp_running`/
+  `mark_work_item_running` déplacés après tous les prérequis
+  pré-exécution dans `_execute_work_item` et `_resume_dev_b_wait` (deux
+  sites réels). Invariant de recovery existant inchangé ; `WI-M8-01` non
+  modifié rétroactivement (YAGNI). Voir `ROADMAP.md` §13, sous-section
+  P13.7.
 
 ## Historique synthétique
 
