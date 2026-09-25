@@ -1,6 +1,6 @@
 # Status
 
-Snapshot factuel court — mis à jour le 2026-09-24 (P13.5). Pas un journal ;
+Snapshot factuel court — mis à jour le 2026-09-24 (P13.6). Pas un journal ;
 l'historique détaillé daté (Slices, incidents, diagnostics) vit dans
 l'historique Git (`git log`) et dans les rapports sous `docs/reports/`.
 Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
@@ -99,6 +99,14 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   conservé et testé ; CLI `aido` documentée comme surface legacy/
   transitoire. Voir `ROADMAP.md` §13, sous-section P13.5, et
   `docs/PROJECT_CONFIG.md`, "Engine/library boundary".
+- **P13.6 (retrait de la commande produit `aido`, cutover AIDO Code)** :
+  `DONE` (2026-09-24). `ai-dev-orchestrator` n'installe plus aucune
+  commande console (`[project.scripts]` retiré de `pyproject.toml`) ;
+  AIDO Code en devient l'unique propriétaire. `orchestrator.cli`/
+  `default_workers.yaml` restent dans le code source, legacy/internes
+  (tests, développement dual-repo), jamais supprimés. Aucun binaire de
+  compatibilité ajouté (YAGNI). Voir `ROADMAP.md` §13, sous-section
+  P13.6.
 
 ## Historique synthétique
 

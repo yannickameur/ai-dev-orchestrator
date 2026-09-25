@@ -35,13 +35,16 @@ Only ``aido run`` ever causes a real provider probe or worker execution.
 none of them ever call ``ProjectRuntime.open()`` and ``bootstrap()``
 followed by ``MVPManager.run_next_work_item(...)``.
 
-LEGACY/TRANSITIONAL SURFACE: this CLI is ``ai-dev-orchestrator``'s own
-historical product surface, kept working for existing users/tests, but it
-is not this project's product going forward — ``ai-dev-orchestrator`` is
-now positioned as an engine/library an embedding application (AIDO Code)
-drives through ``orchestrator.engine.OrchestratorEngine`` instead (see
-ROADMAP.md, "engine/library boundary"). This module is never extended
-with new product-facing responsibility; it still relies on the legacy,
+LEGACY/INTERNAL SURFACE — NO LONGER INSTALLED: this CLI is
+``ai-dev-orchestrator``'s own historical product surface. Since the
+product cutover (AIDO Code now owns the ``aido`` console script — see
+``README.md``, "engine/library boundary"), this distribution's own
+``pyproject.toml`` no longer declares any ``[project.scripts]`` entry
+point at all: ``aido`` is never installed by ``pip install
+ai-dev-orchestrator`` alone. This module stays importable only for
+existing internal tests/compatibility (``cli.main(argv)`` called
+directly, never a real ``aido`` subprocess) — it is never extended with
+new product-facing responsibility, and it still relies on the legacy,
 file-based ``workers.registry`` reading every ``aido.yaml`` it loads
 (``ProjectConfig.load_worker_registry()``) — the modern engine API does
 not require this and instead expects an injected ``WorkerRegistry``

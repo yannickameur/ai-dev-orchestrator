@@ -2,7 +2,15 @@
 
 Guards against regressions in WI: rename the PyPI distribution name away
 from the third-party-owned "orchestrator" while keeping the importable
-package name ("orchestrator") and the "aido" console script unchanged.
+package name ("orchestrator") unchanged.
+
+Since the engine/library boundary (P13.5) and AIDO Code's own product
+cutover (that project's M1.4/M8), this distribution no longer installs
+the "aido" console script itself — AIDO Code is now its sole owner (see
+``README.md``/``ROADMAP.md``, "engine/library boundary"). The legacy
+``orchestrator.cli`` module remains importable (existing tests still
+call ``cli.main()`` directly), it is simply never installed as a
+console script by a normal ``pip install ai-dev-orchestrator``.
 """
 
 from __future__ import annotations
@@ -43,9 +51,12 @@ def test_no_dependency_on_third_party_orchestrator_package():
         )
 
 
-def test_console_script_still_maps_to_orchestrator_cli():
+def test_no_product_console_script_declared():
+    """AIDO Code, not this engine, owns the ``aido`` console script — a
+    normal ``pip install ai-dev-orchestrator`` must never re-claim it."""
     text = _pyproject_text()
-    assert re.search(r'(?m)^aido\s*=\s*"orchestrator\.cli:main"\s*$', text)
+    assert "[project.scripts]" not in text
+    assert not re.search(r'(?m)^aido\s*=', text)
 
 
 @pytest.fixture(scope="module")
@@ -73,10 +84,11 @@ def test_wheel_builds_with_correct_metadata(built_wheel):
         metadata_name = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
         metadata = z.read(metadata_name).decode()
 
-        entry_points_name = next(
-            n for n in z.namelist() if n.endswith(".dist-info/entry_points.txt")
-        )
-        entry_points = z.read(entry_points_name).decode()
+        # No console script is declared any more (AIDO Code owns "aido") —
+        # the wheel may omit entry_points.txt entirely, or ship an empty
+        # one; either way "aido" itself must never appear in it.
+        entry_points_names = [n for n in z.namelist() if n.endswith(".dist-info/entry_points.txt")]
+        entry_points = z.read(entry_points_names[0]).decode() if entry_points_names else ""
 
     assert "Name: ai-dev-orchestrator" in metadata
     assert "Version: 0.1.3" in metadata
@@ -84,7 +96,7 @@ def test_wheel_builds_with_correct_metadata(built_wheel):
         if line.startswith("Requires-Dist:"):
             assert not line[len("Requires-Dist:") :].strip().lower().startswith("orchestrator")
 
-    assert "aido = orchestrator.cli:main" in entry_points
+    assert "aido" not in entry_points
 
 
 def test_wheel_import_path_unchanged(built_wheel, tmp_path):
