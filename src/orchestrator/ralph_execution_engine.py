@@ -251,18 +251,33 @@ def _claude_code_permission_args(mode: ExecutionPermissionMode) -> list[str]:
 
 
 def _codex_permission_args(mode: ExecutionPermissionMode) -> list[str]:
-    # VERIFIED via `codex --help` (codex-cli 0.155.0). Codex has no
-    # "deny automatically" equivalent to Claude's `--permission-prompts
-    # none` — its own real, deterministic non-hanging mechanism is
-    # `--ask-for-approval never` (no interactive escalation; a denied
-    # action is "immediately returned to the model" rather than paused)
-    # combined with `--sandbox workspace-write` (still restrictive —
-    # never `danger-full-access`) for STANDARD.
+    # RE-VERIFIED via `codex exec --help` (codex-cli 0.157.0) after a
+    # real governed run's real DEV B execution (worker "victor",
+    # provider openai/codex) failed closed with exit code 2 in ~10ms —
+    # `codex exec --ask-for-approval <...>` itself rejects that flag as
+    # an unrecognized argument ("error: unexpected argument
+    # '--ask-for-approval' found"), reproduced directly and via a
+    # standalone `ralph run` with this exact backend config, entirely
+    # outside this project. `--ask-for-approval` still exists on the
+    # top-level, interactive `codex` command (where the original
+    # 0.155.0-era verification below was actually run against) but was
+    # removed from the non-interactive `exec` subcommand this backend
+    # always uses — a real upstream CLI change, not merely a local
+    # config issue.
+    #
+    # `codex exec` never has an interactive user to prompt in the first
+    # place, so the flag was already redundant for it, never load-
+    # bearing for STANDARD's own restriction: `--sandbox workspace-write`
+    # alone (verified directly: a command genuinely executes, no hang,
+    # no prompt) is what actually keeps STANDARD non-`danger-full-access`
+    # — dropping the rejected flag changes no real permission semantics.
+    #
     # UNRESTRICTED: `--dangerously-bypass-approvals-and-sandbox` — the
     # single dedicated bypass flag ("Skip all confirmation prompts and
-    # execute commands without sandboxing").
+    # execute commands without sandboxing") — still accepted by `codex
+    # exec` in 0.157.0, unaffected by this fix.
     if mode is ExecutionPermissionMode.STANDARD:
-        return ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
+        return ["--sandbox", "workspace-write"]
     if mode is ExecutionPermissionMode.UNRESTRICTED:
         return ["--dangerously-bypass-approvals-and-sandbox"]
     raise UnsupportedPermissionModeError("codex", mode)
