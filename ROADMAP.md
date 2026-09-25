@@ -70,6 +70,11 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   possède plus obligatoirement le pool de workers ; `OrchestratorEngine`/
   `ProjectRuntime` acceptent un `WorkerRegistry` injecté par l'appelant,
   chemin legacy fichier intégralement conservé.
+- **P13.6 (retrait de la commande produit `aido`, cutover AIDO Code) :
+  `DONE`** (2026-09-24), voir §13. `ai-dev-orchestrator` n'installe plus
+  aucune commande console ; AIDO Code devient l'unique propriétaire de
+  `aido` ; `orchestrator.cli`/`default_workers.yaml` restent dans le code
+  source, legacy/internes, jamais supprimés.
 - **P13.4 (remédiation post-audit externe) : `DONE`** (2026-09-23), voir
   §13. 8/11 findings corrigés (dont le seul HIGH : protection de tests
   réellement câblée dans `aido run`), 2 documentés/différés (YAGNI), 1
@@ -127,9 +132,15 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   `aido.yaml` sans section `workers:` est un `ProjectConfig` moderne
   valide dont le `WorkerRegistry` est fourni à l'exécution par
   l'application appelante (§10, P13.5) — jamais requis pour l'API moteur.
-- CLI publique `aido` (P1) — `aido init/validate/run/status`, plus besoin
-  de harnais Python pour l'usage normal. `run` est aussi la reprise (pas
-  de commande `resume` séparée). Voir §10 pour le détail complet.
+- CLI historique `orchestrator.cli` (P1, `init`/`validate`/`run`/`status`)
+  — **`aido init/validate/run/status`, plus besoin de harnais Python pour
+  l'usage normal**, restent la description exacte de ce que P1 a
+  construit et prouvé ; `run` est aussi la reprise (pas de commande
+  `resume` séparée). **Depuis P13.6, cette commande n'est plus installée
+  par `ai-dev-orchestrator`** — AIDO Code (`aido`) en est l'unique
+  propriétaire produit ; ce module reste importable, legacy/interne
+  uniquement (tests, développement dual-repo). Voir §10/§13 (P13.6) pour
+  le détail complet.
 - Bootstrap projet guidé (P1.1) — `aido init <parent-path> <project-name>` :
   README/ROADMAP/configuration/Git local, onboarding et reprise manuelle si
   Git manque ou échoue. Mode historique conservé ; aucune exécution IA.
@@ -1124,6 +1135,57 @@ déplacement du `WorkerRegistry`/`WorkerSelector`/`QuotaManager`/
 `RalphExecutionEngine`/`MVPManager`/QA déterministe/`GitGovernanceService`
 hors d'`ai-dev-orchestrator`.
 
+### P13.6 — Retrait de la commande produit `aido` (cutover AIDO Code) — `DONE` (2026-09-24)
+
+**Décision produit** : conclusion directe de P13/P13.5 — jamais une
+nouvelle architecture. AIDO Code a atteint son propre cutover produit
+(M1.4, puis M8 conclu par ce même changement côté AIDO Code) et devient
+l'unique propriétaire de la commande utilisateur `aido`.
+`ai-dev-orchestrator` cesse en conséquence d'installer cette commande :
+il n'a plus jamais été qu'un moteur/librairie, et n'a désormais plus
+aucune raison de revendiquer une surface CLI produit.
+
+**Changement (minimal, YAGNI)** :
+
+- `pyproject.toml` : la section `[project.scripts]` (`aido =
+  "orchestrator.cli:main"`) est **retirée intégralement** — un `pip
+  install ai-dev-orchestrator` seul n'installe plus aucune commande
+  console.
+- `orchestrator.cli` **reste dans le code source, importable** :
+  utilisé directement par ses propres tests (`cli.main(argv)`, jamais un
+  vrai sous-processus `aido`) et par le workflow de développement dual-
+  repo déjà documenté (checkout sibling, `python -m orchestrator.cli
+  ...`). Son docstring de module documente explicitement ce nouveau
+  statut « legacy/internal — no longer installed ».
+- `orchestrator/resources/default_workers.yaml` : **conservé**, toujours
+  réellement consommé par `orchestrator.cli`'s propre chemin `init`
+  legacy et ses tests (`tests/test_default_worker_registry.py`) — aucun
+  ménage spéculatif ; documentation renforcée (« reachable only via a
+  direct Python import, never a real end-user command »).
+- Aucun nouveau binaire de compatibilité (`aido-engine`/`aido-legacy`,
+  etc.) n'est ajouté — YAGNI, rien ne le justifie aujourd'hui.
+- `README.md` : nouvelle section « CLI historique `orchestrator.cli`
+  (legacy, interne) » remplaçant l'ancienne présentation « CLI `aido`
+  (P1) » comme point d'entrée produit ; pointe désormais explicitement
+  vers AIDO Code pour l'usage produit réel.
+
+**Tests** (`tests/test_packaging.py`, `tests/test_cli.py`) :
+`test_no_product_console_script_declared` (remplace l'ancienne
+assertion positive sur la ligne d'entry point) prouve l'absence de
+`[project.scripts]`/de toute déclaration `aido = ...` dans
+`pyproject.toml` ; `test_wheel_builds_with_correct_metadata` prouve
+qu'aucun wheel construit ne contient plus `aido` dans son
+`entry_points.txt` (fichier absent ou présent-mais-sans-`aido`, les deux
+acceptés) ; `test_legacy_cli_main_stays_importable_and_callable`
+(remplace `test_pyproject_entry_point_matches_real_main`) prouve que
+`orchestrator.cli.main` reste un callable Python valide malgré le
+retrait de l'entry point. Suite complète, zéro régression.
+
+**Non fait, explicitement, par cette tâche** : aucune suppression de
+`orchestrator.cli`/`default_workers.yaml` eux-mêmes (encore réellement
+utilisés en interne) ; aucun bump de version délibéré ; ni M2, ni
+GitLabRoadmap.
+
 ### P14 — Observabilité de consommation et efficacité économique — `APPROUVÉ`, après P13 (2026-09-19, non implémenté)
 
 **Décision produit** : approuvée, statut `APPROUVÉ — APRÈS P13`. Aucun
@@ -1393,6 +1455,9 @@ le détail) :
 8. P13.5 (`DONE`, 2026-09-24) : frontière moteur/librairie — injection du
    `WorkerRegistry`, `workers:` optionnel dans `aido.yaml`. Voir
    sous-section P13.5 ci-dessus.
+9. P13.6 (`DONE`, 2026-09-24) : retrait de la commande produit `aido` —
+   AIDO Code en devient l'unique propriétaire. Voir sous-section P13.6
+   ci-dessus.
 
 ### Table des propositions
 
@@ -1420,12 +1485,13 @@ le détail) :
 | P15 | Prompt optimization externe | Une capacité d'optimisation de prompts basée sur un dataset/métrique réels (candidat : Opik Optimizer) mérite-t-elle d'être étudiée, avant toute intégration ? | **APPROUVÉ POUR ÉTUDE** (2026-09-23). Pas d'intégration ; dépend de P14 (non implémenté) pour la télémétrie. Comparaison complète : `docs/ECOSYSTEM.md` ; voir sous-section P15 ci-dessus |
 | P16 | Revue de simplification YAGNI/REUSE FIRST | Une revue structurée (DELETE → STDLIB → REUSE → PACKAGE → BUILD) doit-elle encadrer toute recommandation de simplification, y compris celles d'un audit externe ? | **APPROUVÉ POUR REVUE** (2026-09-23). Pas de refactor global autorisé par ce seul vote ; candidats déjà identifiés : `Project.current_mvp_id` (DELETE, analyse compatibilité requise), fingerprint d'environnement non-Python (BUILD rejeté, YAGNI) ; voir sous-section P16 ci-dessus |
 | P13.5 | Frontière moteur/librairie : injection du `WorkerRegistry`, `workers:` optionnel | `aido.yaml` doit-il rester la source de configuration complète du pool de workers, ou le moteur doit-il accepter un `WorkerRegistry` construit/injecté par l'application appelante (AIDO Code) ? | **`DONE`** (2026-09-24) — `workers:` optionnel dans `ProjectConfig` ; `OrchestratorEngine`/`ProjectRuntime` acceptent `worker_registry=` ; `WorkerSelector` reste seul propriétaire de la sélection ; chemin legacy fichier intégralement conservé et testé ; voir sous-section P13.5 ci-dessus |
+| P13.6 | Retrait de la commande produit `aido` (cutover AIDO Code) | AIDO Code ayant atteint son propre cutover produit, `ai-dev-orchestrator` doit-il cesser d'installer la commande `aido` ? | **`DONE`** (2026-09-24) — `[project.scripts]` retiré de `pyproject.toml` ; `orchestrator.cli`/`default_workers.yaml` conservés, legacy/internes, toujours réellement testés ; aucun binaire de compatibilité ajouté (YAGNI) ; voir sous-section P13.6 ci-dessus |
 
 Les propositions encore `À VOTER` restent non planifiées ; aucun ordre entre
 elles n'est impliqué. La prochaine étape pour celles-ci, si l'utilisateur le
 décide, est un vote explicite proposition par proposition, pas une
 sélection automatique par cette session ni une future session. P12, P1,
-P1.1, P13, P13.4 et P13.5 sont `DONE`. P3 est `IMPLEMENTED`, validation
+P1.1, P13, P13.4, P13.5 et P13.6 sont `DONE`. P3 est `IMPLEMENTED`, validation
 réelle `PENDING`. P14 est `APPROUVÉ — APRÈS P13`, sans WorkItem
 d'implémentation créé à ce jour. P15 est `APPROUVÉ POUR ÉTUDE`, P16
 `APPROUVÉ POUR REVUE` — ni l'un ni l'autre n'est implémenté, ni ne bloque
