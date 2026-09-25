@@ -934,10 +934,35 @@ class TestExecutionPermissionMode:
     # --- codex -------------------------------------------------------------
 
     def test_codex_standard_uses_verified_sandboxed_no_escalation_mechanism(self, tmp_path: Path) -> None:
+        """`--ask-for-approval` is never passed to `codex exec` (a real
+        governed run found it rejected by codex-cli 0.157.0's `exec`
+        subcommand, exit code 2 — see this function's own docstring):
+        `--sandbox workspace-write` alone is the verified, non-hanging
+        restriction for STANDARD."""
         hats = self._captured_hats_config(tmp_path, worker=_victor(), permission_mode=ExecutionPermissionMode.STANDARD)
         assert '"--sandbox", "workspace-write"' in hats
-        assert '"--ask-for-approval", "never"' in hats
+        assert "--ask-for-approval" not in hats
         assert "--dangerously-bypass-approvals-and-sandbox" not in hats
+
+    def test_codex_dev_b_regression_ask_for_approval_never_generated(self, tmp_path: Path) -> None:
+        """Real incident regression (GitLabPluginRoadmap WI-S0A-01, DEV B
+        worker "victor"/openai/codex): `_codex_permission_args(STANDARD)`
+        used to include `--ask-for-approval "never"`, which the real,
+        installed `codex exec` (codex-cli 0.157.0) rejects outright —
+        `error: unexpected argument '--ask-for-approval' found`, exit
+        code 2, confirmed directly and via a standalone `ralph run` using
+        this exact backend/args combination. That real execution failed
+        in ~10ms per attempt (5 iterations, `max_iterations`), never
+        reaching the model at all — QA was never even attempted.
+        `--ask-for-approval` (in any form) must never again appear in
+        the codex backend args this engine generates for any configured
+        permission mode."""
+        for mode in (ExecutionPermissionMode.STANDARD, ExecutionPermissionMode.UNRESTRICTED):
+            args = _codex_permission_args(mode)
+            assert not any("ask-for-approval" in a or "ask_for_approval" in a for a in args), (
+                f"codex backend args for {mode} still contain an --ask-for-approval "
+                f"flag rejected by codex exec: {args!r}"
+            )
 
     def test_codex_unrestricted_uses_verified_bypass_mechanism(self, tmp_path: Path) -> None:
         hats = self._captured_hats_config(tmp_path, worker=_victor(), permission_mode=ExecutionPermissionMode.UNRESTRICTED)
