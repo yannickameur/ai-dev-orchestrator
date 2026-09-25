@@ -75,6 +75,12 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   aucune commande console ; AIDO Code devient l'unique propriétaire de
   `aido` ; `orchestrator.cli`/`default_workers.yaml` restent dans le code
   source, legacy/internes, jamais supprimés.
+- **P13.7 (pre-execution state safety) : `DONE`** (2026-09-25), voir §13.
+  Défaut réel révélé par le cutover M8 d'AIDO Code (`WI-M8-01`) corrigé :
+  un WorkItem/son MVP ne sont plus marqués `RUNNING` avant que tous les
+  prérequis pré-exécution (préparation Git notamment) aient réellement
+  réussi — deux sites corrigés (`_execute_work_item`,
+  `_resume_dev_b_wait`). Invariant de recovery existant inchangé.
 - **P13.4 (remédiation post-audit externe) : `DONE`** (2026-09-23), voir
   §13. 8/11 findings corrigés (dont le seul HIGH : protection de tests
   réellement câblée dans `aido run`), 2 documentés/différés (YAGNI), 1
@@ -1186,6 +1192,102 @@ retrait de l'entry point. Suite complète, zéro régression.
 utilisés en interne) ; aucun bump de version délibéré ; ni M2, ni
 GitLabRoadmap.
 
+### P13.7 — Pre-execution state safety : un WorkItem ne doit jamais rester `RUNNING` sans exécution — `DONE` (2026-09-25)
+
+**Contexte, défaut réel** : le cutover M8 d'AIDO Code (P13.6) a révélé,
+sur son propre `WI-M8-01`, un défaut réel du moteur : `prepare_work_item()`
+(fail-closed, peut lever `DirtyWorkingTreeError`) était appelée **après**
+`mark_work_item_running()`. Une erreur de préparation Git laissait donc
+le WorkItem persisté `RUNNING`, sans qu'aucun `ExecutionRecord` n'ait
+jamais existé — `RecoveryCoordinator.reconcile_work_item()` n'a
+structurellement rien à réconcilier dans ce cas (`relevant = []` →
+`return None`, voir `recovery.py`) : le WorkItem restait `RUNNING`
+durablement, sans mécanisme de reprise. Ce défaut est réel, reproductible,
+et distinct de l'invariant de recovery existant (une exécution RUNNING
+*orpheline mais réelle* reste correctement réconciliée par
+`RecoveryCoordinator` — inchangé par cette tâche).
+
+**Invariant cible** : un WorkItem/son MVP ne sont marqués `RUNNING` que
+lorsque tous les prérequis pré-exécution qui peuvent échouer ont déjà
+réussi — jamais avant :
+
+```
+pre-execution validation/preparation
+        ↓ success
+mark RUNNING
+        ↓
+create/launch execution
+```
+
+Une erreur de pré-exécution laisse le WorkItem exactement dans son état
+précédent (`READY`/`NEEDS_REWORK`/`RECOVERY_REQUIRED`/`WAITING`, selon
+le chemin), jamais un nouvel état orphelin.
+
+**Deux sites réels avaient cette forme**, tous deux dans
+`mvp_manager.py`, corrigés par un simple réordonnancement (aucune
+nouvelle machine à états, aucun rollback générique, aucun
+`except Exception` catch-all, aucune mutation SQL directe, aucun retry
+automatique, aucun faux `ExecutionRecord`) :
+
+- **`_execute_work_item`** (partagé par le chemin frais `READY`/
+  `NEEDS_REWORK`, `_try_resume_due_wait`, et
+  `_try_resume_recovery_required` — les trois délèguent à cette même
+  méthode) : `mark_mvp_running()`/`mark_work_item_running()` déplacés
+  **après** `get_project()`, `ensure_runtime_exclusion()`,
+  `prepare_work_item()`, et la résolution du profil DEV
+  (`dev_worker.profile()`) — exactement le cas réel de `WI-M8-01`.
+- **`_resume_dev_b_wait`** (reprise d'un wait `DEV_B_REVIEW` — un
+  second site indépendant, découvert par l'inspection obligatoire de
+  cette tâche, jamais mentionné dans le rapport WI-M8-01 initial) :
+  `wait_coordinator.resolve()`/`mark_work_item_running()` déplacés
+  **après** `_reconcile_governed_head()` (peut lever
+  `GitHeadDriftError`). Ce site est particulièrement insidieux :
+  l'`ExecutionRecord` de DEV A existe déjà (réussi, avant le wait), donc
+  `RecoveryCoordinator` verrait un WorkItem `RUNNING` avec une dernière
+  exécution déjà `SUCCEEDED` et ne ferait rien (`recovery.py`, "already
+  SUCCEEDED ... out of scope here") — exactement la même forme
+  d'orphelin durable que `WI-M8-01`, atteinte différemment. Le wait
+  lui-même n'est plus consommé avant que la reconciliation réussisse :
+  une reprise ratée reste due, retentable proprement, jamais perdue.
+
+**MVP status** (§10 de la tâche) : `mark_mvp_running()` déplacé au même
+point que `mark_work_item_running()` — idempotent
+(`ProjectStateStore.mark_mvp_running` no-op si déjà `RUNNING`), aucun
+autre point du code ne dépend de l'instant précis où le MVP passe
+`RUNNING` par rapport à la préparation d'un WorkItem (vérifié par
+recherche exhaustive).
+
+**Invariant de recovery existant, inchangé** : une exécution `RUNNING`
+réellement orpheline/interrompue (un `ExecutionRecord` existe, le
+process qui la possédait a disparu) reste réconciliée exactement comme
+avant, vers `RECOVERY_REQUIRED` puis une nouvelle tentative — cette
+tâche ne touche à rien de `recovery.py` lui-même. Les deux concepts
+restent nettement distincts : **échec pré-exécution** (aucun état
+`RUNNING` jamais commité) vs. **échec/orphelin d'exécution** (mécanisme
+de recovery existant, réel, inchangé).
+
+**Pas de réparation rétroactive** : `WI-M8-01` (le cas historique réel
+dans AIDO Code) n'est pas modifié — aucune migration/scan automatique
+des anciens WorkItems `RUNNING` sans `ExecutionRecord` n'est tentée dans
+cette tâche (YAGNI ; la cause d'un état historique arbitraire ne peut
+pas être déduite automatiquement sans contrat supplémentaire).
+
+**Tests** (`tests/test_mvp_manager_workitem_flow.py::
+TestPreExecutionFailureNeverOrphansAWorkItem`, 4 nouveaux, chacun
+vérifié rouge sans le correctif avant d'être vérifié vert avec) :
+reproduction exacte du cas réel (arbre de travail avec une modification
+TRACKED non commitée, WorkItem `READY`, `DirtyWorkingTreeError` observée
+selon le contrat existant, WorkItem durablement `READY`, zéro
+`ExecutionRecord`, zéro exécution worker, aucun handoff mensonger, MVP
+non prématurément `RUNNING`) ; reprise après nettoyage (le même WorkItem
+redémarre normalement, jusqu'à `COMPLETED`, sans changement manuel
+d'id/MVP) ; équivalent `NEEDS_REWORK` (contexte QA précédent préservé,
+aucun cycle QA incrémenté artificiellement) ; équivalent
+`RECOVERY_REQUIRED` (reprise via `_try_resume_recovery_required`) ;
+`GitHeadDriftError` sur reprise `DEV_B_REVIEW` (`_resume_dev_b_wait`,
+le second site). Suite complète : 1310 passed (1306 avant), zéro
+régression, `git diff --check` clean.
+
 ### P14 — Observabilité de consommation et efficacité économique — `APPROUVÉ`, après P13 (2026-09-19, non implémenté)
 
 **Décision produit** : approuvée, statut `APPROUVÉ — APRÈS P13`. Aucun
@@ -1458,6 +1560,10 @@ le détail) :
 9. P13.6 (`DONE`, 2026-09-24) : retrait de la commande produit `aido` —
    AIDO Code en devient l'unique propriétaire. Voir sous-section P13.6
    ci-dessus.
+10. P13.7 (`DONE`, 2026-09-25) : pre-execution state safety — un
+    WorkItem/son MVP ne sont plus marqués `RUNNING` avant que les
+    prérequis pré-exécution aient réussi. Voir sous-section P13.7
+    ci-dessus.
 
 ### Table des propositions
 
@@ -1486,12 +1592,13 @@ le détail) :
 | P16 | Revue de simplification YAGNI/REUSE FIRST | Une revue structurée (DELETE → STDLIB → REUSE → PACKAGE → BUILD) doit-elle encadrer toute recommandation de simplification, y compris celles d'un audit externe ? | **APPROUVÉ POUR REVUE** (2026-09-23). Pas de refactor global autorisé par ce seul vote ; candidats déjà identifiés : `Project.current_mvp_id` (DELETE, analyse compatibilité requise), fingerprint d'environnement non-Python (BUILD rejeté, YAGNI) ; voir sous-section P16 ci-dessus |
 | P13.5 | Frontière moteur/librairie : injection du `WorkerRegistry`, `workers:` optionnel | `aido.yaml` doit-il rester la source de configuration complète du pool de workers, ou le moteur doit-il accepter un `WorkerRegistry` construit/injecté par l'application appelante (AIDO Code) ? | **`DONE`** (2026-09-24) — `workers:` optionnel dans `ProjectConfig` ; `OrchestratorEngine`/`ProjectRuntime` acceptent `worker_registry=` ; `WorkerSelector` reste seul propriétaire de la sélection ; chemin legacy fichier intégralement conservé et testé ; voir sous-section P13.5 ci-dessus |
 | P13.6 | Retrait de la commande produit `aido` (cutover AIDO Code) | AIDO Code ayant atteint son propre cutover produit, `ai-dev-orchestrator` doit-il cesser d'installer la commande `aido` ? | **`DONE`** (2026-09-24) — `[project.scripts]` retiré de `pyproject.toml` ; `orchestrator.cli`/`default_workers.yaml` conservés, legacy/internes, toujours réellement testés ; aucun binaire de compatibilité ajouté (YAGNI) ; voir sous-section P13.6 ci-dessus |
+| P13.7 | Pre-execution state safety | Le cutover M8 d'AIDO Code a révélé un défaut réel (`WI-M8-01` resté `RUNNING` durablement, sans `ExecutionRecord`) — un WorkItem/son MVP doivent-ils n'être marqués `RUNNING` qu'une fois tous les prérequis pré-exécution (préparation Git notamment) réellement satisfaits ? | **`DONE`** (2026-09-25) — `mark_mvp_running`/`mark_work_item_running` déplacés après les prérequis dans `_execute_work_item` et `_resume_dev_b_wait` (deux sites réels) ; invariant de recovery existant inchangé ; 4 nouveaux tests, chacun vérifié rouge sans le correctif ; `WI-M8-01` non modifié rétroactivement (YAGNI) ; voir sous-section P13.7 ci-dessus |
 
 Les propositions encore `À VOTER` restent non planifiées ; aucun ordre entre
 elles n'est impliqué. La prochaine étape pour celles-ci, si l'utilisateur le
 décide, est un vote explicite proposition par proposition, pas une
 sélection automatique par cette session ni une future session. P12, P1,
-P1.1, P13, P13.4, P13.5 et P13.6 sont `DONE`. P3 est `IMPLEMENTED`, validation
+P1.1, P13, P13.4, P13.5, P13.6 et P13.7 sont `DONE`. P3 est `IMPLEMENTED`, validation
 réelle `PENDING`. P14 est `APPROUVÉ — APRÈS P13`, sans WorkItem
 d'implémentation créé à ce jour. P15 est `APPROUVÉ POUR ÉTUDE`, P16
 `APPROUVÉ POUR REVUE` — ni l'un ni l'autre n'est implémenté, ni ne bloque

@@ -22,17 +22,19 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator.execution_store import ExecutionRecord, ExecutionStatus
+from orchestrator.execution_store import ExecutionRecord, ExecutionStatus, ExecutionStore
 from orchestrator.git_governance import (
+    DirtyWorkingTreeError,
     GitGovernancePolicy,
     GitGovernanceService,
+    GitHeadDriftError,
     GitWorkItemStatus,
     GitWorkItemStore,
     LocalGitWorkspace,
 )
 from orchestrator.handoff import HandoffStore
 from orchestrator.mvp_manager import MVPManager
-from orchestrator.project_state import ProjectStateStore, WorkItemStatus
+from orchestrator.project_state import MVPStatus, ProjectStateStore, WorkItemStatus
 from orchestrator.qa import (
     VALIDATION_ENVIRONMENT_CHANGED,
     FailureClassification,
@@ -231,6 +233,15 @@ def _dirty_untracked_action(filename: str, content: str):
         (Path(workspace) / filename).write_text(content)  # never staged/committed
 
     return _do
+
+
+def _dirty_tracked_file(repo: Path, filename: str = "README.md") -> None:
+    """Modifies an already-committed, TRACKED file without staging/
+    committing it — the exact condition
+    ``WorkingTreeStatus.tracked_dirty``/``DirtyWorkingTreeError`` guard
+    against, distinct from ``_dirty_untracked_action`` (a new, untracked
+    file) used elsewhere in this file."""
+    (repo / filename).write_text("dirtied by the test, never committed\n")
 
 
 class WorkItemFlowFakeEngine:
@@ -895,3 +906,204 @@ class TestWorkItemWorkerPoolSameProviderFallback:
         dev_requests = [r for r in stack["engine"].requests if r.role == "developer"]
         assert [r.worker.worker_id for r in dev_requests] == ["victor", "oscar"]
         assert stack["git_store"].get("wi-1").status is GitWorkItemStatus.MERGED
+
+
+# --- P13.7: a pre-execution preparation failure must never orphan a -------
+# --- WorkItem RUNNING with zero ExecutionRecord — the real defect ---------
+# --- AIDO Code's own WI-M8-01 revealed (see ROADMAP.md, P13.7). Two ------
+# --- independent sites had this shape: _execute_work_item's own -----------
+# --- prepare_work_item() call (shared by the fresh-candidate path AND -----
+# --- both _try_resume_due_wait/_try_resume_recovery_required, since all ---
+# --- three delegate to it), and _resume_dev_b_wait's own ------------------
+# --- reconcile()/GitHeadDriftError call.                                  --
+
+
+class TestPreExecutionFailureNeverOrphansAWorkItem:
+    def test_dirty_tracked_tree_leaves_a_ready_workitem_ready_then_recovers_after_cleanup(
+        self, tmp_path: Path,
+    ) -> None:
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+        stack = _new_stack(
+            tmp_path, workers=[alice, victor],
+            dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A"), None],
+        )
+        _dirty_tracked_file(stack["repo"])
+
+        with pytest.raises(DirtyWorkingTreeError):
+            asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+
+        # Durably READY — never RUNNING, FAILED, or BLOCKED.
+        work_item = stack["project_store"].get_work_item("wi-1")
+        assert work_item.status is WorkItemStatus.READY
+        # No worker execution was ever launched (the fake engine is the
+        # only thing that could ever produce an ExecutionRecord here, and
+        # it was never called) and no handoff falsely claims one happened.
+        assert stack["engine"].requests == []
+        assert stack["handoff_store"].latest_for_work_item("wi-1") is None
+        # The MVP itself is not prematurely marked RUNNING either — no
+        # attempt genuinely started.
+        assert stack["project_store"].get_mvp("mvp-1").status is MVPStatus.PLANNED
+
+        # Recovery after cleanup: commit the previously-dirty file, then
+        # the exact same WorkItem is selected normally and a real attempt
+        # now completes — no manual id/MVP change needed, exactly what
+        # should have happened for the real WI-M8-01 case.
+        _run_git(stack["repo"], "add", "README.md")
+        _run_git(stack["repo"], "commit", "-m", "commit the previously-dirty file")
+
+        result = asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        dev_requests = [r for r in stack["engine"].requests if r.role == "developer"]
+        assert [r.worker.worker_id for r in dev_requests] == ["alice", "victor"]
+        assert stack["git_store"].get("wi-1").status is GitWorkItemStatus.MERGED
+
+    def test_dirty_tracked_tree_leaves_a_needs_rework_workitem_needs_rework(
+        self, tmp_path: Path,
+    ) -> None:
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+        stack = _new_stack(tmp_path, workers=[alice, victor])
+        project_store, handoff_store = stack["project_store"], stack["handoff_store"]
+        project_store.mark_work_item_ready("wi-1")
+        project_store.mark_work_item_running("wi-1")
+        project_store.mark_work_item_needs_rework("wi-1")
+        handoff_store.create(
+            handoff_id="prior-qa-findings", project_id="proj-1", mvp_id="mvp-1",
+            work_item_id="wi-1", objective="A", execution_id="exec-prior", worker_id="alice",
+            open_issues="QA found: missing edge case coverage", next_action="fix and re-run QA",
+            git_sha_after="deadbeef", created_at=UTC_NOW,
+        )
+        _dirty_tracked_file(stack["repo"])
+
+        with pytest.raises(DirtyWorkingTreeError):
+            asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+
+        # Durably NEEDS_REWORK — the prior QA-findings context (an
+        # unrelated dirty tree is not a QA cycle) is neither lost nor
+        # incremented; no new execution/handoff was ever recorded.
+        work_item = project_store.get_work_item("wi-1")
+        assert work_item.status is WorkItemStatus.NEEDS_REWORK
+        assert stack["engine"].requests == []
+        latest = handoff_store.latest_for_work_item("wi-1")
+        assert latest is not None
+        assert latest.handoff_id == "prior-qa-findings"
+        assert latest.open_issues == "QA found: missing edge case coverage"
+
+    def test_dirty_tracked_tree_leaves_a_recovery_required_workitem_recovery_required(
+        self, tmp_path: Path,
+    ) -> None:
+        """RECOVERY_REQUIRED resume (_try_resume_recovery_required) also
+        delegates to _execute_work_item — covered by the same fix, proven
+        here directly rather than assumed."""
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-1", mvp_id="mvp-1", title="A")
+        project_store.mark_work_item_ready("wi-1")
+        project_store.mark_work_item_running("wi-1")
+        project_store.mark_work_item_recovery_required("wi-1")
+        git_service, git_store = _git_service(tmp_path)
+        qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
+        execution_store = ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW)
+        engine = WorkItemFlowFakeEngine(dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A"), None])
+        selector = _real_worker_selector([alice, victor])
+        qa_engine = DynamicQAEngine()
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine,
+            git_governance_service=git_service, qa_engine=qa_engine,
+            qa_policy=QAPolicy(required_invariant_ids=("workitem-qa-check",)),
+            qa_run_store=qa_run_store, execution_store=execution_store,
+            clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+        )
+        _dirty_tracked_file(repo)
+
+        with pytest.raises(DirtyWorkingTreeError):
+            asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        # Durably RECOVERY_REQUIRED — never re-orphaned into a second,
+        # indistinguishable RUNNING state.
+        work_item = project_store.get_work_item("wi-1")
+        assert work_item.status is WorkItemStatus.RECOVERY_REQUIRED
+        assert engine.requests == []
+
+        _run_git(repo, "add", "README.md")
+        _run_git(repo, "commit", "-m", "commit the previously-dirty file")
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert git_store.get("wi-1").status is GitWorkItemStatus.MERGED
+
+    def test_git_head_drift_on_dev_b_resume_never_marks_the_workitem_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """The second, independent pre-execution failure site this fix
+        covers: _resume_dev_b_wait's own GitHeadDriftError (reconcile()),
+        which mark_work_item_running()/wait_coordinator.resolve() used to
+        precede. DEV A's own ExecutionRecord already exists here (from
+        before the wait), so — unlike the fresh-candidate case —
+        RecoveryCoordinator would see a RUNNING WorkItem whose last
+        execution is already SUCCEEDED and do nothing
+        (recovery.py: "already SUCCEEDED ... out of scope here"): exactly
+        the same durable-orphan shape as WI-M8-01, reached a different
+        way."""
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-1", mvp_id="mvp-1", title="A")
+        git_service, git_store = _git_service(tmp_path)
+        qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
+        engine = WorkItemFlowFakeEngine(dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A"), None])
+        clock_box = {"now": UTC_NOW}
+        wait_store = WaitStore(tmp_path / "wait.sqlite3", clock=lambda: clock_box["now"])
+        reset_at = UTC_NOW + timedelta(hours=2)
+        quota_error = NoEligibleWorkerError(
+            WorkerSelectionRequest(required_capabilities=frozenset({"developer"}), author_worker_id="alice"),
+            diagnostics=(
+                ProviderSelectionDiagnostic(
+                    provider="openai", available=False, reason="quota_exhausted", reset_at=(reset_at,),
+                ),
+            ),
+        )
+        selector = ScriptedWorkerSelector([alice, quota_error, victor])
+        qa_engine = DynamicQAEngine()
+        manager = MVPManager(
+            project_store, handoff_store, selector, engine,
+            git_governance_service=git_service, qa_engine=qa_engine,
+            qa_policy=QAPolicy(required_invariant_ids=("workitem-qa-check",)),
+            qa_run_store=qa_run_store, wait_store=wait_store,
+            clock=lambda: clock_box["now"], id_factory=_counting_id_factory(),
+        )
+
+        first = asyncio.run(manager.run_next_work_item("mvp-1"))
+        assert first.work_item.status is WorkItemStatus.WAITING
+        assert first.wait is not None and first.wait.phase.value == "dev_b_review"
+
+        # A real, external, non-noise commit lands on the governed work
+        # branch after DEV A's own head was captured — never known to
+        # this reconciliation (known_execution_shas/noise_path_prefixes).
+        work_branch = git_store.get("wi-1").work_branch
+        _run_git(repo, "checkout", work_branch)
+        (repo / "external.txt").write_text("drift\n")
+        _run_git(repo, "add", "external.txt")
+        _run_git(repo, "commit", "-m", "external drift, never known to git governance")
+        _run_git(repo, "checkout", "main")
+
+        clock_box["now"] = reset_at + timedelta(minutes=1)
+        with pytest.raises(GitHeadDriftError):
+            asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        # Durably WAITING — the resume attempt never began, so it was
+        # never marked RUNNING, and the wait itself was never consumed
+        # (a later, real fix to the drift lets the exact same wait resume
+        # cleanly, never a lost/orphaned resume).
+        work_item = project_store.get_work_item("wi-1")
+        assert work_item.status is WorkItemStatus.WAITING
+        due_again = None
+        if manager._wait_coordinator is not None:
+            due_again = manager._wait_coordinator.find_due(mvp_id="mvp-1")
+        assert due_again is not None and due_again.phase.value == "dev_b_review"
+        # No new developer execution beyond DEV A's own, already-real one.
+        dev_requests = [r for r in engine.requests if r.role == "developer"]
+        assert len(dev_requests) == 1
+        assert dev_requests[0].worker.worker_id == "alice"
