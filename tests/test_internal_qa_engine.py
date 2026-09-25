@@ -25,7 +25,6 @@ from orchestrator.internal_qa_engine import (
     InternalQAEngine,
     InternalQAPlan,
     NoEvidenceAvailableError,
-    UnsupportedStackError,
     classify_validation_status,
     run_qa_cycle,
     working_tree_changed_files,
@@ -182,7 +181,15 @@ class TestEngineIsAQAEngine:
         repo = _init_repo(tmp_path)
         assert _engine(_validation_store(tmp_path)).stack_supported(repo) is True
 
-    def test_unsupported_stack_raises(self, tmp_path: Path) -> None:
+    def test_unsupported_stack_without_explicit_qa_is_no_evidence_not_unsupported_stack(
+        self, tmp_path: Path,
+    ) -> None:
+        """P13.8: a non-Python workspace with no explicit QA command is
+        rejected as NoEvidenceAvailableError (nothing to run) — never
+        UnsupportedStackError. run_async()/run_final_verification() no
+        longer gate on stack_supported() at all; see
+        test_non_python_stack_with_explicit_qa_command_still_runs below
+        for the actual fix this milestone is about."""
         repo = tmp_path / "no-python"
         repo.mkdir()
         _run_git(repo, "init", "-b", "main")
@@ -191,7 +198,7 @@ class TestEngineIsAQAEngine:
         (repo / "README.md").write_text("hello")
         _run_git(repo, "add", "-A")
         _run_git(repo, "commit", "-m", "seed")
-        with pytest.raises(UnsupportedStackError):
+        with pytest.raises(NoEvidenceAvailableError):
             asyncio.run(_engine(_validation_store(tmp_path)).run_async(_qa_request(repo)))
 
     def test_unsupported_stack_yields_inconclusive_via_run_qa_cycle(self, tmp_path: Path) -> None:
@@ -211,6 +218,157 @@ class TestEngineIsAQAEngine:
         ))
         assert run.status is QARunStatus.FAILED
         assert run.verdict.status is QAVerdictStatus.INCONCLUSIVE
+
+
+# --- P13.8: explicit QA commands are stack-agnostic ------------------------
+#
+# A workspace with no Python/pytest marker still runs its own explicitly
+# configured ValidationCommand (ai-dev-orchestrator never learns Ruby/
+# Node/Rails/Vue/REST/browser itself — it only ever executes whatever
+# argv the project declared, e.g. ["bundle", "exec", "rspec", ...],
+# ["yarn", "jest", ...], ["curl", ...], ["git", "diff", "--check"]).
+# Automatic pytest command construction (Part Q) stays Python-only.
+
+
+class TestStackAgnosticExplicitQA:
+    def _non_python_repo(self, tmp_path: Path, name: str = "non-python") -> Path:
+        repo = tmp_path / name
+        repo.mkdir()
+        _run_git(repo, "init", "-b", "main")
+        _run_git(repo, "config", "user.email", "t@example.com")
+        _run_git(repo, "config", "user.name", "T")
+        (repo / "README.md").write_text("hello\n")
+        _run_git(repo, "add", "-A")
+        _run_git(repo, "commit", "-m", "seed")
+        return repo
+
+    def test_non_python_stack_with_explicit_qa_command_still_runs(self, tmp_path: Path) -> None:
+        """Test A: no Python/pytest marker + a real, explicitly
+        configured ValidationCommand -> genuinely executed by the
+        existing QualityGateRunner pipeline, never mocked, never
+        blocked by stack_supported()."""
+        repo = self._non_python_repo(tmp_path)
+        store = _validation_store(tmp_path)
+        store.set_project_commands(
+            "proj-1",
+            [ValidationCommand(
+                validation_id="generic-smoke", kind=ValidationKind.SMOKE,
+                argv=("git", "diff", "--check"), required=True,
+            )],
+        )
+        engine = _engine(store)
+        assert engine.stack_supported(repo) is False
+
+        result = asyncio.run(engine.run_async(_qa_request(repo)))
+
+        assert result.engine_reported_status == "PASS"
+        assert result.failed_count == 0
+        assert "generic-smoke" in result.tests_executed
+
+    def test_non_python_with_qa_knowledge_selecting_a_test_still_uses_explicit_command(
+        self, tmp_path: Path,
+    ) -> None:
+        """PR #21 review finding: .qa/ regression-map matching is itself
+        stack-agnostic (path-prefix only, see qa_knowledge.py), so a
+        non-Python workspace can genuinely reach `selected_tests != ()`
+        outside FINAL_VERIFICATION — the pre-fix `elif not
+        selected_tests:` fallback then skipped loading the project's own
+        explicit ValidationCommand entirely (no pytest command is ever
+        built for it either, correctly), producing zero commands and a
+        false NoEvidenceAvailableError. Reproduces exactly:
+        non-Python + explicit command + .qa selecting a test + a
+        non-FINAL phase."""
+        repo = self._non_python_repo(tmp_path, name="non-python-with-selection")
+        write_regression_map(
+            repo,
+            [RegressionMapEntry(
+                entry_id="rails-app", paths=("app/models/",),
+                related_tests=("spec/models/user_spec.rb",),
+            )],
+        )
+        store = _validation_store(tmp_path)
+        store.set_project_commands(
+            "proj-1",
+            [ValidationCommand(
+                validation_id="generic-smoke", kind=ValidationKind.SMOKE,
+                argv=("git", "diff", "--check"), required=True,
+            )],
+        )
+        engine = _engine(store)
+        request = _qa_request(repo, changed_files=("app/models/user.rb",))
+
+        assert engine.stack_supported(repo) is False
+        plan = engine.build_plan(request)
+        assert plan.selected_tests != ()
+        assert plan.targeted_commands == ()  # no fabricated pytest command
+
+        result = asyncio.run(engine.run_async(request, plan=plan))
+
+        assert result.engine_reported_status == "PASS"
+        assert result.failed_count == 0
+        assert "generic-smoke" in result.tests_executed
+
+    def test_non_python_final_verification_with_explicit_qa_command_passes(self, tmp_path: Path) -> None:
+        """Test B: the essential case — MVPManager always closes a
+        WorkItem via QAPhase.FINAL_VERIFICATION. A non-Python project
+        with the same explicit command reaches run_final_verification()
+        -> QualityGateRunner -> ValidationCommand and gets a real PASS
+        verdict, not just a raw QAResult."""
+        repo = self._non_python_repo(tmp_path, name="non-python-final")
+        store = _validation_store(tmp_path)
+        store.set_project_commands(
+            "proj-1",
+            [ValidationCommand(
+                validation_id="generic-smoke", kind=ValidationKind.SMOKE,
+                argv=("git", "diff", "--check"), required=True,
+            )],
+        )
+        run_store = _qa_run_store(tmp_path)
+        head = _head(repo)
+        run = asyncio.run(run_qa_cycle(
+            engine=_engine(store), run_store=run_store,
+            request=_qa_request(repo, base_sha=head, head_sha=head),
+            phase=QAPhase.FINAL_VERIFICATION, policy=_policy(), clock=lambda: UTC_NOW,
+        ))
+
+        assert run.status is QARunStatus.COMPLETED
+        assert run.verdict.status is QAVerdictStatus.PASS
+        assert _head(repo) == head  # workspace genuinely untouched
+
+    def test_non_python_without_any_explicit_qa_stays_inconclusive_never_pass(
+        self, tmp_path: Path,
+    ) -> None:
+        """Test C: no Python stack AND no configured command AND no
+        automatic command applicable -> NoEvidenceAvailableError ->
+        INCONCLUSIVE via the full QA cycle, never PASS."""
+        repo = self._non_python_repo(tmp_path, name="non-python-no-qa")
+        store = _validation_store(tmp_path)  # nothing registered for proj-1
+        run_store = _qa_run_store(tmp_path)
+
+        with pytest.raises(NoEvidenceAvailableError):
+            asyncio.run(_engine(store).run_async(_qa_request(repo)))
+
+        run = asyncio.run(run_qa_cycle(
+            engine=_engine(store), run_store=run_store, request=_qa_request(repo),
+            phase=QAPhase.FINAL_VERIFICATION, policy=_policy(), clock=lambda: UTC_NOW,
+        ))
+        assert run.status is QARunStatus.FAILED
+        assert run.verdict.status is QAVerdictStatus.INCONCLUSIVE
+
+    def test_python_stack_auto_pytest_regression_unaffected(self, tmp_path: Path) -> None:
+        """Test D: the pre-existing Python/pytest automatic path — a real
+        pyproject.toml workspace with a selected test still gets a real
+        `python -m pytest ...` command and a real PASS, exactly as
+        before this stack-agnostic change."""
+        repo = _init_repo(tmp_path)
+        store = _validation_store(tmp_path)
+        engine = _engine(store)
+        assert engine.stack_supported(repo) is True
+
+        result = asyncio.run(engine.run_async(_qa_request(repo, required_test_ids=("tests/test_app.py",))))
+
+        assert result.engine_reported_status == "PASS"
+        assert result.tests_executed == ("qa-targeted-pytest",)
 
 
 class TestDeterministicTestImpact:
