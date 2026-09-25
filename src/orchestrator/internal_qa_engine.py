@@ -356,10 +356,14 @@ class InternalQAEngine:
         regression_commands: tuple[ValidationCommand, ...] = ()
         if phase is QAPhase.FINAL_VERIFICATION:
             regression_commands = self._validation_store.get_project_commands(request.project_id)
-        elif not selected_tests:
-            # Part Q fallback: nothing selected but QA is presumably
-            # required — fall back to the project's configured
-            # regression suite if one exists.
+        elif not selected_tests or not pytest_stack:
+            # Part Q fallback: nothing selected (or selected but this
+            # workspace can't run it as pytest — P13.8: .qa/ knowledge is
+            # stack-agnostic path matching, so a non-Python workspace can
+            # still "select" a test id with no pytest command ever built
+            # for it, see the pytest_stack gate above) but QA is
+            # presumably required — fall back to the project's
+            # configured regression suite if one exists.
             regression_commands = self._validation_store.get_project_commands(request.project_id)
 
         return InternalQAPlan(

@@ -265,6 +265,49 @@ class TestStackAgnosticExplicitQA:
         assert result.failed_count == 0
         assert "generic-smoke" in result.tests_executed
 
+    def test_non_python_with_qa_knowledge_selecting_a_test_still_uses_explicit_command(
+        self, tmp_path: Path,
+    ) -> None:
+        """PR #21 review finding: .qa/ regression-map matching is itself
+        stack-agnostic (path-prefix only, see qa_knowledge.py), so a
+        non-Python workspace can genuinely reach `selected_tests != ()`
+        outside FINAL_VERIFICATION — the pre-fix `elif not
+        selected_tests:` fallback then skipped loading the project's own
+        explicit ValidationCommand entirely (no pytest command is ever
+        built for it either, correctly), producing zero commands and a
+        false NoEvidenceAvailableError. Reproduces exactly:
+        non-Python + explicit command + .qa selecting a test + a
+        non-FINAL phase."""
+        repo = self._non_python_repo(tmp_path, name="non-python-with-selection")
+        write_regression_map(
+            repo,
+            [RegressionMapEntry(
+                entry_id="rails-app", paths=("app/models/",),
+                related_tests=("spec/models/user_spec.rb",),
+            )],
+        )
+        store = _validation_store(tmp_path)
+        store.set_project_commands(
+            "proj-1",
+            [ValidationCommand(
+                validation_id="generic-smoke", kind=ValidationKind.SMOKE,
+                argv=("git", "diff", "--check"), required=True,
+            )],
+        )
+        engine = _engine(store)
+        request = _qa_request(repo, changed_files=("app/models/user.rb",))
+
+        assert engine.stack_supported(repo) is False
+        plan = engine.build_plan(request)
+        assert plan.selected_tests != ()
+        assert plan.targeted_commands == ()  # no fabricated pytest command
+
+        result = asyncio.run(engine.run_async(request, plan=plan))
+
+        assert result.engine_reported_status == "PASS"
+        assert result.failed_count == 0
+        assert "generic-smoke" in result.tests_executed
+
     def test_non_python_final_verification_with_explicit_qa_command_passes(self, tmp_path: Path) -> None:
         """Test B: the essential case — MVPManager always closes a
         WorkItem via QAPhase.FINAL_VERIFICATION. A non-Python project
