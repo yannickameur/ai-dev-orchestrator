@@ -21,8 +21,8 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   (deepseek/kimi via `claude_code` redirigé, `development` uniquement,
   **`enabled: false`**, clé API requise, pas encore de preuve
   d'exécution réelle ; voir `ROADMAP.md` §7/§13).
-- **Tests offline** : 1332 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
-  2026-09-26 après P18-01), 1 avertissement de collecte préexistant
+- **Tests offline** : 1335 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
+  2026-09-26 après P18-02), 1 avertissement de collecte préexistant
   (`TestChangeAuthorization`). Snapshot, pas un contrat ; le compte
   courant fait foi dans la sortie de `pytest -q`.
 - **Roman Numerals** (pilote externe) : `PASS`.
@@ -95,12 +95,14 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   `None` reste inconnu ; le probe existant est réutilisé. P17 est
   indépendant de P14 (aucun suivi tokens/coûts).
 - **P18 (live execution events and graceful interruption)** :
-  `APPROVED` (GO humain 2026-09-26) — **`IN PROGRESS`**. **P18-01
-  `DONE`** (2026-09-26) : `OrchestratorEngine.run(on_event=...)` live,
+  `APPROVED` (GO humain 2026-09-26) — **`IN PROGRESS`**. **P18-01/P18-02
+  `DONE`** (2026-09-26) : `OrchestratorEngine.run(on_event=...)` live ;
   `EngineEvent` dans le module neutre `orchestrator.engine_events`
-  (ré-exporté par `orchestrator.engine`, un seul type), `RunResult`
-  inchangé. **P18-02 (métadonnées fines DEV A/B/FIX/QA/Git)/P18-03
-  (interruption gracieuse) : pas commencés.** Adaptive Execution reste
+  (ré-exporté par `orchestrator.engine`, un seul type) ; DEV A/DEV B/DEV
+  FIX/QA/Git émettent leurs événements réels avec métadonnées
+  (worker/provider/backend/profile_id/model/quality_tier/
+  reasoning_effort/commit_sha) ; `RunResult` inchangé. **P18-03
+  (interruption gracieuse) : pas commencé.** Adaptive Execution reste
   non branché en production ; recovery existant
   (`RecoveryCoordinator`) réutilisé sans modification.
 - **P13.5 (frontière moteur/librairie : injection du `WorkerRegistry`,

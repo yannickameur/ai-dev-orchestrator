@@ -566,9 +566,13 @@ class TestOnEvent:
         seen: list[EngineEvent] = []
         result = engine.run(on_event=seen.append)
 
-        # Live channel: work_item.started fires (new, P18-01), followed by
-        # the historical work_item.completed — in real emission order.
-        assert [e.kind for e in seen] == ["work_item.started", "work_item.completed"]
+        # Live channel: work_item.started fires first (P18-01), the
+        # historical work_item.completed fires last (real emission
+        # order) - fine-grained DEV/QA/Git events in between are P18-02's
+        # own scope, asserted in detail elsewhere.
+        kinds = [e.kind for e in seen]
+        assert kinds[0] == "work_item.started"
+        assert kinds[-1] == "work_item.completed"
         for event in seen:
             assert event.project_id == "demo"
             assert event.mvp_id == "mvp-1"
@@ -577,7 +581,7 @@ class TestOnEvent:
         # RunResult.events is untouched by on_event: still only the one
         # coarse historical event, never the fine "started" one.
         assert [e.kind for e in result.events] == ["work_item.completed"]
-        assert result.events == (seen[1],)
+        assert result.events == (seen[-1],)
 
     def test_on_event_exception_propagates_immediately_before_any_development_runs(
         self, tmp_path: Path,

@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from orchestrator.engine_events import EngineEvent
 from orchestrator.execution_store import ExecutionRecord, ExecutionStatus, ExecutionStore
 from orchestrator.git_governance import (
     DirtyWorkingTreeError,
@@ -1107,3 +1108,131 @@ class TestPreExecutionFailureNeverOrphansAWorkItem:
         dev_requests = [r for r in engine.requests if r.role == "developer"]
         assert len(dev_requests) == 1
         assert dev_requests[0].worker.worker_id == "alice"
+
+
+class TestOnEventFineGrainedEvents:
+    """P18-02: DEV A/DEV B/DEV FIX/QA/Git live events + metadata, emitted
+    by the exact components that own each fact (MVPManager itself —
+    never reconstructed by OrchestratorEngine)."""
+
+    def test_full_happy_path_emits_events_in_order_with_real_metadata(self, tmp_path: Path) -> None:
+        alice = _worker("alice")  # anthropic/claude_code, profile_id="default", quality_tier=STANDARD, reasoning_effort=None
+        victor = Worker.with_single_profile(
+            worker_id="victor", display_name="Victor", provider="openai", backend="codex",
+            model="m", reasoning_effort="medium", capabilities=frozenset({"developer"}),
+        )
+        stack = _new_stack(
+            tmp_path, workers=[alice, victor],
+            dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A implementation"), None],
+        )
+        manager = stack["manager"]
+        seen: list[EngineEvent] = []
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1", on_event=seen.append))
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+
+        kinds = [e.kind for e in seen]
+        assert kinds == [
+            "work_item.started",
+            "dev_a.selected", "dev_a.started", "dev_a.completed",
+            "dev_b.selected", "dev_b.started", "dev_b.completed",
+            "qa.started", "qa.pass",
+            "git.merge_ready", "git.merge_completed",
+        ]
+        for event in seen:
+            assert event.project_id == "proj-1"
+            assert event.mvp_id == "mvp-1"
+            assert event.work_item_id == "wi-1"
+
+        by_kind = {e.kind: e for e in seen}
+
+        dev_a_selected = by_kind["dev_a.selected"]
+        assert dev_a_selected.phase == "dev_a"
+        assert dev_a_selected.worker_id == "alice"
+        assert dev_a_selected.worker_display_name == "Alice"
+        assert dev_a_selected.provider == "anthropic"
+        assert dev_a_selected.backend == "claude_code"
+        assert dev_a_selected.profile_id == "default"
+        assert dev_a_selected.quality_tier == "STANDARD"
+        assert dev_a_selected.model == "m"
+        assert dev_a_selected.reasoning_effort is None  # never fabricated
+        assert dev_a_selected.execution_id is not None
+        assert by_kind["dev_a.started"].execution_id == dev_a_selected.execution_id
+
+        dev_a_completed = by_kind["dev_a.completed"]
+        assert dev_a_completed.status == "succeeded"
+        assert dev_a_completed.commit_sha is not None
+
+        dev_b_selected = by_kind["dev_b.selected"]
+        assert dev_b_selected.phase == "dev_b"
+        assert dev_b_selected.worker_id == "victor"  # a genuinely different worker from DEV A
+        assert dev_b_selected.provider == "openai"
+        assert dev_b_selected.backend == "codex"
+        assert dev_b_selected.reasoning_effort == "medium"  # real provenance, never guessed from worker_id
+
+        dev_b_completed = by_kind["dev_b.completed"]
+        assert dev_b_completed.status == "succeeded"
+        # DEV B made no change (dev_actions[1] is None) -> same head as DEV A.
+        assert dev_b_completed.commit_sha == dev_a_completed.commit_sha
+
+        assert by_kind["qa.pass"].status == "pass"
+
+        record = stack["git_store"].get("wi-1")
+        merge_completed = by_kind["git.merge_completed"]
+        assert merge_completed.commit_sha == record.merged_sha
+        assert merge_completed.payload == {"tag": "feature/wi-1/done"}
+
+    def test_qa_fail_then_dev_fix_qa_pass_emits_dev_fix_and_qa_events(self, tmp_path: Path) -> None:
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+
+        def _fail_for(request):
+            return _qa_result(head_sha=request.head_sha, regressions=("tests/test_x.py::test_foo",))
+
+        stack = _new_stack(
+            tmp_path, workers=[alice, victor],
+            dev_actions=[
+                _commit_action("feature.py", "x = 1\n", "DEV A"),
+                None,  # DEV B: no change
+                _commit_action("feature.py", "x = 2\n", "DEV FIX"),
+            ],
+            qa_script=[_fail_for],  # first QA fails; the fake defaults to PASS afterwards
+        )
+        manager = stack["manager"]
+
+        seen_first: list[EngineEvent] = []
+        first = asyncio.run(manager.run_next_work_item("mvp-1", on_event=seen_first.append))
+        assert first.work_item.status is WorkItemStatus.NEEDS_REWORK
+        assert [e.kind for e in seen_first] == [
+            "work_item.started",
+            "dev_a.selected", "dev_a.started", "dev_a.completed",
+            "dev_b.selected", "dev_b.started", "dev_b.completed",
+            "qa.started", "qa.fail",
+        ]
+        assert [e for e in seen_first if e.kind == "qa.fail"][0].status == "fail"
+        # QA FAIL -> never a merge event of any kind.
+        assert not any(e.kind.startswith("git.") for e in seen_first)
+
+        seen_second: list[EngineEvent] = []
+        second = asyncio.run(manager.run_next_work_item("mvp-1", on_event=seen_second.append))
+        assert second.work_item.status is WorkItemStatus.COMPLETED
+        assert [e.kind for e in seen_second] == [
+            "work_item.started",
+            "dev_fix.selected", "dev_fix.started", "dev_fix.completed",
+            "qa.started", "qa.pass",
+            "git.merge_ready", "git.merge_completed",
+        ]
+        dev_fix_events = [e for e in seen_second if e.phase == "dev_fix"]
+        assert len(dev_fix_events) == 3
+        # Rework has no author exclusion (unlike DEV B) -> same selection
+        # rule as DEV A, never guessed/hardcoded here.
+        assert all(e.worker_id == "alice" for e in dev_fix_events)
+
+    def test_on_event_none_is_unaffected(self, tmp_path: Path) -> None:
+        """Byte-for-byte pre-P18 behavior when on_event is omitted."""
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+        stack = _new_stack(
+            tmp_path, workers=[alice, victor],
+            dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A implementation"), None],
+        )
+        result = asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+        assert result.work_item.status is WorkItemStatus.COMPLETED
