@@ -518,25 +518,85 @@ class MVPManager:
     # separate read-only Review, no separate Final QA phase.
 
     async def _run_development(
-        self, *, project: Project, work_item: WorkItem, worker: Worker,
-        model: str | None, reasoning_effort: str | None, instructions: str,
+        self, *, project: Project, mvp_id: str, work_item: WorkItem, worker: Worker,
+        model: str | None, reasoning_effort: str | None, instructions: str, phase: str,
+        on_event: Callable[[EngineEvent], None] | None = None,
     ) -> ExecutionResult:
         """One real, write-capable execution directly in the governed
         target workspace (no isolation — DEV A/DEV B/a post-QA-FAIL fix
         are all real development, by design). Shared by every development
-        step of WorkItem Flow; only ``worker``/``instructions`` differ."""
+        step of WorkItem Flow; only ``worker``/``instructions``/``phase``
+        differ — ``phase`` (``"dev_a"``/``"dev_b"``/``"dev_fix"``) exists
+        purely to label live events: this method's own execution role is
+        always ``DEFAULT_WORK_ITEM_ROLE`` (``"developer"``) regardless of
+        phase, so only the caller genuinely knows which phase this is
+        (P18-02, ``ROADMAP.md``).
+
+        ``on_event`` (P18-02): ``{phase}.selected`` is emitted first,
+        carrying the ``Worker``'s own resolved default ``ExecutionProfile``
+        (``profile_id``/``quality_tier``) alongside the ``model``/
+        ``reasoning_effort`` this execution actually runs with — never a
+        value Adaptive Execution would have chosen (not wired here, see
+        ``ROADMAP.md`` P18). ``{phase}.started`` follows, right before the
+        real execution. ``{phase}.completed``/``.failed``/``.interrupted``
+        follow the execution's own real, durable outcome — never emitted
+        before that outcome exists.
+        """
+        execution_id = self._id_factory()
+        profile = worker.profile()
+        if on_event is not None:
+            on_event(EngineEvent(
+                kind=f"{phase}.selected",
+                timestamp=self._clock().isoformat(),
+                project_id=project.project_id, mvp_id=mvp_id,
+                work_item_id=work_item.work_item_id, payload={},
+                execution_id=execution_id, phase=phase,
+                worker_id=worker.worker_id, worker_display_name=worker.display_name,
+                provider=worker.provider, backend=worker.backend,
+                profile_id=profile.profile_id, model=model,
+                quality_tier=profile.quality_tier.name, reasoning_effort=reasoning_effort,
+            ))
         request = ExecutionRequest(
-            execution_id=self._id_factory(), task_id=work_item.work_item_id, worker=worker,
+            execution_id=execution_id, task_id=work_item.work_item_id, worker=worker,
             role=DEFAULT_WORK_ITEM_ROLE, workspace=project.workspace, instructions=instructions,
             initial_event_topic=INITIAL_EVENT_TOPIC, success_topics=frozenset({SUCCESS_TOPIC}),
             failure_topics=frozenset({FAILURE_TOPIC}), timeout_seconds=self._timeout_seconds,
             model=model, reasoning_effort=reasoning_effort,
         )
+        if on_event is not None:
+            on_event(EngineEvent(
+                kind=f"{phase}.started",
+                timestamp=self._clock().isoformat(),
+                project_id=project.project_id, mvp_id=mvp_id,
+                work_item_id=work_item.work_item_id, payload={},
+                execution_id=execution_id, phase=phase,
+                worker_id=worker.worker_id, worker_display_name=worker.display_name,
+                provider=worker.provider, backend=worker.backend,
+                profile_id=profile.profile_id, model=model,
+                quality_tier=profile.quality_tier.name, reasoning_effort=reasoning_effort,
+            ))
         result = await self._execution_engine.execute(request)
         if self._git_governance_service is not None:
             self._git_governance_service.capture_head(
                 work_item.work_item_id, repository_path=project.workspace,
             )
+        if on_event is not None:
+            outcome_kind = {
+                ExecutionStatus.SUCCEEDED: "completed",
+                ExecutionStatus.INTERRUPTED: "interrupted",
+            }.get(result.record.status, "failed")
+            on_event(EngineEvent(
+                kind=f"{phase}.{outcome_kind}",
+                timestamp=self._clock().isoformat(),
+                project_id=project.project_id, mvp_id=mvp_id,
+                work_item_id=work_item.work_item_id, payload={},
+                execution_id=execution_id, phase=phase, status=result.record.status.value,
+                worker_id=worker.worker_id, worker_display_name=worker.display_name,
+                provider=worker.provider, backend=worker.backend,
+                profile_id=profile.profile_id, model=model,
+                quality_tier=profile.quality_tier.name, reasoning_effort=reasoning_effort,
+                commit_sha=result.record.git_sha_after,
+            ))
         return result
 
     async def _execute_work_item(
@@ -597,9 +657,10 @@ class MVPManager:
             if latest_handoff is not None and latest_handoff.open_issues:
                 fix_context = f"QA findings from the previous attempt: {latest_handoff.open_issues}"
             dev_result = await self._run_development(
-                project=project, work_item=work_item, worker=dev_worker,
+                project=project, mvp_id=mvp_id, work_item=work_item, worker=dev_worker,
                 model=dev_model, reasoning_effort=dev_reasoning_effort,
                 instructions=_build_dev_instructions(work_item, resume_context=fix_context),
+                phase="dev_fix", on_event=on_event,
             )
             if dev_result.record.status is not ExecutionStatus.SUCCEEDED:
                 work_item = self._project_state_store.mark_work_item_failed(work_item.work_item_id)
@@ -609,14 +670,15 @@ class MVPManager:
             head_sha = dev_result.record.git_sha_after
             return await self._run_qa_and_finalize(
                 project=project, mvp_id=mvp_id, work_item=work_item,
-                head_sha=head_sha, base_sha=base_sha or head_sha,
+                head_sha=head_sha, base_sha=base_sha or head_sha, on_event=on_event,
             )
 
         # --- fresh attempt: DEV A ---
         dev_a_result = await self._run_development(
-            project=project, work_item=work_item, worker=dev_worker,
+            project=project, mvp_id=mvp_id, work_item=work_item, worker=dev_worker,
             model=dev_model, reasoning_effort=dev_reasoning_effort,
             instructions=_build_dev_instructions(work_item, resume_context=resume_context),
+            phase="dev_a", on_event=on_event,
         )
         if dev_a_result.record.status is not ExecutionStatus.SUCCEEDED:
             work_item = self._project_state_store.mark_work_item_failed(work_item.work_item_id)
@@ -657,11 +719,13 @@ class MVPManager:
         return await self._run_dev_b_onward(
             project=project, mvp_id=mvp_id, work_item=work_item, dev_a_worker_id=dev_worker.worker_id,
             dev_b_worker=dev_b_worker, head_after_a=head_after_a, base_sha=base_sha or head_after_a,
+            on_event=on_event,
         )
 
     async def _run_dev_b_onward(
         self, *, project: Project, mvp_id: str, work_item: WorkItem, dev_a_worker_id: str,
         dev_b_worker: Worker, head_after_a: str, base_sha: str,
+        on_event: Callable[[EngineEvent], None] | None = None,
     ) -> WorkItemRunResult:
         """DEV B's corrective review execution (write-capable, direct in
         the governed workspace — never read-only, never isolated: a
@@ -670,9 +734,10 @@ class MVPManager:
         resume, so both go through the exact same continuation."""
         profile = dev_b_worker.profile()
         dev_b_result = await self._run_development(
-            project=project, work_item=work_item, worker=dev_b_worker,
+            project=project, mvp_id=mvp_id, work_item=work_item, worker=dev_b_worker,
             model=profile.model, reasoning_effort=profile.reasoning_effort,
             instructions=_build_dev_b_instructions(work_item, dev_a_worker_id=dev_a_worker_id),
+            phase="dev_b", on_event=on_event,
         )
         if dev_b_result.record.status is not ExecutionStatus.SUCCEEDED:
             work_item = self._project_state_store.mark_work_item_failed(work_item.work_item_id)
@@ -690,10 +755,12 @@ class MVPManager:
         )
         return await self._run_qa_and_finalize(
             project=project, mvp_id=mvp_id, work_item=work_item, head_sha=head_after_b, base_sha=base_sha,
+            on_event=on_event,
         )
 
     async def _resume_dev_b_wait(
         self, *, project: Project, mvp_id: str, work_item: WorkItem, due: WaitRecord,
+        on_event: Callable[[EngineEvent], None] | None = None,
     ) -> WorkItemRunResult:
         """Resumes a DEV_B_REVIEW wait — DEV A already succeeded before
         this wait was ever recorded, so resuming re-enters RUNNING
@@ -745,10 +812,12 @@ class MVPManager:
         return await self._run_dev_b_onward(
             project=project, mvp_id=mvp_id, work_item=work_item, dev_a_worker_id=handoff.worker_id,
             dev_b_worker=dev_b_worker, head_after_a=handoff.git_sha_after, base_sha=base_sha,
+            on_event=on_event,
         )
 
     async def _run_qa_and_finalize(
         self, *, project: Project, mvp_id: str, work_item: WorkItem, head_sha: str, base_sha: str,
+        on_event: Callable[[EngineEvent], None] | None = None,
     ) -> WorkItemRunResult:
         """The single QA phase: read-only, deterministic
         (``QAPhase.FINAL_VERIFICATION`` — reused as-is, no new phase
@@ -758,6 +827,14 @@ class MVPManager:
         (no DEV B review in between); the 3rd FAIL becomes
         HUMAN_REVIEW_REQUIRED (``BLOCKED`` + a deterministic ROADMAP.md
         TODO) — never a 4th automatic QA attempt.
+
+        ``on_event`` (P18-02): ``qa.started`` before the real QA cycle;
+        exactly one of ``qa.pass``/``qa.fail``/``qa.inconclusive`` after
+        its real, deterministic verdict (``run.verdict is None`` — QA
+        produced no verdict at all — is reported as ``qa.inconclusive``,
+        the closest real meaning: never PASS, never fabricated). On PASS,
+        ``git.merge_ready``/``git.merge_completed`` are emitted only once
+        ``GitGovernanceService`` itself durably confirms each fact.
         """
         if self._git_governance_service is not None:
             violations = self._verify_workspace_matches(project.workspace, head_sha)
@@ -773,6 +850,12 @@ class MVPManager:
                     work_item=blocked, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
                 )
 
+        if on_event is not None:
+            on_event(EngineEvent(
+                kind="qa.started", timestamp=self._clock().isoformat(),
+                project_id=project.project_id, mvp_id=mvp_id,
+                work_item_id=work_item.work_item_id, payload={},
+            ))
         request = QARequest(
             project_id=project.project_id, mvp_id=mvp_id, work_item_id=work_item.work_item_id,
             workspace=str(project.workspace), base_sha=base_sha, head_sha=head_sha,
@@ -780,6 +863,18 @@ class MVPManager:
             phase=QAPhase.FINAL_VERIFICATION,
         )
         run = await self._run_qa_cycle(request=request, phase=QAPhase.FINAL_VERIFICATION)
+        if on_event is not None:
+            qa_kind = {
+                QAVerdictStatus.PASS: "qa.pass",
+                QAVerdictStatus.FAIL: "qa.fail",
+                QAVerdictStatus.INCONCLUSIVE: "qa.inconclusive",
+            }.get(run.verdict.status if run.verdict is not None else None, "qa.inconclusive")
+            on_event(EngineEvent(
+                kind=qa_kind, timestamp=self._clock().isoformat(),
+                project_id=project.project_id, mvp_id=mvp_id,
+                work_item_id=work_item.work_item_id, payload={},
+                status=run.verdict.status.value if run.verdict is not None else None,
+            ))
 
         if run.verdict is not None and run.verdict.status is QAVerdictStatus.PASS:
             work_item = self._project_state_store.mark_work_item_completed(work_item.work_item_id)
@@ -787,13 +882,31 @@ class MVPManager:
                 project=project, work_item=work_item, gate_result=None,
                 qa_passed=True, qa_git_sha=head_sha,
             )
-            merged_sha = self._maybe_tag_merge(project=project, work_item=work_item)
+            if on_event is not None and self._git_governance_service is not None:
+                record = self._git_governance_service.try_get(work_item.work_item_id)
+                if record is not None and record.status in (
+                    GitWorkItemStatus.MERGE_READY, GitWorkItemStatus.MERGED,
+                ):
+                    on_event(EngineEvent(
+                        kind="git.merge_ready", timestamp=self._clock().isoformat(),
+                        project_id=project.project_id, mvp_id=mvp_id,
+                        work_item_id=work_item.work_item_id, payload={},
+                    ))
+            merge_result = self._maybe_tag_merge(project=project, work_item=work_item)
+            if on_event is not None and merge_result is not None:
+                merged_sha, tag_name = merge_result
+                on_event(EngineEvent(
+                    kind="git.merge_completed", timestamp=self._clock().isoformat(),
+                    project_id=project.project_id, mvp_id=mvp_id,
+                    work_item_id=work_item.work_item_id, payload={"tag": tag_name},
+                    commit_sha=merged_sha,
+                ))
             handoff = self._handoff_store.create(
                 handoff_id=self._id_factory(), project_id=project.project_id, mvp_id=mvp_id,
                 work_item_id=work_item.work_item_id, objective=work_item.title,
                 execution_id=run.run_id, worker_id=run.engine_id,
                 next_action=(
-                    "QA passed — feature merged and tagged" if merged_sha
+                    "QA passed — feature merged and tagged" if merge_result is not None
                     else "QA passed — merge eligibility pending"
                 ),
                 git_sha_after=head_sha, created_at=self._clock(),
@@ -821,11 +934,12 @@ class MVPManager:
         rework = self._project_state_store.mark_work_item_needs_rework(work_item.work_item_id)
         return WorkItemRunResult(work_item=rework, handoff=handoff)
 
-    def _maybe_tag_merge(self, *, project: Project, work_item: WorkItem) -> str | None:
+    def _maybe_tag_merge(self, *, project: Project, work_item: WorkItem) -> tuple[str, str] | None:
         """Tags the exact merged SHA immediately after a real merge — never
-        before. Returns the merged SHA (for the handoff message) or
-        ``None`` when nothing was actually merged yet (``auto_merge=False``,
-        left at MERGE_READY — no tag in that case)."""
+        before. Returns ``(merged_sha, tag_name)`` (for the handoff
+        message and the ``git.merge_completed`` live event) or ``None``
+        when nothing was actually merged yet (``auto_merge=False``, left
+        at MERGE_READY — no tag in that case)."""
         if self._git_governance_service is None:
             return None
         record = self._git_governance_service.try_get(work_item.work_item_id)
@@ -833,7 +947,7 @@ class MVPManager:
             return None
         tag_name = f"feature/{work_item.work_item_id}/done"
         LocalGitWorkspace(project.workspace).create_tag(tag_name, sha=record.merged_sha)
-        return record.merged_sha
+        return record.merged_sha, tag_name
 
     def _append_human_review_todo(
         self, *, project: Project, work_item: WorkItem, reason: str, sha: str, attempts: int,
@@ -1118,7 +1232,9 @@ class MVPManager:
         project = self._project_state_store.get_project(mvp.project_id)
 
         if due.phase is WaitPhase.DEV_B_REVIEW:
-            return await self._resume_dev_b_wait(project=project, mvp_id=mvp_id, work_item=work_item, due=due)
+            return await self._resume_dev_b_wait(
+                project=project, mvp_id=mvp_id, work_item=work_item, due=due, on_event=on_event,
+            )
 
         is_rework = due.phase is WaitPhase.REWORK
         try:
