@@ -31,15 +31,10 @@ Design invariants:
   and other providers/candidates are still evaluated normally. Any other,
   unexpected exception is a programming failure and is never swallowed or
   turned into "not available" — it propagates to the caller unchanged.
-- Quota *numbers* (``quota_windows``, ``utilization``, reset credits) are
-  never used to rank or select a worker: the canonical availability signal
-  (``ProviderState.availability.available``) alone answers the only
-  question this module asks. Since Slice 11, ``QuotaWindow.reset_at``
-  values ARE read, but strictly for attaching read-only diagnostics to a
-  selection *failure* (see ``ProviderSelectionDiagnostic`` below) — never
-  to decide who is selected. This module still never waits, retries, or
-  schedules anything itself; a caller (orchestration-level) uses the
-  diagnostics to decide whether waiting could plausibly help.
+- Quota utilization is used only as a provider-agnostic routing preference
+  among otherwise eligible workers. Availability remains a hard gate;
+  unknown utilization is never fabricated as zero. Reset credits are
+  diagnostic only. This module never waits, retries, or schedules.
 - Reset credits are visible on ``ProviderState`` but this module never
   consumes one, never calls a consume/usage endpoint, and never treats
   their mere presence as making an otherwise-unavailable provider
@@ -51,8 +46,10 @@ Selection order:
     2. required capabilities satisfied
     3. governance exclusions (explicit exclusions + author != reviewer)
     4. provider AVAILABLE (via QuotaManager)
-    5. preference policy (priority, then a documented deterministic
-       tie-break; for review requests, provider-independence preference)
+    5. review provider-independence policy
+    6. quota pressure (known utilization, with a 10-point tolerance band)
+    7. priority
+    8. worker_id lexical tie-break
 """
 
 from __future__ import annotations
@@ -64,6 +61,7 @@ from enum import IntEnum
 from typing import Iterable, Sequence
 
 from orchestrator.quota_manager import ProviderProbeError, QuotaManager
+from orchestrator.providers.contracts import QuotaWindow
 
 
 def _require_non_empty_str(value: object, *, field_name: str) -> None:
@@ -360,18 +358,17 @@ class WorkerSelectionRequest:
 class ProviderSelectionDiagnostic:
     """Read-only facts about one candidate provider's state at selection time.
 
-    Attached to a selection failure (never to a success) so a caller —
-    typically an orchestration-level wait/resume decision, never this
-    module — can distinguish *why* a provider wasn't usable: quota
-    exhausted with a known reset time, an unavailable/unknown reason, or a
-    probe error. This module never interprets these facts itself; it never
-    waits, retries, or ranks anything by them.
+    The availability, reset, and failure fields remain available to callers
+    on selection errors. ``quota_pressure`` is populated for available
+    providers and reused internally by the selector for quota-aware ranking;
+    unavailable providers are still excluded before that ranking.
     """
 
     provider: str
     available: bool
     reason: str
     reset_at: tuple[datetime, ...] = ()
+    quota_pressure: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "reset_at", tuple(sorted(self.reset_at)))
@@ -467,20 +464,22 @@ class WorkerSelector:
         if not eligible:
             raise NoEligibleWorkerError(request, diagnostics=diagnostics)
 
+        quota_pressure_by_provider = {d.provider: d.quota_pressure for d in diagnostics}
+
         if author is None:
-            return self._pick_best(eligible)
+            return self._pick_best(eligible, quota_pressure_by_provider)
 
         cross_provider = [w for w in eligible if w.provider != author.provider]
 
         if self._policy.require_distinct_provider_for_review:
             if not cross_provider:
                 raise ReviewIndependenceError(author, diagnostics=diagnostics)
-            return self._pick_best(cross_provider)
+            return self._pick_best(cross_provider, quota_pressure_by_provider)
 
         if self._policy.prefer_distinct_provider_for_review and cross_provider:
-            return self._pick_best(cross_provider)
+            return self._pick_best(cross_provider, quota_pressure_by_provider)
 
-        return self._pick_best(eligible)
+        return self._pick_best(eligible, quota_pressure_by_provider)
 
     def _resolve_author(self, author_worker_id: str | None) -> Worker | None:
         if author_worker_id is None:
@@ -539,12 +538,41 @@ class WorkerSelector:
                 reset_at = tuple(w.reset_at for w in result.quota_windows if w.reset_at is not None)
                 diagnostics.append(
                     ProviderSelectionDiagnostic(
-                        provider=provider, available=available, reason=reason, reset_at=reset_at
+                        provider=provider,
+                        available=available,
+                        reason=reason,
+                        reset_at=reset_at,
+                        quota_pressure=(
+                            _known_quota_pressure(result.quota_windows) if available else None
+                        ),
                     )
                 )
         return tuple(diagnostics)
 
-    def _pick_best(self, candidates: Sequence[Worker]) -> Worker:
-        # Deterministic, documented tie-break: highest priority first, then
-        # ascending worker_id lexical order for equal priority.
+    def _pick_best(
+        self,
+        candidates: Sequence[Worker],
+        quota_pressure_by_provider: dict[str, float | None],
+    ) -> Worker:
+        # Values within 10 percentage points of the least-used known
+        # provider form one tolerance band. Unknown providers join that
+        # band as neutral (never as an invented 0.0); priority/id resolve
+        # the band. Known providers outside it rank behind the band.
+        known = [quota_pressure_by_provider.get(w.provider) for w in candidates]
+        known = [pressure for pressure in known if pressure is not None]
+        if known:
+            best_pressure = min(known)
+            candidates = [
+                worker
+                for worker in candidates
+                if (pressure := quota_pressure_by_provider.get(worker.provider)) is None
+                or pressure - best_pressure <= 0.10
+            ]
+        # Deterministic legacy preference inside the quota tolerance band.
         return sorted(candidates, key=lambda w: (-w.priority, w.worker_id))[0]
+
+
+def _known_quota_pressure(windows: Sequence[QuotaWindow]) -> float | None:
+    """Return max known utilization, preserving unknown as ``None``."""
+    known = [window.utilization for window in windows if window.utilization is not None]
+    return max(known) if known else None
