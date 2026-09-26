@@ -91,6 +91,9 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - **P16 (revue YAGNI/REUSE FIRST structurée) : `APPROUVÉ POUR REVUE`**
   (2026-09-23), voir §13. Pas de refactor global autorisé par ce seul
   vote.
+- **P17 (quota-aware worker routing) : `DONE`** — `WorkerSelector` utilise
+  les fenêtres observées pour départager les providers disponibles après
+  les filtres qualité et gouvernance de review. Indépendant de P14.
 
 ## 3. Ce qui existe aujourd'hui
 
@@ -98,9 +101,9 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   SQLite, survit à un redémarrage).
 - `WorkerRegistry` — pool de workers déclaratif (`config/workers.yaml`),
   aucun worker codé en dur.
-- `WorkerSelector` — capability > gouvernance > disponibilité provider >
-  priorité ; jamais le coût comme critère de sélection du worker
-  lui-même.
+- `WorkerSelector` — capacités/exclusions/qualité > disponibilité provider
+  > indépendance de review > pression quota observée (bande 10 points) >
+  priorité > `worker_id` ; le coût reste hors du choix du worker.
 - Gestion de quota consciente du provider (`QuotaManager` +
   `ProviderAdapter` par provider, re-probe réel, jamais un reset simulé).
 - Adaptateur Claude Code (Anthropic).
@@ -1532,6 +1535,31 @@ le détail) :
   principes qu'il incarne (stdlib avant dépendance, solution minimale)
   sont déjà la politique explicite de ce projet (§1, `CONTRIBUTING.md`).
 
+### P17 — Quota-aware worker routing — `DONE`
+
+Défaut observé : Alice/Anthropic et Victor/OpenAI ont tous deux une
+priorité de 100. Le sélecteur ignorait `quota_windows[].utilization` et
+tranchait donc par `worker_id`, ce qui favorisait lexicalement Alice même
+quand le quota OpenAI était moins utilisé. `QuotaManager` fournissait déjà
+ces observations lors du probe de disponibilité.
+
+Après capacités, exclusions/auteur distinct, qualité minimale et
+disponibilité, la policy d'indépendance provider pour la review est
+appliquée avant le classement quota. La pression vaut le maximum des
+`utilization` connues des fenêtres. Les `None` sont ignorées ; si toutes
+sont inconnues, la pression reste `None` et n'est jamais fabriquée à 0 %.
+Les candidats inconnus restent éligibles et sont neutres dans la bande.
+
+La bande de tolérance vaut 0,10 (10 points de pourcentage) au-dessus de
+la plus faible pression connue. Les providers connus dans cette bande et
+les providers à pression inconnue sont départagés par priorité
+décroissante, puis `worker_id` lexical ; les pressions connues situées
+hors de cette bande ne préemptent pas les candidats de la bande. Aucun
+second probe n'est effectué : le classement réutilise le même résultat
+`QuotaManager.get()` que la disponibilité. P17 ne concerne que le routing
+à partir du quota observé et reste indépendant de P14 (tokens, coûts et
+métriques d'efficacité).
+
 ### Ordre approuvé
 
 1. P12 (`DONE`) puis P1 (`DONE`) : cycle productisation/onboarding,
@@ -1564,6 +1592,9 @@ le détail) :
     WorkItem/son MVP ne sont plus marqués `RUNNING` avant que les
     prérequis pré-exécution aient réussi. Voir sous-section P13.7
     ci-dessus.
+11. P17 (`DONE`) : routing quota-aware déterministe dans l'unique
+    `WorkerSelector`, après disponibilité et gouvernance, sans probe
+    additionnel ; indépendant de P14.
 
 ### Table des propositions
 
@@ -1590,6 +1621,7 @@ le détail) :
 | P13.4 | Remédiation post-audit externe (Mistral) | Un audit technique externe a trouvé 11 findings (1 HIGH, 4 MEDIUM, 6 LOW) sur le SHA `75b3ef5` — combien sont réels, et corrigés comment ? | **`DONE` (2026-09-23)** — 8/11 corrigés (dont le HIGH), 2 documentés/différés (YAGNI), 1 classé P16 (candidat DELETE). Rapport : `docs/reports/mistral-engine-audit-2026-09-23.md` ; voir sous-section P13.4 ci-dessus |
 | P15 | Prompt optimization externe | Une capacité d'optimisation de prompts basée sur un dataset/métrique réels (candidat : Opik Optimizer) mérite-t-elle d'être étudiée, avant toute intégration ? | **APPROUVÉ POUR ÉTUDE** (2026-09-23). Pas d'intégration ; dépend de P14 (non implémenté) pour la télémétrie. Comparaison complète : `docs/ECOSYSTEM.md` ; voir sous-section P15 ci-dessus |
 | P16 | Revue de simplification YAGNI/REUSE FIRST | Une revue structurée (DELETE → STDLIB → REUSE → PACKAGE → BUILD) doit-elle encadrer toute recommandation de simplification, y compris celles d'un audit externe ? | **APPROUVÉ POUR REVUE** (2026-09-23). Pas de refactor global autorisé par ce seul vote ; candidats déjà identifiés : `Project.current_mvp_id` (DELETE, analyse compatibilité requise), fingerprint d'environnement non-Python (BUILD rejeté, YAGNI) ; voir sous-section P16 ci-dessus |
+| P17 | Quota-aware worker routing | Le `WorkerSelector` doit-il exploiter les `utilization` déjà sondées pour préférer un provider disponible nettement moins consommé ? | **`DONE`** — pression=max(utilization connue), bande de 10 points, inconnu neutre, gouvernance avant quota, aucun second probe ; indépendant de P14 |
 | P13.5 | Frontière moteur/librairie : injection du `WorkerRegistry`, `workers:` optionnel | `aido.yaml` doit-il rester la source de configuration complète du pool de workers, ou le moteur doit-il accepter un `WorkerRegistry` construit/injecté par l'application appelante (AIDO Code) ? | **`DONE`** (2026-09-24) — `workers:` optionnel dans `ProjectConfig` ; `OrchestratorEngine`/`ProjectRuntime` acceptent `worker_registry=` ; `WorkerSelector` reste seul propriétaire de la sélection ; chemin legacy fichier intégralement conservé et testé ; voir sous-section P13.5 ci-dessus |
 | P13.6 | Retrait de la commande produit `aido` (cutover AIDO Code) | AIDO Code ayant atteint son propre cutover produit, `ai-dev-orchestrator` doit-il cesser d'installer la commande `aido` ? | **`DONE`** (2026-09-24) — `[project.scripts]` retiré de `pyproject.toml` ; `orchestrator.cli`/`default_workers.yaml` conservés, legacy/internes, toujours réellement testés ; aucun binaire de compatibilité ajouté (YAGNI) ; voir sous-section P13.6 ci-dessus |
 | P13.7 | Pre-execution state safety | Le cutover M8 d'AIDO Code a révélé un défaut réel (`WI-M8-01` resté `RUNNING` durablement, sans `ExecutionRecord`) — un WorkItem/son MVP doivent-ils n'être marqués `RUNNING` qu'une fois tous les prérequis pré-exécution (préparation Git notamment) réellement satisfaits ? | **`DONE`** (2026-09-25) — `mark_mvp_running`/`mark_work_item_running` déplacés après les prérequis dans `_execute_work_item` et `_resume_dev_b_wait` (deux sites réels) ; invariant de recovery existant inchangé ; 4 nouveaux tests, chacun vérifié rouge sans le correctif ; `WI-M8-01` non modifié rétroactivement (YAGNI) ; voir sous-section P13.7 ci-dessus |
