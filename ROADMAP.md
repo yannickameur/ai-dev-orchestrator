@@ -96,8 +96,8 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   les filtres qualité et gouvernance de review. Indépendant de P14.
 - **P18 (live execution events and graceful interruption) :
   `IN PROGRESS`** (GO humain 2026-09-26), voir §13. Prérequis pour AIDO
-  Code M3 ; P18-01 `DONE` (transport `on_event`) ; P18-02/P18-03 pas
-  commencés.
+  Code M3 ; P18-01 `DONE` (transport `on_event`) ; P18-02 `DONE`
+  (métadonnées fines DEV A/B/FIX/QA/Git) ; P18-03 pas commencé.
 
 ## 3. Ce qui existe aujourd'hui
 
@@ -1564,7 +1564,7 @@ second probe n'est effectué : le classement réutilise le même résultat
 à partir du quota observé et reste indépendant de P14 (tokens, coûts et
 métriques d'efficacité).
 
-### P18 — Live execution events and graceful interruption — `APPROUVÉ` / `IN PROGRESS` (GO humain 2026-09-26 ; P18-01 `DONE`)
+### P18 — Live execution events and graceful interruption — `APPROUVÉ` / `IN PROGRESS` (GO humain 2026-09-26 ; P18-01/P18-02 `DONE`)
 
 **Constat réel**, vérifié par inspection directe de `src/orchestrator/
 engine.py`/`mvp_manager.py`/`execution_store.py`/`adaptive_execution.py`/
@@ -2403,8 +2403,28 @@ jusqu'à `MVPManager.run_next_work_item(mvp_id, on_event=...)`,
 `mark_work_item_running`) et `work_item.recovery_required` (après
 reconciliation) réellement émis en direct ; `RunResult.events` inchangé
 (toujours le seul `work_item.<status>` grossier) ; 1332 tests (1325 +
-7 nouveaux), `git diff --check` propre. **P18-02/P18-03 : pas
-commencés.**
+7 nouveaux), `git diff --check` propre.
+**P18-02 `DONE`** (2026-09-26) : `EngineEvent` étendu
+(`execution_id`/`phase`/`status`/`worker_id`/`worker_display_name`/
+`provider`/`backend`/`profile_id`/`model`/`quality_tier`/
+`reasoning_effort`/`commit_sha`, tous optionnels, `None` par défaut) ;
+`_run_development` (partagée par DEV A/DEV B/DEV FIX, labellisée par
+site d'appel via un nouveau paramètre `phase`) émet
+`{phase}.selected/started/completed/failed` — et `.interrupted` en
+réutilisant honnêtement le statut `INTERRUPTED` déjà réel de
+`RalphExecutionEngine` (timeout), sans attendre P18-03 ; `profile_id`/
+`quality_tier` proviennent de `Worker.profile()` résolu au moment de la
+sélection (Adaptive Execution toujours non branché) ; `model`/
+`reasoning_effort` viennent de l'exécution réellement lancée.
+`_run_qa_and_finalize` émet `qa.started` puis exactement un de
+`qa.pass`/`qa.fail`/`qa.inconclusive` (verdict `None` mappé
+honnêtement sur `qa.inconclusive`, jamais PASS fabriqué) ; `git.
+merge_ready`/`git.merge_completed` (avec SHA + tag) émis d'après l'état
+réel de `GitGovernanceService` après coup — `git.merge_started` reste
+volontairement absent (pas de fait intermédiaire réel, voir la
+relecture de code plus haut). `RunResult.events` toujours inchangé.
+1335 tests (1332 + 3 nouveaux), `git diff --check` propre.
+**P18-03 : pas commencé.**
 
 ### Ordre approuvé
 
@@ -2443,7 +2463,7 @@ commencés.**
     additionnel ; indépendant de P14.
 12. P18 (`IN PROGRESS`, GO humain 2026-09-26) : événements live publics
     (`on_event`) + interruption/recovery propre, prérequis pour AIDO
-    Code M3 ; P18-01 `DONE`, P18-02/P18-03 pas commencés. Voir
+    Code M3 ; P18-01/P18-02 `DONE`, P18-03 pas commencé. Voir
     sous-section P18 ci-dessus.
 
 ### Table des propositions
@@ -2472,7 +2492,7 @@ commencés.**
 | P15 | Prompt optimization externe | Une capacité d'optimisation de prompts basée sur un dataset/métrique réels (candidat : Opik Optimizer) mérite-t-elle d'être étudiée, avant toute intégration ? | **APPROUVÉ POUR ÉTUDE** (2026-09-23). Pas d'intégration ; dépend de P14 (non implémenté) pour la télémétrie. Comparaison complète : `docs/ECOSYSTEM.md` ; voir sous-section P15 ci-dessus |
 | P16 | Revue de simplification YAGNI/REUSE FIRST | Une revue structurée (DELETE → STDLIB → REUSE → PACKAGE → BUILD) doit-elle encadrer toute recommandation de simplification, y compris celles d'un audit externe ? | **APPROUVÉ POUR REVUE** (2026-09-23). Pas de refactor global autorisé par ce seul vote ; candidats déjà identifiés : `Project.current_mvp_id` (DELETE, analyse compatibilité requise), fingerprint d'environnement non-Python (BUILD rejeté, YAGNI) ; voir sous-section P16 ci-dessus |
 | P17 | Quota-aware worker routing | Le `WorkerSelector` doit-il exploiter les `utilization` déjà sondées pour préférer un provider disponible nettement moins consommé ? | **`DONE`** — pression=max(utilization connue), bande de 10 points, inconnu neutre, gouvernance avant quota, aucun second probe ; indépendant de P14 |
-| P18 | Live execution events and graceful interruption | `OrchestratorEngine` doit-il exposer des événements publics fins (DEV A/DEV B/DEV FIX/QA/Git) en temps réel, avec les métadonnées réellement décidées, et traiter explicitement une interruption pendant `run()` ? | **`IN PROGRESS`** (GO humain 2026-09-26) — callback `on_event` optionnel ; **P18-01 `DONE`** (transport live, `EngineEvent` dans `orchestrator.engine_events`, `RunResult.events` inchangé) ; P18-02 (métadonnées fines)/P18-03 (interruption) pas commencés ; Adaptive Execution non branché ; recovery existant réutilisé sans changement ; voir sous-section P18 ci-dessus |
+| P18 | Live execution events and graceful interruption | `OrchestratorEngine` doit-il exposer des événements publics fins (DEV A/DEV B/DEV FIX/QA/Git) en temps réel, avec les métadonnées réellement décidées, et traiter explicitement une interruption pendant `run()` ? | **`IN PROGRESS`** (GO humain 2026-09-26) — callback `on_event` optionnel ; **P18-01/P18-02 `DONE`** (transport live + métadonnées fines DEV A/B/FIX/QA/Git, `EngineEvent` dans `orchestrator.engine_events`, `RunResult.events` inchangé) ; P18-03 (interruption) pas commencé ; Adaptive Execution non branché ; recovery existant réutilisé sans changement ; voir sous-section P18 ci-dessus |
 | P13.5 | Frontière moteur/librairie : injection du `WorkerRegistry`, `workers:` optionnel | `aido.yaml` doit-il rester la source de configuration complète du pool de workers, ou le moteur doit-il accepter un `WorkerRegistry` construit/injecté par l'application appelante (AIDO Code) ? | **`DONE`** (2026-09-24) — `workers:` optionnel dans `ProjectConfig` ; `OrchestratorEngine`/`ProjectRuntime` acceptent `worker_registry=` ; `WorkerSelector` reste seul propriétaire de la sélection ; chemin legacy fichier intégralement conservé et testé ; voir sous-section P13.5 ci-dessus |
 | P13.6 | Retrait de la commande produit `aido` (cutover AIDO Code) | AIDO Code ayant atteint son propre cutover produit, `ai-dev-orchestrator` doit-il cesser d'installer la commande `aido` ? | **`DONE`** (2026-09-24) — `[project.scripts]` retiré de `pyproject.toml` ; `orchestrator.cli`/`default_workers.yaml` conservés, legacy/internes, toujours réellement testés ; aucun binaire de compatibilité ajouté (YAGNI) ; voir sous-section P13.6 ci-dessus |
 | P13.7 | Pre-execution state safety | Le cutover M8 d'AIDO Code a révélé un défaut réel (`WI-M8-01` resté `RUNNING` durablement, sans `ExecutionRecord`) — un WorkItem/son MVP doivent-ils n'être marqués `RUNNING` qu'une fois tous les prérequis pré-exécution (préparation Git notamment) réellement satisfaits ? | **`DONE`** (2026-09-25) — `mark_mvp_running`/`mark_work_item_running` déplacés après les prérequis dans `_execute_work_item` et `_resume_dev_b_wait` (deux sites réels) ; invariant de recovery existant inchangé ; 4 nouveaux tests, chacun vérifié rouge sans le correctif ; `WI-M8-01` non modifié rétroactivement (YAGNI) ; voir sous-section P13.7 ci-dessus |

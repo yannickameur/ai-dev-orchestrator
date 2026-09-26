@@ -29,17 +29,28 @@ from typing import Any
 class EngineEvent:
     """The smallest structured event contract a live consumer needs
     (P18, ROADMAP.md §13). See ``ROADMAP.md`` for the full, approved
-    event catalog and DTO field provenance rules — every field beyond
-    the six below is optional and added by P18-02, never guessed by a
-    caller from ``worker_id`` alone.
+    event catalog and DTO field provenance rules.
 
     ``kind`` is one of ``"work_item.<status>"`` (the coarse event this
     project has always produced, still the only thing
-    ``RunResult.events`` ever contains) or, once P18-02 lands, a finer
+    ``RunResult.events`` ever contains) or a finer
     ``"dev_a.<status>"``/``"dev_b.<status>"``/``"dev_fix.<status>"``/
-    ``"qa.<status>"``/``"git.<status>"``/``"run.<status>"`` value —
-    delivered live via ``OrchestratorEngine.run(on_event=...)``, never
-    accumulated into ``RunResult``.
+    ``"qa.<status>"``/``"git.<status>"``/``"run.<status>"`` value
+    (P18-02/P18-03) — delivered live via
+    ``OrchestratorEngine.run(on_event=...)``, never accumulated into
+    ``RunResult``.
+
+    Every field below ``payload`` is optional, ``None`` when genuinely
+    unknown at the time this event is built — never fabricated, never
+    deduced by a caller from ``worker_id`` alone. ``model``/
+    ``reasoning_effort`` come from the real ``ExecutionRequest``/
+    ``ExecutionResult`` this execution actually ran with;
+    ``profile_id``/``quality_tier`` come from the ``Worker``'s own
+    resolved ``ExecutionProfile`` at the exact moment of selection —
+    today, since Adaptive Execution is not wired into production
+    (``ROADMAP.md``, P18), this is always the worker's
+    ``default_profile_id`` profile, never a value Adaptive Execution
+    would have chosen.
     """
 
     kind: str
@@ -48,3 +59,16 @@ class EngineEvent:
     mvp_id: str
     work_item_id: str
     payload: dict[str, Any]
+
+    execution_id: str | None = None
+    phase: str | None = None
+    status: str | None = None
+    worker_id: str | None = None
+    worker_display_name: str | None = None
+    provider: str | None = None
+    backend: str | None = None
+    profile_id: str | None = None
+    model: str | None = None
+    quality_tier: str | None = None
+    reasoning_effort: str | None = None
+    commit_sha: str | None = None
