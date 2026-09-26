@@ -94,6 +94,13 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   dans une bande de 10 points, après disponibilité et gouvernance de review.
   `None` reste inconnu ; le probe existant est réutilisé. P17 est
   indépendant de P14 (aucun suivi tokens/coûts).
+- **P18 (live execution events and graceful interruption)** :
+  `APPROVED` (GO humain 2026-09-26) — **implementation not started**.
+  Contrat détaillé (callback `on_event`, `EngineEvent` étendu, 3
+  WorkItems P18-01/02/03) dans `ROADMAP.md` §13. Adaptive Execution
+  reste non branché en production ; recovery existant
+  (`RecoveryCoordinator`) réutilisé sans modification. `src/`/`tests/`
+  non touchés par cette approbation.
 - **P13.5 (frontière moteur/librairie : injection du `WorkerRegistry`,
   `workers:` optionnel)** : `DONE` (2026-09-24). `ai-dev-orchestrator` ne
   considère plus `aido.yaml` comme la source de configuration complète du
