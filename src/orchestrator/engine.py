@@ -45,8 +45,9 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
+from orchestrator.engine_events import EngineEvent
 from orchestrator.project_config import ProjectConfig, ProjectConfigError
 from orchestrator.project_runtime import (
     ConfigRuntimeConflictError,
@@ -236,33 +237,6 @@ class ProjectStatusSnapshot:
     project_name: str | None
     mvp: MVPStatusSnapshot | None
     work_items: tuple[WorkItemSnapshot, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class EngineEvent:
-    """The smallest structured event contract a frontend needs to render a
-    timeline (§10, ROADMAP.md P13). A frontend must never parse stdout to
-    reconstruct engine state.
-
-    ``kind`` is currently one of ``"work_item.<status>"`` (e.g.
-    ``"work_item.completed"``, ``"work_item.waiting"``,
-    ``"work_item.blocked"``), emitted once per ``run_next_work_item()``
-    call inside ``.run()``: the actual granularity ``MVPManager`` exposes
-    today. Finer sub-steps (``dev_a.running``, ``dev_a.completed``,
-    ``dev_b.running``, ``qa.running``, ``merge.completed``, ...) are NOT
-    emitted anywhere in this codebase yet: ``MVPManager._execute_work_item``
-    runs DEV A/DEV B/QA/merge synchronously inside one call, with no event
-    bus. Exposing that finer timeline is real, separate engine work for a
-    future increment; this type is the formalized contract that work will
-    fill in, not a claim that it already exists.
-    """
-
-    kind: str
-    timestamp: str
-    project_id: str
-    mvp_id: str
-    work_item_id: str
-    payload: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -514,13 +488,29 @@ class OrchestratorEngine:
             last_execution=last_execution, wait=wait_snapshot,
         )
 
-    def run(self, *, max_cycles: int = DEFAULT_MAX_CYCLES) -> RunResult:
+    def run(
+        self, *, max_cycles: int = DEFAULT_MAX_CYCLES,
+        on_event: Callable[[EngineEvent], None] | None = None,
+    ) -> RunResult:
         """Starts or resumes the project: bootstrap (idempotent) then drive
         ``MVPManager.run_next_work_item``, the exact ``aido run`` loop,
         never a second selection/QA/merge implementation. A frontend only
         ever asks to "advance the project"; every decision (WAITING,
         RECOVERY_REQUIRED, which worker, PASS/FAIL, merge) is this
-        engine's alone."""
+        engine's alone.
+
+        ``on_event`` (P18, optional, ``None`` by default) is called
+        synchronously, in this same thread, once per real live progress
+        fact, in the exact order those facts occur — never batched,
+        never reordered, never delivered from a separate thread/queue.
+        Omitting it (the default) leaves every behavior below, including
+        ``RunResult`` itself, exactly as before P18: this parameter adds
+        a live delivery channel, it never changes what ``RunResult``
+        contains. An exception raised by ``on_event`` itself propagates
+        immediately and unchanged to this method's own caller — never
+        swallowed, never converted into an ``EngineError`` — and never
+        undoes a fact already durably persisted before that callback
+        ran."""
         try:
             runtime = ProjectRuntime.open(
                 self._config,
@@ -536,11 +526,14 @@ class OrchestratorEngine:
                 runtime.bootstrap()
             except ConfigRuntimeConflictError as exc:
                 raise EngineError(str(exc)) from exc
-            return self._drive(runtime, max_cycles=max_cycles)
+            return self._drive(runtime, max_cycles=max_cycles, on_event=on_event)
         finally:
             runtime.close()
 
-    def _drive(self, runtime: ProjectRuntime, *, max_cycles: int) -> RunResult:
+    def _drive(
+        self, runtime: ProjectRuntime, *, max_cycles: int,
+        on_event: Callable[[EngineEvent], None] | None = None,
+    ) -> RunResult:
         mvp_id = self._config.mvp.id
         events: list[EngineEvent] = []
         cycles_run = 0
@@ -548,10 +541,13 @@ class OrchestratorEngine:
 
         for cycle in range(1, max_cycles + 1):
             cycles_run = cycle
-            result = asyncio.run(runtime.manager.run_next_work_item(mvp_id))
+            result = asyncio.run(runtime.manager.run_next_work_item(mvp_id, on_event=on_event))
             if result is None:
                 break
-            events.append(self._event_from_result(result))
+            event = self._event_from_result(result)
+            events.append(event)
+            if on_event is not None:
+                on_event(event)
             if all(wi.status in _TERMINAL_STATUSES for wi in runtime.project_store.list_work_items(mvp_id)):
                 break
         else:

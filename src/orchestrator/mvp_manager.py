@@ -147,6 +147,7 @@ from typing import Callable
 
 from orchestrator.adaptive_execution import AdaptiveExecutionSelector
 from orchestrator.complexity_estimation import ComplexityEstimationRequest
+from orchestrator.engine_events import EngineEvent
 from orchestrator.execution_store import ExecutionStatus, ExecutionStore, UnknownExecutionError
 from orchestrator.git_governance import (
     RALPH_RUNTIME_NOISE_PREFIXES,
@@ -354,7 +355,9 @@ class MVPManager:
     def _qa_enabled(self) -> bool:
         return self._qa_engine is not None and self._qa_run_store is not None
 
-    async def run_next_work_item(self, mvp_id: str) -> WorkItemRunResult | None:
+    async def run_next_work_item(
+        self, mvp_id: str, *, on_event: Callable[[EngineEvent], None] | None = None,
+    ) -> WorkItemRunResult | None:
         """Runs exactly one eligible WorkItem of ``mvp_id``, if any is eligible.
 
         Reconciliation (Slice 11b) runs first, unconditionally, if
@@ -372,15 +375,29 @@ class MVPManager:
         latter skips dependency re-checking since it was already
         established. Returns ``None`` when nothing is currently eligible
         and nothing is due.
+
+        ``on_event`` (P18, optional): called synchronously, in order, for
+        every real live progress fact this call produces — never a
+        second orchestration authority, purely an observer. ``None``
+        (the default) reproduces this method's exact pre-P18 behavior.
         """
         if self._recovery_coordinator is not None:
-            self._recovery_coordinator.reconcile_mvp(mvp_id)
-            recovered = await self._try_resume_recovery_required(mvp_id)
+            reconciled = self._recovery_coordinator.reconcile_mvp(mvp_id)
+            if reconciled and on_event is not None:
+                project_id = self._project_state_store.get_mvp(mvp_id).project_id
+                for wi in reconciled:
+                    on_event(EngineEvent(
+                        kind="work_item.recovery_required",
+                        timestamp=self._clock().isoformat(),
+                        project_id=project_id, mvp_id=mvp_id,
+                        work_item_id=wi.work_item_id, payload={},
+                    ))
+            recovered = await self._try_resume_recovery_required(mvp_id, on_event=on_event)
             if recovered is not None:
                 return recovered
 
         if self._wait_coordinator is not None:
-            resumed = await self._try_resume_due_wait(mvp_id)
+            resumed = await self._try_resume_due_wait(mvp_id, on_event=on_event)
             if resumed is not None:
                 return resumed
 
@@ -426,6 +443,7 @@ class MVPManager:
             mvp_id=mvp_id, mvp=mvp, work_item=work_item, dev_worker=dev_worker,
             is_rework=is_rework, resume_context=resume_context,
             dev_model=dev_model, dev_reasoning_effort=dev_reasoning_effort,
+            on_event=on_event,
         )
 
     async def _select_dev_worker(
@@ -524,6 +542,7 @@ class MVPManager:
     async def _execute_work_item(
         self, *, mvp_id: str, mvp: MVP, work_item: WorkItem, dev_worker: Worker, is_rework: bool,
         resume_context: str | None, dev_model: str | None = None, dev_reasoning_effort: str | None = None,
+        on_event: Callable[[EngineEvent], None] | None = None,
     ) -> WorkItemRunResult:
         """WorkItem Flow's entry point — called by ``run_next_work_item``,
         ``_try_resume_due_wait``, and ``_try_resume_recovery_required``.
@@ -540,6 +559,10 @@ class MVPManager:
         ExecutionRecord for `RecoveryCoordinator` to reconcile against
         (see `ROADMAP.md`, P13.7, and the real WI-M8-01 case in
         AIDO Code's own `ROADMAP.md` that revealed this).
+
+        ``on_event`` (P18): ``work_item.started`` is emitted right after
+        ``mark_work_item_running`` below — once this attempt is a
+        durable fact, never before.
         """
         project = self._project_state_store.get_project(mvp.project_id)
 
@@ -560,6 +583,13 @@ class MVPManager:
         # begins only now.
         self._project_state_store.mark_mvp_running(mvp_id)
         work_item = self._project_state_store.mark_work_item_running(work_item.work_item_id)
+        if on_event is not None:
+            on_event(EngineEvent(
+                kind="work_item.started",
+                timestamp=self._clock().isoformat(),
+                project_id=project.project_id, mvp_id=mvp_id,
+                work_item_id=work_item.work_item_id, payload={},
+            ))
 
         if is_rework:
             latest_handoff = self._handoff_store.latest_for_work_item(work_item.work_item_id)
@@ -1069,7 +1099,9 @@ class MVPManager:
         waiting_item = self._project_state_store.mark_work_item_waiting(work_item.work_item_id)
         return WorkItemRunResult(work_item=waiting_item, handoff=None, wait=wait)
 
-    async def _try_resume_due_wait(self, mvp_id: str) -> WorkItemRunResult | None:
+    async def _try_resume_due_wait(
+        self, mvp_id: str, *, on_event: Callable[[EngineEvent], None] | None = None,
+    ) -> WorkItemRunResult | None:
         """Resumes the one due wait for this MVP, if any — never polls.
 
         Re-probes WorkerSelector right now: a theoretical reset time is
@@ -1110,9 +1142,12 @@ class MVPManager:
             mvp_id=mvp_id, mvp=mvp, work_item=work_item, dev_worker=dev_worker,
             is_rework=is_rework, resume_context=resume_context,
             dev_model=dev_model, dev_reasoning_effort=dev_reasoning_effort,
+            on_event=on_event,
         )
 
-    async def _try_resume_recovery_required(self, mvp_id: str) -> WorkItemRunResult | None:
+    async def _try_resume_recovery_required(
+        self, mvp_id: str, *, on_event: Callable[[EngineEvent], None] | None = None,
+    ) -> WorkItemRunResult | None:
         """Resumes the one RECOVERY_REQUIRED WorkItem of this MVP, if any.
 
         Unlike a quota wait, there is no deadline to check — reconciliation
@@ -1144,6 +1179,7 @@ class MVPManager:
             mvp_id=mvp_id, mvp=mvp, work_item=work_item, dev_worker=dev_worker,
             is_rework=False, resume_context=resume_context,
             dev_model=dev_model, dev_reasoning_effort=dev_reasoning_effort,
+            on_event=on_event,
         )
 
     def _requeue_or_give_up(
