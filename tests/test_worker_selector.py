@@ -666,7 +666,7 @@ class TestQuotaManagerErrorHandling:
             )
 
 
-class TestResetCreditsAndQuotaNumbersIgnored:
+class TestQuotaPressureRouting:
     def test_reset_credit_presence_does_not_make_unavailable_provider_selectable(self) -> None:
         credit = ResetCredit(title="Full reset (Weekly + 5 hr)", status=ResetCreditStatus.AVAILABLE, available_count=1)
         manager = _quota_manager(
@@ -699,31 +699,121 @@ class TestResetCreditsAndQuotaNumbersIgnored:
 
         assert selected.worker_id == "claude_dev_01"
 
-    def test_quota_window_utilization_never_influences_ranking(self) -> None:
-        # Alice has a much higher observed utilization than Victor, but
-        # equal priority: the tie-break must stay lexical on worker_id,
-        # never favor the "less used" provider absent an explicit policy.
-        heavy_use = QuotaWindow(
-            window_type="five_hour", source="claude_stream_json", observed_at=UTC_NOW, utilization=0.99
-        )
-        light_use = QuotaWindow(
-            window_type="primary_5h", source="codex_app_server", observed_at=UTC_NOW, utilization=0.01
-        )
-        manager = _quota_manager(
-            {
-                "anthropic": FakeAdapter(_state("anthropic", windows=(heavy_use,))),
-                "openai": FakeAdapter(_state("openai", windows=(light_use,))),
-            }
-        )
-        selector = WorkerSelector(
-            [_alice(priority=50), _victor(priority=50)], manager
+    @staticmethod
+    def _window(provider: str, utilization: float | None, name: str = "primary") -> QuotaWindow:
+        return QuotaWindow(
+            window_type=name,
+            source=f"{provider}_test",
+            observed_at=UTC_NOW,
+            utilization=utilization,
         )
 
+    def _select(self, alice_windows, victor_windows, *, alice_priority=100, victor_priority=100):
+        alice_adapter = FakeAdapter(_state("anthropic", windows=tuple(alice_windows)))
+        victor_adapter = FakeAdapter(_state("openai", windows=tuple(victor_windows)))
+        manager = _quota_manager({"anthropic": alice_adapter, "openai": victor_adapter})
+        selector = WorkerSelector(
+            [_alice(priority=alice_priority), _victor(priority=victor_priority)], manager
+        )
         selected = asyncio.run(
             selector.select(WorkerSelectionRequest(required_capabilities=frozenset({"developer"})))
         )
+        return selected, alice_adapter, victor_adapter, selector
 
+    def test_high_claude_pressure_and_free_codex_select_codex(self) -> None:
+        selected, *_ = self._select(
+            [self._window("anthropic", 0.80)], [self._window("openai", 0.00)]
+        )
+        assert selected.worker_id == "codex_dev_01"
+
+    def test_low_claude_pressure_and_high_codex_select_claude(self) -> None:
+        selected, *_ = self._select(
+            [self._window("anthropic", 0.05)], [self._window("openai", 0.80)]
+        )
         assert selected.worker_id == "claude_dev_01"
+
+    def test_pressures_within_ten_points_defer_to_priority(self) -> None:
+        selected, *_ = self._select(
+            [self._window("anthropic", 0.41)], [self._window("openai", 0.45)],
+            alice_priority=100, victor_priority=90,
+        )
+        assert selected.worker_id == "claude_dev_01"
+
+    def test_same_pressure_band_and_priority_defer_to_worker_id(self) -> None:
+        selected, *_ = self._select(
+            [self._window("anthropic", 0.41)], [self._window("openai", 0.45)]
+        )
+        assert selected.worker_id == "claude_dev_01"
+
+    def test_multiple_windows_use_maximum_known_utilization(self) -> None:
+        selected, *_ = self._select(
+            [self._window("anthropic", 0.80, "five_hour"), self._window("anthropic", 0.00, "seven_day")],
+            [self._window("openai", 0.35)],
+        )
+        assert selected.worker_id == "codex_dev_01"
+
+    def test_none_window_is_ignored_when_another_value_is_known(self) -> None:
+        selected, *_ = self._select(
+            [self._window("anthropic", None, "weekly"), self._window("anthropic", 0.80, "daily")],
+            [self._window("openai", 0.00)],
+        )
+        assert selected.worker_id == "codex_dev_01"
+
+    def test_all_unknown_usage_is_preserved_as_unknown_and_uses_legacy_order(self) -> None:
+        selected, _, _, selector = self._select(
+            [self._window("anthropic", None)], [self._window("openai", None)],
+            alice_priority=100, victor_priority=90,
+        )
+        assert selected.worker_id == "claude_dev_01"
+        # Ranking diagnostics preserve unknown as None; it is never turned
+        # into a synthetic 0.0 (fully unused quota).
+        diagnostics = asyncio.run(
+            selector._diagnose_candidate_providers([_alice(), _victor()])
+        )
+        assert [diagnostic.quota_pressure for diagnostic in diagnostics] == [None, None]
+
+    def test_unavailable_provider_is_eliminated_before_quota_ranking(self) -> None:
+        alice_adapter = FakeAdapter(_state(
+            "anthropic", available=False, reason=UnavailabilityReason.QUOTA_EXHAUSTED,
+            windows=(self._window("anthropic", 0.00),),
+        ))
+        victor_adapter = FakeAdapter(_state("openai", windows=(self._window("openai", 0.99),)))
+        selector = WorkerSelector(
+            [_alice(priority=100), _victor(priority=10)],
+            _quota_manager({"anthropic": alice_adapter, "openai": victor_adapter}),
+        )
+        selected = asyncio.run(
+            selector.select(WorkerSelectionRequest(required_capabilities=frozenset({"developer"})))
+        )
+        assert selected.worker_id == "codex_dev_01"
+
+    def test_review_cross_provider_governance_precedes_quota(self) -> None:
+        # Victor authored. Cross-provider review prefers Anthropic even
+        # though the same-provider OpenAI reviewer has lower quota use.
+        alice = _alice(priority=1)
+        victor = _victor(priority=100)
+        second_openai = Worker.with_single_profile(
+            worker_id="openai_reviewer", display_name="OpenAI reviewer", provider="openai",
+            backend="codex", model="gpt-5.6-terra", capabilities=frozenset({"reviewer"}), priority=999,
+        )
+        selector = WorkerSelector(
+            [alice, victor, second_openai],
+            _quota_manager({
+                "anthropic": FakeAdapter(_state("anthropic", windows=(self._window("anthropic", 0.80),))),
+                "openai": FakeAdapter(_state("openai", windows=(self._window("openai", 0.00),))),
+            }),
+        )
+        selected = asyncio.run(selector.select(WorkerSelectionRequest(
+            required_capabilities=frozenset({"reviewer"}), author_worker_id="codex_dev_01",
+        )))
+        assert selected.worker_id == "claude_dev_01"
+
+    def test_selection_reuses_single_probe_per_distinct_provider(self) -> None:
+        _, alice_adapter, victor_adapter, _ = self._select(
+            [self._window("anthropic", 0.80)], [self._window("openai", 0.00)]
+        )
+        assert alice_adapter.probe_count == 1
+        assert victor_adapter.probe_count == 1
 
 
 class TestSelectionFailureDiagnostics:
