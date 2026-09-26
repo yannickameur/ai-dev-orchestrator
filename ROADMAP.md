@@ -94,9 +94,9 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - **P17 (quota-aware worker routing) : `DONE`** — `WorkerSelector` utilise
   les fenêtres observées pour départager les providers disponibles après
   les filtres qualité et gouvernance de review. Indépendant de P14.
-- **P18 (live execution events and graceful interruption) : `À VOTER`**
-  (2026-09-26), voir §13. Prérequis identifié pour AIDO Code M3 ; aucun
-  WorkItem, aucune implémentation.
+- **P18 (live execution events and graceful interruption) : `APPROUVÉ`**
+  (GO humain 2026-09-26), voir §13. Prérequis pour AIDO Code M3 ; 3
+  WorkItems définis (P18-01/02/03), implémentation pas commencée.
 
 ## 3. Ce qui existe aujourd'hui
 
@@ -1563,7 +1563,7 @@ second probe n'est effectué : le classement réutilise le même résultat
 à partir du quota observé et reste indépendant de P14 (tokens, coûts et
 métriques d'efficacité).
 
-### P18 — Live execution events and graceful interruption — `À VOTER` (proposé 2026-09-26, revue inter-milestone AIDO Code M2/M2.1 → M3)
+### P18 — Live execution events and graceful interruption — `APPROUVÉ` (GO humain 2026-09-26)
 
 **Constat réel**, vérifié par inspection directe de `src/orchestrator/
 engine.py`/`mvp_manager.py`/`execution_store.py`/`adaptive_execution.py`/
@@ -1586,16 +1586,20 @@ AIDO Code (`~/projects/aido-code`) :
    (`adaptive_execution.py`) lorsque l'Adaptive Execution Selector est
    configuré. Rien de tout cela n'est aujourd'hui joint/exposé par
    `OrchestratorEngine`.
-3. Aucun point du moteur ne traite explicitement `KeyboardInterrupt` : un
-   `Ctrl+C` pendant `.run()` se propage tel quel. Le mécanisme de
-   reprise durable existe déjà et fonctionne indépendamment de ce
-   manque : `execution_store` est déjà transmis à `MVPManager` par
-   `ProjectRuntime.open()`, ce qui active `RecoveryCoordinator` en
-   production ; une exécution laissée `RUNNING` par une interruption est
-   donc déjà reconciliée en `RECOVERY_REQUIRED` au prochain
-   `run_next_work_item()`. Le manque réel est seulement l'absence d'une
-   gestion explicite/propre de l'interruption elle-même (jamais une
-   absence de mécanisme de reprise).
+3. Aucun point du moteur ne traite explicitement l'interruption d'un
+   `Ctrl+C` pendant `.run()` (précision apportée ci-dessous : via
+   `asyncio.run()`, le fait réellement observable à l'intérieur des
+   coroutines est d'abord `asyncio.CancelledError`, pas directement
+   `KeyboardInterrupt` — voir "Interruption — comportement actuel exact
+   et contrat cible"). Le mécanisme de reprise durable existe déjà et
+   fonctionne indépendamment de ce manque : `execution_store` est déjà
+   transmis à `MVPManager` par `ProjectRuntime.open()`, ce qui active
+   `RecoveryCoordinator` en production ; une exécution laissée
+   `RUNNING` par une interruption est donc déjà reconciliée en
+   `RECOVERY_REQUIRED` au prochain `run_next_work_item()`. Le manque
+   réel est seulement l'absence d'une gestion explicite/propre de
+   l'interruption elle-même (jamais une absence de mécanisme de
+   reprise).
 
 **Besoin produit** : AIDO Code (M3 — pilotage conversationnel et
 exécution live, `DRAFT`) a besoin d'une timeline live (DEV A/DEV B/DEV
@@ -1618,9 +1622,10 @@ nécessaires. Ce qui manque réellement :
 - l'enrichissement de la snapshot d'exécution publique avec les champs
   déjà persistés (`backend`/`model`/`reasoning_effort`/`profile_id`/
   `quality_tier`) ;
-- un traitement explicite de `KeyboardInterrupt` autour de la boucle de
-  `.run()`, qui s'appuie sur le `RecoveryCoordinator` existant — jamais
-  un second mécanisme de recovery.
+- un traitement explicite de l'interruption (`asyncio.CancelledError`
+  côté coroutines, `KeyboardInterrupt` à la frontière synchrone) autour
+  de la boucle de `.run()`, qui s'appuie sur le `RecoveryCoordinator`
+  existant — jamais un second mécanisme de recovery.
 
 **Hors périmètre de cette proposition** : aucune nouvelle politique de
 sélection de worker, aucune seconde autorité de QA/merge/recovery,
@@ -1628,8 +1633,768 @@ aucun changement de comportement de P17 (quota-aware worker routing,
 désormais fusionné dans `main`, `DONE` — voir sous-section P17
 ci-dessus — indépendant de P18).
 
-**Statut** : `À VOTER`. Aucun WorkItem créé, aucune implémentation
-commencée par cette revue.
+**Relecture de code complémentaire (2026-09-26, avant approbation)**,
+sur le chemin réel d'exécution/interruption :
+
+- `RalphExecutionEngine.execute()` (`ralph_execution_engine.py`) crée
+  l'`ExecutionRecord` en `RUNNING` **avant** de lancer le sous-processus
+  `ralph` (`_default_subprocess_runner`,
+  `asyncio.create_subprocess_exec` + `await
+  asyncio.wait_for(process.communicate(), timeout=...)`). Seul un
+  `asyncio.TimeoutError` interne déclenche `process.kill()` +
+  `mark_interrupted()`. Un `KeyboardInterrupt` levé pendant cet `await`
+  n'est intercepté nulle part sur ce chemin : il se propage tel quel,
+  **le sous-processus `ralph` n'est jamais tué explicitement**, et
+  l'`ExecutionRecord` reste `RUNNING` — jamais `INTERRUPTED` — jusqu'à
+  la reconciliation suivante. C'est le seul vrai risque de process
+  enfant orphelin identifié.
+- Le QA déterministe (`internal_qa_engine.py`) lance ses propres
+  sous-processus (`pytest`, `git diff`) via `subprocess.run()`
+  **synchrone**, dont l'implémentation standard de la bibliothèque tue
+  déjà le child et l'attend (`process.kill()`/`wait()`) avant de
+  repropager toute exception — y compris `KeyboardInterrupt`. Le risque
+  de process orphelin n'existe donc pas côté QA ; seul le statut du
+  `QARun`/du WorkItem doit rester non ambigu (aucun verdict fabriqué).
+- `RecoveryCoordinator.reconcile_work_item()` (`recovery.py`) traite
+  déjà, de façon strictement équivalente, une exécution restée
+  `RUNNING` (orpheline, fatalité inconnue) et une exécution déjà
+  `INTERRUPTED` (fatalité connue, ex. timeout Ralph) : dans les deux
+  cas, la même reconciliation bascule le WorkItem en
+  `RECOVERY_REQUIRED` avec un handoff durable. **Rien à construire
+  ici** : le seul manque réel est de faire terminer l'exécution
+  interrompue par `mark_interrupted()` (plutôt que de la laisser
+  `RUNNING`), et de tuer effectivement le sous-processus.
+- `_try_resume_recovery_required()` relance un WorkItem
+  `RECOVERY_REQUIRED` en rappelant directement `_execute_work_item` —
+  c'est-à-dire exactement le même chemin DEV A/DEV B qu'une tentative
+  fraîche. Il n'existe donc **aucun** fait distinct "recovery
+  started"/"recovery resumed" à observer : la reprise réelle est déjà
+  entièrement couverte par les événements `dev_a.*`/`dev_b.*` de la
+  tentative relancée.
+- `GitGovernanceService.merge()` est un appel Git local unique, rapide,
+  non subdivisable en une phase "started" observable séparément de son
+  issue — il réussit, échoue (`GitHeadDriftError`/`NotMergeableError`),
+  ou bascule `CONFLICT`/`FAILED`, sans fenêtre d'interruption réaliste
+  entre un "started" et un "completed" distincts.
+
+Ces constats affinent la conception ci-dessous : DTO, catalogue
+d'événements, et découpage en trois WorkItems.
+
+#### Architecture live retenue
+
+**Callback synchrone optionnel, filé dans l'appel existant — pas de
+flux/itérateur, pas de thread, pas de daemon, pas de broker.**
+
+```python
+def run(
+    self, *, max_cycles: int = DEFAULT_MAX_CYCLES,
+    on_event: Callable[[EngineEvent], None] | None = None,
+) -> RunResult:
+    ...
+```
+
+Justification : `MVPManager._execute_work_item` exécute déjà DEV A →
+DEV B → QA → merge de façon strictement synchrone, un seul `await` à la
+fois, sur une seule boucle asyncio, jamais en parallèle. Un callback
+appelé en ligne, au moment exact de chaque transition réelle, est donc
+suffisant et strictement plus simple qu'un itérateur/générateur ou
+qu'un event bus : aucune queue, aucune sérialisation, aucun buffering,
+aucune vie propre au-delà de l'appel `run()` lui-même. `on_event=None`
+(défaut) laisse `run()` strictement inchangé — compatibilité totale
+avec tout appelant existant (AIDO Code y compris), zéro changement de
+signature retour (`RunResult` inchangé).
+
+Le callback est filé, en paramètre optionnel avec défaut `None`, à
+travers exactement la même chaîne d'appel existante, sans la
+réorganiser :
+
+```
+OrchestratorEngine.run(on_event=...)
+  -> ProjectRuntime.manager.run_next_work_item(mvp_id, on_event=...)
+    -> MVPManager._execute_work_item(..., on_event=...)
+      -> _run_development(..., on_event=..., phase="dev_a"|"dev_b"|"dev_fix")
+      -> (QA phase existante, on_event=...)
+      -> (merge existant, on_event=...)
+    -> RecoveryCoordinator.reconcile_mvp(..., on_event=...)  # work_item.recovery_required
+```
+
+Un appel `on_event(event)` qui lève est de la responsabilité de
+l'appelant — l'engine ne doit ni l'avaler silencieusement ni
+interrompre le WorkItem Flow à cause d'un callback fautif ; propagation
+directe, jamais un `except Exception: pass` autour de l'appel.
+
+**Note d'implémentation, pas une invention de transition** :
+`_run_development` étant l'unique fonction partagée par DEV A/DEV
+B/DEV FIX (même rôle interne `"developer"` dans les trois cas), c'est
+chaque site d'appel de `_execute_work_item` qui doit fournir
+explicitement le label de phase (`"dev_a"`/`"dev_b"`/`"dev_fix"`) —
+`_run_development` elle-même ne peut pas déduire la phase depuis les
+données dont elle dispose aujourd'hui.
+
+#### Frontière de couches : où vit `EngineEvent` (précision 2026-09-26)
+
+Vérifié par lecture directe des imports réels : `orchestrator.engine`
+importe déjà `orchestrator.project_runtime` (qui construit
+`MVPManager`) — `engine.py` dépend donc de la couche
+`ProjectRuntime`/`MVPManager`, jamais l'inverse
+(`mvp_manager.py` n'importe `orchestrator.engine` nulle part
+aujourd'hui). Or ce sont les faits DEV A/DEV B/QA/Git produits **dans**
+`MVPManager` qui doivent construire des `EngineEvent` pour les passer à
+`on_event`. Si `EngineEvent` reste défini tel quel dans
+`orchestrator.engine`, `mvp_manager.py` devrait l'importer depuis là —
+un import inverse qui, combiné à la dépendance existante
+`engine.py` → `project_runtime.py` → `mvp_manager.py`, fermerait un
+cycle d'import.
+
+**Décision retenue (option A du contrat de revue, la plus simple)** :
+le dataclass `EngineEvent` (et le petit alias de type
+`EngineEventKind`/la liste des `kind` valides, si utile) déménage dans
+un module neutre, sans aucune dépendance vers `engine.py` ni
+`mvp_manager.py` — par exemple `orchestrator.engine_events` — et
+`orchestrator.engine` le **ré-exporte** (`from orchestrator.engine_events
+import EngineEvent`), pour que `from orchestrator.engine import
+EngineEvent` continue de fonctionner à l'identique pour tout code
+existant. `mvp_manager.py` importe le DTO depuis ce même module neutre,
+jamais depuis `orchestrator.engine`.
+
+Option B (un émetteur interne injecté dans `MVPManager`, traduisant des
+faits internes en `EngineEvent` ailleurs) a été écartée : elle
+ajouterait une couche d'indirection (un second type de "fait interne"
+à traduire) pour un problème que déplacer un dataclass sans
+comportement suffit déjà à résoudre — moins simple, sans bénéfice
+réel (KISS).
+
+**Invariants que P18 doit respecter, quelle que soit l'implémentation
+retenue au moment du code** :
+
+- un seul contrat public `EngineEvent` — jamais deux DTO concurrents ;
+- `OrchestratorEngine` reste l'unique façade publique (`.run(...,
+  on_event=...)`) — le module où vit la définition du DTO n'est pas une
+  nouvelle surface publique, seul l'import réexporté depuis
+  `orchestrator.engine` compte comme contrat pour un appelant externe ;
+- `MVPManager` ne dépend jamais de la façade `orchestrator.engine` —
+  aucun nouvel import de `mvp_manager.py` vers `engine.py`, sous aucune
+  forme.
+
+#### `RunResult.events` vs `on_event` — deux canaux distincts, jamais fusionnés
+
+Pour que `on_event=None` garantisse réellement un comportement
+historique inchangé, P18 **ne change ni la forme ni le contenu** de
+`RunResult.events` :
+
+- `RunResult.events` reste exactement ce qu'il est aujourd'hui : un
+  `work_item.<status>` grossier par appel réel à
+  `run_next_work_item()`, jamais une liste de dizaines d'événements
+  DEV A/DEV B/QA/Git — un appelant existant qui inspecte
+  `RunResult.events` après un `run()` ne voit **aucun** changement.
+- `on_event` est le seul canal des événements fins (DEV
+  A/B/FIX/QA/Git/interruption) introduits par P18-02/P18-03 — livrés en
+  direct, jamais accumulés dans `RunResult`.
+- Un `work_item.<status>` continue d'exister dans `RunResult.events`
+  **et** est, en plus, livré à `on_event` quand il est fourni (P18-01) —
+  jamais l'un à la place de l'autre.
+- AIDO Code M3 consomme `on_event` pour sa timeline live ;
+  `RunResult.events` reste ce que `M1`-`M2.1` connaissent déjà.
+- P18 n'ajoute **aucune persistance** des événements fins (pas de
+  table, pas de replay, pas d'historique) — un besoin réel de
+  relecture/replay d'événements est une décision produit séparée,
+  future, YAGNI ici.
+
+#### Sémantique du callback `on_event`
+
+- Appelé **synchrone**, dans le même thread/la même boucle asyncio que
+  `run()` — jamais un thread dédié, jamais une queue, jamais un
+  callback `async def`, jamais un broker.
+- Appelé en **ordre déterministe**, exactement dans l'ordre où chaque
+  fait réel se produit — jamais réordonné, jamais batché.
+- Doit rester léger : `on_event` appartient à l'appelant/frontend, il
+  ne fait jamais partie de l'autorité d'orchestration — l'engine ne lui
+  délègue aucune décision, ne l'attend jamais pour décider de la suite.
+- **Règle exacte en cas d'exception levée par `on_event` lui-même** :
+  l'exception se propage **immédiatement et telle quelle** à l'appelant
+  de `.run()` — jamais avalée (`except Exception: pass` interdit),
+  jamais convertie en `EngineError`/un type interne. L'exécution en
+  cours n'est ni finalisée en `SUCCEEDED` ni relancée automatiquement à
+  cause de ce callback fautif : son état persisté reste exactement ce
+  qu'il était juste avant l'appel `on_event` qui a levé — un WorkItem
+  dont l'exécution avait déjà été finalisée (ex. `SUCCEEDED`) juste
+  avant l'appel `on_event` qui a levé reste finalisé ainsi ; un
+  callback fautif ne doit jamais pouvoir corrompre l'état déjà persisté
+  d'un fait déjà accompli. C'est un contrat déterministe, couvert par
+  test (voir P18-01).
+
+#### `EngineEvent` — DTO public étendu
+
+Le type existant `EngineEvent`
+(`kind`/`timestamp`/`project_id`/`mvp_id`/`work_item_id`/`payload`) est
+**étendu**, jamais remplacé par un second type : les événements
+grossiers `work_item.<status>` déjà retournés par `RunResult.events`
+gardent exactement la même forme pour tout consommateur existant. Tous
+les nouveaux champs sont optionnels, `None` par défaut :
+
+```python
+@dataclass(frozen=True, slots=True)
+class EngineEvent:
+    kind: str                          # event_type, ex. "dev_a.started" — inchangé de nom (déjà "kind")
+    timestamp: str
+    project_id: str
+    mvp_id: str
+    work_item_id: str
+    payload: dict[str, Any]            # inchangé — détail structuré minimal, jamais un blob libre
+
+    execution_id: str | None = None
+    phase: str | None = None           # "dev_a" | "dev_b" | "dev_fix" | "qa" | "git" | "run" | None
+    status: str | None = None          # statut ExecutionStatus/QAVerdict/GitWorkItemStatus concerné, en str
+    worker_id: str | None = None
+    worker_display_name: str | None = None
+    provider: str | None = None
+    backend: str | None = None
+    profile_id: str | None = None
+    model: str | None = None
+    quality_tier: str | None = None
+    reasoning_effort: str | None = None
+    commit_sha: str | None = None
+```
+
+`payload` reste le seul emplacement pour un détail structuré
+supplémentaire réellement nécessaire (ex. `resumed_from_recovery: bool`
+sur un `dev_a.selected`/`dev_b.selected` de reprise — voir ci-dessous) ;
+jamais un doublon des champs typés ci-dessus. Une donnée inconnue au
+moment de l'événement reste `None`, jamais fabriquée. Aucun champ n'est
+déductible par AIDO Code depuis `worker_id` seul —
+`provider`/`backend`/`profile_id`/`model`/`quality_tier`/
+`reasoning_effort` sont toujours portés explicitement par l'événement
+lui-même.
+
+#### Catalogue d'événements — uniquement des faits réels
+
+```
+work_item.started
+work_item.waiting
+work_item.recovery_required
+work_item.blocked
+work_item.failed
+work_item.completed
+
+dev_a.selected
+dev_a.started
+dev_a.completed
+dev_a.failed
+dev_a.interrupted
+
+dev_b.selected
+dev_b.started
+dev_b.completed
+dev_b.failed
+dev_b.interrupted
+
+dev_fix.selected
+dev_fix.started
+dev_fix.completed
+dev_fix.failed
+dev_fix.interrupted
+
+qa.started
+qa.pass
+qa.fail
+qa.inconclusive
+
+git.merge_ready
+git.merge_completed
+
+run.interruption_requested
+run.interrupted
+```
+
+Écarts assumés, documentés, par rapport à la liste cible initialement
+envisagée :
+
+- **`recovery.required` fusionné dans `work_item.recovery_required`** :
+  un seul fait réel (la reconciliation bascule le WorkItem), jamais
+  deux noms pour la même transition.
+- **`recovery.started`/`recovery.resumed` retirés** :
+  `_try_resume_recovery_required` relance littéralement
+  `_execute_work_item` — la reprise réelle EST la séquence
+  `dev_a.selected`/`dev_a.started` (ou `dev_b.*`) de la tentative
+  relancée. Un `payload={"resumed_from_recovery": true}` sur cet
+  événement porte l'information sans dupliquer la transition.
+- **`git.merge_started` retiré** : `GitGovernanceService.merge()` est
+  un appel Git local atomique et rapide, sans phase intermédiaire
+  réellement observable entre "started" et son issue — voir la
+  relecture de code ci-dessus.
+
+#### Modèles/tiers/reasoning réellement configurés (`config/workers.yaml`, vérifié 2026-09-26)
+
+Conforme à l'attendu, sans écart :
+
+| Worker | Provider/backend | economy | standard | deep |
+|---|---|---|---|---|
+| Alice / Lydie | anthropic / claude_code | haiku, `SIMPLE` | sonnet, `STANDARD` | sonnet, `COMPLEX` |
+| Victor / Yannick(oscar) | openai / codex | gpt-6-luna, `SIMPLE`, `reasoning_effort=low` | gpt-6-sol, `STANDARD`, `reasoning_effort=medium` | gpt-6-astra, `COMPLEX`, `reasoning_effort=high` |
+| Nathaniel (milo) / Juno | mistral / vibe | — | vibe-default, `STANDARD` (pas de `reasoning_effort`) | — |
+| Dana / Kai | deepseek / kimi, claude_code | — | deepseek-flash / kimi-for-coding, `STANDARD` | — |
+
+Dana/Kai restent `enabled: false` (pas de clé API réelle, pas de preuve
+d'exécution). `quality_tier` (capacité minimale requise) et
+`reasoning_effort` (effort du provider, quand il en expose un) restent
+deux notions distinctes, jamais confondues dans le DTO ni dans son
+mapping.
+
+#### État réel d'Adaptive Execution — non branché, P18 ne le branche pas
+
+Confirmé de nouveau par lecture directe : `ProjectRuntime.open()` ne
+construit et ne passe **aucun** `adaptive_execution_selector` à
+`MVPManager` (`project_runtime.py`). En conséquence, `_select_dev_worker`
+retourne toujours `(worker, None, None)`, et `_execute_work_item`
+retombe systématiquement sur `dev_worker.profile()` (le
+`default_profile_id` du worker, ex. `standard`). **P18 n'active pas
+Adaptive Execution** : les événements DEV A/DEV B/DEV FIX exposent le
+`profile_id`/`model`/`quality_tier`/`reasoning_effort` **réellement
+exécutés aujourd'hui**, c'est-à-dire ceux du profil par défaut du
+worker sélectionné par `WorkerSelector` — jamais une valeur
+qu'Adaptive Execution *aurait* choisie si elle était branchée. Le
+branchement réel d'Adaptive Execution en production reste une décision
+produit séparée, non couverte par P18.
+
+**Provenance exacte de chaque champ (précision 2026-09-26)** — aucun
+n'est déduit du seul `worker_id` :
+
+- `model`/`reasoning_effort` : déjà portés par `ExecutionRecord`
+  (`execution_store.py`) — l'événement les lit directement depuis le
+  `ExecutionRecord`/`ExecutionResult` réellement produit par
+  `RalphExecutionEngine.execute()`, jamais recalculés séparément.
+- `profile_id`/`quality_tier` : **absents d'`ExecutionRecord`
+  aujourd'hui** (seule `AdaptiveExecutionDecision`, non alimentée en
+  production, les porte). P18 ne les fait pas migrer dans
+  `ExecutionRecord`/SQLite — YAGNI, aucune persistance supplémentaire
+  pour la seule timeline. Le moteur les résout **au moment réel où le
+  profil est choisi**, dans `_select_dev_worker`/`_execute_work_item`
+  (aujourd'hui : `dev_worker.profile()`, qui expose déjà `profile_id`
+  implicitement via `default_profile_id` et l'objet profil
+  lui-même, et `quality_tier` via ce même profil) — cette valeur est
+  portée directement dans le contexte qui construit l'événement
+  `*.selected`/`*.started`, jamais relue depuis une table après coup.
+- Si Adaptive Execution est branché plus tard (hors P18), le même point
+  de construction d'événement lira `AdaptiveExecutionDecision` à la
+  place de `dev_worker.profile()` — sans changer le DTO `EngineEvent`
+  ni sa sémantique.
+- AIDO Code ne déduit jamais aucun de ces champs depuis `worker_id` —
+  toute valeur vient de l'événement lui-même, ou reste `None`.
+
+#### Interruption — comportement actuel exact et contrat cible
+
+**Chemin réel aujourd'hui** : `KeyboardInterrupt` pendant `await
+process.communicate()` (dans `_default_subprocess_runner`) n'est
+intercepté par rien — ni par `RalphExecutionEngine.execute()` (seuls
+`RalphTimeoutError`/`FileNotFoundError`/`RalphExecutionEngineError`
+sont attrapés, jamais `BaseException`), ni par `MVPManager`, ni par
+`OrchestratorEngine.run()`/`_drive()`. Conséquences observées par
+lecture de code :
+
+- le sous-processus `ralph` (et son propre enfant provider) **n'est
+  pas tué** — orphelin tant que rien ne le fait ;
+- l'`ExecutionRecord` reste `RUNNING` (jamais `INTERRUPTED`) ;
+- `finally: shutil.rmtree(runtime_dir, ...)` s'exécute quand même
+  (nettoyage du répertoire Ralph temporaire, sans effet sur le
+  sous-processus) ;
+- `finally: runtime.close()` dans `OrchestratorEngine.run()` s'exécute
+  aussi (fermetures SQLite propres) ;
+- au `run_next_work_item()` suivant, `RecoveryCoordinator` détecte
+  l'exécution `RUNNING` sans propriétaire et bascule le WorkItem en
+  `RECOVERY_REQUIRED` — mais **sans avoir jamais tué le process
+  orphelin**.
+
+**Correction 2026-09-26 — ce n'est pas seulement `KeyboardInterrupt`** :
+`_drive()` appelle `asyncio.run(runtime.manager.run_next_work_item(...))`.
+Sur un vrai SIGINT/Ctrl+C, le comportement réel de `asyncio.run()`
+(`asyncio/runners.py`, toutes versions Python supportées par ce
+projet) est en deux temps :
+
+1. Le `KeyboardInterrupt` interrompt d'abord la boucle asyncio elle-même
+   (typiquement à l'intérieur de son `select`/`epoll` d'attente) — pas
+   forcément à l'intérieur de la coroutine applicative.
+2. `asyncio.run()` intercepte cela dans son propre `finally` et appelle
+   `_cancel_all_tasks(loop)` : chaque tâche encore en cours — donc la
+   coroutine `run_next_work_item()` en train de tourner — reçoit un
+   `task.cancel()`, et la boucle est relancée brièvement pour laisser
+   cette annulation se propager. **C'est à ce moment précis que le code
+   applicatif, à l'intérieur de `await process.communicate()` ou de
+   `await asyncio.wait_for(...)`, observe `asyncio.CancelledError` — pas
+   `KeyboardInterrupt`.** Le `KeyboardInterrupt` original n'est
+   re-levé par `asyncio.run()` vers l'appelant synchrone
+   (`OrchestratorEngine.run()`/le frontend) qu'**après** que cette passe
+   d'annulation soit terminée.
+
+Le contrat P18-03 initial, formulé comme "capturer `KeyboardInterrupt`
+autour de l'`await` du sous-processus", était donc incomplet : à cet
+endroit précis (à l'intérieur d'une coroutine), le signal réellement
+observable est `asyncio.CancelledError`.
+
+**Contrat cible P18-03**, construit sur ce constat, sans nouveau
+mécanisme de recovery :
+
+- **Couche async (à l'intérieur des coroutines)** : le point qui attend
+  le sous-processus (`_default_subprocess_runner`, ou l'appelant
+  immédiat dans `RalphExecutionEngine.execute()`) intercepte
+  `asyncio.CancelledError` explicitement, en plus de
+  `asyncio.TimeoutError` — jamais un `except Exception` générique
+  (`CancelledError` hérite de `BaseException` depuis Python 3.8+, donc
+  un `except Exception` ne l'attraperait de toute façon pas).
+  `asyncio.CancelledError` ne doit jamais court-circuiter le nettoyage
+  du sous-processus actif : le kill de l'arbre de processus (voir
+  ci-dessous) et `mark_interrupted()` doivent être **terminés avant**
+  toute re-propagation de l'annulation. Une fois le nettoyage terminé,
+  `asyncio.CancelledError` est **re-levée** (jamais avalée, jamais
+  transformée silencieusement en un retour "succès" ou en une valeur
+  par défaut) — c'est ce qui permet à `asyncio.run()`'s propre logique
+  d'annulation de se terminer normalement.
+- **Frontière synchrone** : une fois `asyncio.run()` revenu (après sa
+  propre passe d'annulation), c'est là — dans `OrchestratorEngine.run()`
+  ou plus haut, côté frontend — que `KeyboardInterrupt` lui-même peut
+  être observé/traité (message propre, pas de trace Python brute).
+  **Aucun handler `SIGINT` global n'est installé dans la bibliothèque**
+  (`signal.signal(signal.SIGINT, ...)`) — le comportement par défaut de
+  Python/asyncio (décrit ci-dessus) suffit ; un handler global
+  changerait un comportement observable par tout appelant de ce
+  package, bien au-delà de `OrchestratorEngine.run()`, ce que ce projet
+  ne fait déjà nulle part ailleurs.
+- l'exécution est finalisée par `mark_interrupted()` — jamais laissée
+  `RUNNING`, jamais marquée `SUCCEEDED`/`COMPLETED` ;
+- aucune QA n'est lancée, aucun merge n'est tenté, après une
+  interruption DEV A/DEV B/DEV FIX (déjà garanti par construction : la
+  chaîne d'appel synchrone ne peut pas atteindre QA/merge si l'`await`
+  du développement n'est jamais revenu — une `CancelledError`
+  re-propagée interrompt cette chaîne exactement comme le ferait toute
+  autre exception) ;
+- `RecoveryCoordinator` (inchangé) reprend cette exécution
+  `INTERRUPTED` exactement comme il le fait déjà pour un timeout Ralph ;
+- `run.interruption_requested` puis
+  (`dev_a`/`dev_b`/`dev_fix`)`.interrupted` puis `run.interrupted` sont
+  émis via `on_event`, dans cet ordre, **avant** que l'annulation ne
+  soit re-propagée ;
+- `.run()` retourne ou lève de façon propre (jamais une trace Python
+  brute) — la forme exacte (retour normal avec un `RunResult` partiel
+  vs. exception typée à la frontière synchrone) est un détail
+  d'implémentation de P18-03, à trancher sans introduire un second
+  système de statut.
+
+#### Arrêt de l'arbre de processus, pas seulement de `ralph` (précision 2026-09-26)
+
+**Constat** : aujourd'hui, `process.kill()` (appelé uniquement sur
+`asyncio.TimeoutError`) tue le seul processus `ralph` directement lancé
+par `asyncio.create_subprocess_exec(...)`. Rien ne garantit l'arrêt des
+descendants que `ralph` lui-même lance (le CLI provider réel — `claude`/
+`codex`/`vibe`/un autre backend) : `process.kill()` sur le PID de
+`ralph` seul ne tue pas nécessairement un enfant déjà forké. **Ce projet
+ne revendique aujourd'hui aucun support Windows** (aucune mention dans
+`README.md`/`CONTRIBUTING.md`/`pyproject.toml`, aucun classifieur
+d'OS, `asyncio.create_subprocess_exec` déjà utilisé sans accommodation
+Windows) — la stratégie ci-dessous cible donc POSIX (Linux/macOS, les
+plateformes réellement utilisées par ce projet) ; un support Windows
+resterait `À VOTER`/YAGNI tant qu'un besoin réel n'est pas démontré.
+
+**Stratégie minimale et déterministe (POSIX)**, sans dépendance externe :
+
+- Lancer `ralph` dans son propre groupe de processus/sa propre session
+  (`asyncio.create_subprocess_exec(..., start_new_session=True)` —
+  paramètre déjà supporté nativement par la stdlib, aucune dépendance
+  ajoutée) plutôt que de partager le groupe du processus Python parent.
+- À l'interruption (annulation) ou au timeout existant, terminer le
+  **groupe entier**, pas seulement le PID direct : `os.killpg(pgid,
+  signal.SIGTERM)` (pgid = PID du process, puisqu'il est chef de son
+  propre groupe grâce à `start_new_session=True`), puis, après un court
+  délai/`wait()` sans succès, `os.killpg(pgid, signal.SIGKILL)` —
+  strictement analogue au `process.kill()` déjà utilisé aujourd'hui pour
+  `RalphTimeoutError`, étendu au groupe plutôt qu'au seul PID.
+- `await process.wait()` (déjà fait aujourd'hui pour le timeout) après
+  le/les signaux, pour reaper le process et éviter tout zombie.
+- Cette même stratégie remplace le simple `process.kill()` du chemin
+  `RalphTimeoutError` existant — un seul mécanisme de terminaison de
+  process pour les deux cas (timeout et interruption), jamais deux
+  implémentations parallèles.
+
+**Résultat fonctionnel exigé, vérifiable sans lancer un vrai provider** :
+
+- `ralph` est arrêté ;
+- tout descendant réellement présent dans le même groupe de processus
+  est arrêté avec lui ;
+- le process est reaped (`wait()`), aucun zombie ;
+- aucun provider ne continue de travailler après le Ctrl+C.
+
+**Limite honnête, non dissimulée** : cette stratégie arrête tout ce qui
+reste dans le groupe de processus de `ralph`. Si `ralph`, ou le CLI
+provider qu'il lance, détache explicitement un de ses propres enfants
+dans un nouveau groupe/une nouvelle session (double fork), ce
+sous-descendant échapperait à `killpg` — comportement que ce projet ne
+contrôle pas (`ralph`/les CLIs provider sont des binaires externes déjà
+traités comme tels ailleurs dans ce code) ; documenté comme limite
+connue, jamais présenté comme une garantie absolue. `process.kill()`
+seul (sans groupe de processus) ne suffit **pas** à couvrir le cas
+normal (un provider lancé comme enfant direct de `ralph`, sans double
+fork) — c'est précisément ce que cette stratégie corrige.
+
+#### P18-01 — Public live event transport
+
+**Objectif** : introduire le paramètre `on_event` optionnel sur
+`OrchestratorEngine.run()`, filé jusqu'à
+`MVPManager.run_next_work_item()`, sans changer un seul comportement
+existant quand `on_event=None`.
+
+Dépendances : aucune (première tranche).
+
+Critères d'acceptation :
+
+- `OrchestratorEngine.run(max_cycles=..., on_event:
+  Callable[[EngineEvent], None] | None = None)` ; `RunResult` inchangé.
+- `EngineEvent` vit dans un module neutre sans dépendance vers
+  `engine.py` ni `mvp_manager.py` (ex. `orchestrator.engine_events`),
+  ré-exporté par `orchestrator.engine` pour compatibilité — un seul DTO
+  public, jamais deux ; aucun nouvel import de `mvp_manager.py` vers
+  `orchestrator.engine` (voir "Frontière de couches").
+- `on_event` filé, inchangé de forme, jusqu'à
+  `MVPManager.run_next_work_item(mvp_id, on_event=...)`.
+- `RunResult.events` garde exactement sa forme et son contenu actuels
+  (le seul `work_item.<status>` grossier) — P18 ne le transforme jamais
+  en flux d'événements fins ; les événements fins n'existent que via
+  `on_event` (voir "`RunResult.events` vs `on_event`").
+- Au minimum, les événements `work_item.started` et
+  `work_item.recovery_required` sont réellement émis (nouveaux — les
+  autres `work_item.<status>` existent déjà via `RunResult.events`,
+  cette tranche les fait aussi passer par `on_event` en plus du tuple
+  retourné, jamais l'un à la place de l'autre).
+- Ordre déterministe : chaque événement est émis synchrone, dans
+  l'ordre exact où le fait qu'il décrit se produit — jamais réordonné,
+  jamais batché.
+- Une exception levée par `on_event` se propage immédiatement et telle
+  quelle à l'appelant de `.run()` — jamais avalée, jamais convertie ;
+  l'état déjà persisté avant cet appel `on_event` n'est jamais modifié
+  rétroactivement à cause de cette exception (voir "Sémantique du
+  callback `on_event`").
+- `on_event=None` : comportement, signature de retour, et
+  `RunResult.events` strictement identiques à avant P18 (non-régression
+  prouvée par test).
+
+Tests attendus (offline, seams existants) :
+
+- `run()` sans `on_event` : comportement historique inchangé (fixture
+  de régression directe sur un test existant), `RunResult.events`
+  identique octet pour octet à avant P18 sur un scénario existant.
+- `on_event` fourni : reçoit bien `work_item.started` avant tout
+  `work_item.<status>` terminal du même WorkItem, en plus (jamais à la
+  place) du contenu inchangé de `RunResult.events`.
+- `on_event` fourni : reçoit `work_item.recovery_required` quand
+  `RecoveryCoordinator` reconcilie une exécution orpheline (fixture
+  reprenant `test_recovery.py`).
+- `on_event` qui lève : l'exception remonte jusqu'à l'appelant de
+  `run()` ; le WorkItem/l'exécution déjà finalisés avant cet appel
+  restent finalisés tels quels (pas de "rollback" implicite, pas de
+  double exécution au run suivant).
+- Ordre déterministe vérifié sur un scénario multi-WorkItems (2+
+  WorkItems, plusieurs cycles).
+- `import orchestrator.mvp_manager` ne déclenche aucun import
+  d'`orchestrator.engine` (test statique/`sys.modules`, garde contre
+  toute régression de layering future).
+
+Non-objectifs : aucun événement DEV A/DEV B/DEV FIX/QA/Git fin — c'est
+P18-02. Aucune gestion d'interruption — c'est P18-03.
+
+#### P18-02 — Fine-grained events and execution metadata
+
+**Objectif** : émettre, via `on_event`, la granularité DEV A/DEV B/DEV
+FIX/QA/Git du catalogue ci-dessus, avec les métadonnées réellement
+décidées
+(`worker_id`/`worker_display_name`/`provider`/`backend`/`profile_id`/
+`model`/`quality_tier`/`reasoning_effort`/`commit_sha`).
+
+Dépendances : P18-01.
+
+Critères d'acceptation :
+
+- `profile_id`/`quality_tier` ne migrent vers aucune nouvelle colonne
+  SQLite/`ExecutionRecord` (YAGNI, aucune persistance ajoutée pour la
+  seule timeline) : ils sont portés dans l'événement directement depuis
+  le contexte réel de sélection du profil (`dev_worker.profile()`
+  aujourd'hui, voir "Provenance exacte de chaque champ"), au moment où
+  `*.selected` est construit.
+- Chaque site d'appel de `_run_development` (DEV A, DEV B, DEV FIX)
+  fournit explicitement son label de phase
+  (`"dev_a"`/`"dev_b"`/`"dev_fix"`) à l'événement — jamais déduit du
+  rôle interne `"developer"`, identique dans les trois cas.
+- `*.selected` : émis juste après `_select_dev_worker`, avant tout
+  appel `execute()` — porte
+  `worker_id`/`worker_display_name`/`provider`/`backend`/`profile_id`/
+  `model`/`quality_tier`/`reasoning_effort` (le profil réellement
+  résolu aujourd'hui — `dev_worker.profile()` en l'absence d'Adaptive
+  Execution, voir ci-dessus).
+- `*.started` : émis juste avant `RalphExecutionEngine.execute()`.
+- `*.completed`/`*.failed` : émis juste après `execute()`, selon
+  `ExecutionStatus.SUCCEEDED`/`FAILED` ; `commit_sha` =
+  `git_sha_after` quand connu.
+- `qa.started` : émis avant l'appel au moteur QA ;
+  `qa.pass`/`qa.fail`/`qa.inconclusive` : émis juste après, un seul des
+  trois, selon le verdict réel (`QAVerdict`).
+- `git.merge_ready` : émis quand
+  `compute_merge_eligibility`/`mark_merge_ready` déclare PASS.
+  `git.merge_completed` : émis juste après
+  `GitGovernanceService.merge()`, avec `commit_sha` (SHA mergé) et, si
+  un tag est créé (`create_tag`), le nom du tag dans `payload`.
+- Aucune valeur n'est devinée depuis `worker_id` : toute métadonnée
+  vient de `Worker`/`ExecutionRecord`/`ExecutionResult`/
+  `GitWorkItemRecord` réellement produits par ce passage.
+- Aucun changement à `AdaptiveExecutionSelector`/`adaptive_execution.py` :
+  ni branché, ni modifié — P18-02 lit seulement ce que
+  `_execute_work_item` décide déjà (profil par défaut du worker, voir
+  ci-dessus).
+- Aucun changement à `WorkerSelector`/P17.
+
+Tests attendus (offline) :
+
+- `dev_a.selected`/`.started`/`.completed` reçus, dans cet ordre, avec
+  `worker_id`/`provider`/`backend`/`profile_id`/`model`/`quality_tier`
+  corrects pour un fake worker/profil de test.
+- Idem `dev_b.*` (corrective review) et `dev_fix.*` (après un QA FAIL
+  réel, fixture reprenant un scénario existant de rework).
+- `reasoning_effort` correct pour un worker OpenAI de test
+  (`low`/`medium`/`high`) et `None` pour un worker Anthropic/Mistral de
+  test dont le profil n'en déclare pas.
+- `qa.started` puis exactement un de
+  `qa.pass`/`qa.fail`/`qa.inconclusive`, cohérent avec le `QAVerdict`
+  fake injecté.
+- `git.merge_ready` puis `git.merge_completed` avec le bon
+  `commit_sha`, sur un scénario de merge réel offline (fixture Git
+  temporaire existante).
+- Un champ non résolu (ex. `reasoning_effort` pour un profil qui n'en
+  déclare pas) reste `None`, jamais une chaîne vide ni une valeur
+  devinée.
+- `RunResult`/`ExecutionSnapshot` publics inchangés au-delà de ce que
+  P18-01 a déjà changé (pas de régression sur `.status()`).
+
+Non-objectifs : aucune gestion d'interruption (P18-03) ; aucun
+branchement Adaptive Execution ; aucune modification de
+`WorkerSelector`.
+
+#### P18-03 — Graceful interruption and recovery integration
+
+**Objectif** : rendre l'interruption d'un `run()` actif explicite et
+propre, en réutilisant `RecoveryCoordinator` sans le modifier, avec les
+événements `run.*`/`*.interrupted` correspondants.
+
+Dépendances : P18-01, P18-02.
+
+Critères d'acceptation :
+
+- `asyncio.CancelledError` est explicitement intercepté au point qui
+  attend le sous-processus (`_default_subprocess_runner`, ou
+  l'appelant immédiat dans `RalphExecutionEngine.execute()`), en plus
+  du `asyncio.TimeoutError` déjà géré — jamais un `except Exception`
+  générique (qui n'attraperait de toute façon pas
+  `asyncio.CancelledError`, `BaseException`).
+- Le nettoyage (arrêt de l'arbre de processus + `mark_interrupted()` +
+  émission des événements d'interruption) est **entièrement terminé
+  avant** toute re-propagation de `asyncio.CancelledError` — jamais
+  l'inverse.
+- `asyncio.CancelledError` est **re-levée** après ce nettoyage, jamais
+  avalée, jamais transformée silencieusement en un résultat "succès".
+- `KeyboardInterrupt` lui-même n'est observé/géré qu'à la frontière
+  synchrone (`OrchestratorEngine.run()` ou au-dessus, après le retour
+  de `asyncio.run()`) — jamais capturé à l'intérieur d'une coroutine à
+  la place de `asyncio.CancelledError`.
+- **Aucun handler `SIGINT` global** (`signal.signal(signal.SIGINT,
+  ...)`) n'est installé par cette bibliothèque — le comportement
+  d'annulation standard d'`asyncio.run()` (décrit ci-dessus) est jugé
+  suffisant.
+- Le sous-processus `ralph` est lancé dans son propre groupe de
+  processus/sa propre session POSIX
+  (`start_new_session=True`) ; à l'interruption **et** au timeout
+  existant (chemin `RalphTimeoutError` unifié avec celui-ci — un seul
+  mécanisme de terminaison, jamais deux), le **groupe entier** est
+  terminé (`os.killpg(pgid, SIGTERM)` puis, sans succès après un court
+  délai, `os.killpg(pgid, SIGKILL)`), puis reaped (`await
+  process.wait()`) — jamais un simple `process.kill()` sur le seul PID
+  direct.
+- Aucun support Windows n'est prétendu ou testé par cette tranche
+  (aucune revendication de ce type ailleurs dans ce projet) ; `À
+  VOTER`/YAGNI si un besoin réel apparaît.
+- L'exécution interrompue est finalisée par
+  `ExecutionStore.mark_interrupted()` — jamais laissée `RUNNING`,
+  jamais `SUCCEEDED`.
+- Aucune QA n'est lancée et aucun merge n'est tenté après une
+  interruption DEV A/DEV B/DEV FIX (prouvé par test, pas seulement par
+  construction).
+- `RecoveryCoordinator` (code inchangé) reconcilie cette exécution
+  `INTERRUPTED` en `RECOVERY_REQUIRED` au prochain
+  `run_next_work_item()`, exactement comme pour un timeout Ralph
+  aujourd'hui.
+- Le prochain `run()` reprend via le chemin
+  `_try_resume_recovery_required` existant (inchangé) — aucun second
+  mécanisme de recovery.
+- `run.interruption_requested` est émis dès la capture de
+  `asyncio.CancelledError` ; `(dev_a|dev_b|dev_fix).interrupted` est
+  émis pour l'exécution concernée ; `run.interrupted` est émis juste
+  avant la re-propagation de l'annulation — tous les trois via
+  `on_event`, avant que `.run()` ne retourne/lève à la frontière
+  synchrone.
+- `.run()` ne laisse jamais fuiter une trace Python brute pour ce cas —
+  géré au même niveau que `EngineError`/`EngineConfigError` existants
+  (jamais un troisième type d'erreur non documenté).
+- `aido resume`/`/resume` (frontend, M2) restent hors de portée : P18
+  ne touche à rien côté session AIDO Code.
+
+Tests attendus (offline, `subprocess_runner` fake capable de simuler
+une annulation mi-exécution — jamais un vrai `ralph`/provider) :
+
+- Annulation async simulée (`asyncio.CancelledError` levée dans le fake
+  `subprocess_runner` pendant l'attente) pendant DEV A :
+  `ExecutionRecord` finalisé `INTERRUPTED` (jamais `RUNNING`, jamais
+  `SUCCEEDED`) ; aucun appel QA/merge observé (mock/spy) après
+  l'interruption ; l'annulation est bien re-propagée après le
+  nettoyage (le test l'attend explicitement, ex. `pytest.raises
+  (asyncio.CancelledError)` autour de l'appel interne concerné).
+- Même scénario pendant DEV B (corrective review) : mêmes garanties.
+- Le fake subprocess expose un indicateur vérifiable que le
+  **groupe/l'arbre** a été ciblé pour terminaison (pas seulement le PID
+  direct) — ex. un fake enregistrant l'appel `killpg`/l'équivalent
+  simulé, avec le bon signal puis, si besoin, l'escalade.
+- Le process fake est bien "reaped" (`wait()` observé appelé) — pas de
+  zombie simulé laissé en suspens dans le test.
+- Un `run()` suivant, sur le même projet/état persisté, reprend le
+  WorkItem via `RECOVERY_REQUIRED` (fixture reprenant
+  `test_recovery.py`) sans relance manuelle, sans double exécution —
+  utilise `RecoveryCoordinator` inchangé.
+- Les événements
+  `run.interruption_requested`/`*.interrupted`/`run.interrupted` sont
+  reçus par `on_event`, dans cet ordre, avec les champs attendus,
+  **avant** que l'annulation ne soit re-propagée à l'appelant du test.
+- Un test dédié prouve qu'aucun handler `signal.SIGINT` global n'est
+  installé par ce package (ex. inspection de `signal.getsignal` avant/
+  après un `run()`, inchangé).
+- Aucun test de cette tranche ne consomme un vrai `ralph`/provider —
+  uniquement les seams `subprocess_runner`/`provider_adapters` déjà
+  établis dans ce dépôt.
+
+Non-objectifs : aucun second système de recovery ; aucun changement à
+`RecoveryCoordinator`/la taxonomie existante d'`ExecutionStore`
+(`INTERRUPTED`/`RECOVERY_REQUIRED` déjà là) ; aucune UI/session AIDO
+Code ; aucun changement à `WorkerSelector`/P17 ; aucun serveur/queue/
+broker.
+
+#### Hors périmètre de P18 (l'ensemble des trois WorkItems)
+
+- UI AIDO Code, conversation, sessions M3 (frontend, hors de ce dépôt).
+- P14 (observabilité de consommation/coûts).
+- Branchement réel d'Adaptive Execution en production (décision produit
+  séparée).
+- Tout changement à `WorkerSelector`/P17.
+- WebSocket, serveur HTTP, daemon, broker, Redis/Kafka, toute nouvelle
+  base de données.
+- Refonte générale de `MVPManager`.
+- Streaming JSON public (M5, côté AIDO Code).
+- Parsing Git/stdout par un consommateur — la seule API publique est
+  `on_event`/`EngineEvent`.
+
+**Statut** : `APPROUVÉ` (GO humain 2026-09-26). 3 WorkItems définis
+(P18-01, P18-02, P18-03) ci-dessus. Aucune implémentation commencée par
+cette préparation de contrat — `src/`/`tests/` non modifiés.
 
 ### Ordre approuvé
 
@@ -1666,6 +2431,10 @@ commencée par cette revue.
 11. P17 (`DONE`) : routing quota-aware déterministe dans l'unique
     `WorkerSelector`, après disponibilité et gouvernance, sans probe
     additionnel ; indépendant de P14.
+12. P18 (`APPROUVÉ`, GO humain 2026-09-26) : événements live publics
+    (`on_event`) + interruption/recovery propre, prérequis pour AIDO
+    Code M3 ; 3 WorkItems (P18-01/02/03), implémentation pas commencée.
+    Voir sous-section P18 ci-dessus.
 
 ### Table des propositions
 
@@ -1693,6 +2462,7 @@ commencée par cette revue.
 | P15 | Prompt optimization externe | Une capacité d'optimisation de prompts basée sur un dataset/métrique réels (candidat : Opik Optimizer) mérite-t-elle d'être étudiée, avant toute intégration ? | **APPROUVÉ POUR ÉTUDE** (2026-09-23). Pas d'intégration ; dépend de P14 (non implémenté) pour la télémétrie. Comparaison complète : `docs/ECOSYSTEM.md` ; voir sous-section P15 ci-dessus |
 | P16 | Revue de simplification YAGNI/REUSE FIRST | Une revue structurée (DELETE → STDLIB → REUSE → PACKAGE → BUILD) doit-elle encadrer toute recommandation de simplification, y compris celles d'un audit externe ? | **APPROUVÉ POUR REVUE** (2026-09-23). Pas de refactor global autorisé par ce seul vote ; candidats déjà identifiés : `Project.current_mvp_id` (DELETE, analyse compatibilité requise), fingerprint d'environnement non-Python (BUILD rejeté, YAGNI) ; voir sous-section P16 ci-dessus |
 | P17 | Quota-aware worker routing | Le `WorkerSelector` doit-il exploiter les `utilization` déjà sondées pour préférer un provider disponible nettement moins consommé ? | **`DONE`** — pression=max(utilization connue), bande de 10 points, inconnu neutre, gouvernance avant quota, aucun second probe ; indépendant de P14 |
+| P18 | Live execution events and graceful interruption | `OrchestratorEngine` doit-il exposer des événements publics fins (DEV A/DEV B/DEV FIX/QA/Git) en temps réel, avec les métadonnées réellement décidées, et traiter explicitement une interruption pendant `run()` ? | **`APPROUVÉ`** (GO humain 2026-09-26) — callback `on_event` optionnel, `EngineEvent` étendu (champs `None` par défaut), 3 WorkItems (P18-01/02/03) ; Adaptive Execution non branché ; recovery existant réutilisé sans changement ; implémentation pas commencée ; voir sous-section P18 ci-dessus |
 | P13.5 | Frontière moteur/librairie : injection du `WorkerRegistry`, `workers:` optionnel | `aido.yaml` doit-il rester la source de configuration complète du pool de workers, ou le moteur doit-il accepter un `WorkerRegistry` construit/injecté par l'application appelante (AIDO Code) ? | **`DONE`** (2026-09-24) — `workers:` optionnel dans `ProjectConfig` ; `OrchestratorEngine`/`ProjectRuntime` acceptent `worker_registry=` ; `WorkerSelector` reste seul propriétaire de la sélection ; chemin legacy fichier intégralement conservé et testé ; voir sous-section P13.5 ci-dessus |
 | P13.6 | Retrait de la commande produit `aido` (cutover AIDO Code) | AIDO Code ayant atteint son propre cutover produit, `ai-dev-orchestrator` doit-il cesser d'installer la commande `aido` ? | **`DONE`** (2026-09-24) — `[project.scripts]` retiré de `pyproject.toml` ; `orchestrator.cli`/`default_workers.yaml` conservés, legacy/internes, toujours réellement testés ; aucun binaire de compatibilité ajouté (YAGNI) ; voir sous-section P13.6 ci-dessus |
 | P13.7 | Pre-execution state safety | Le cutover M8 d'AIDO Code a révélé un défaut réel (`WI-M8-01` resté `RUNNING` durablement, sans `ExecutionRecord`) — un WorkItem/son MVP doivent-ils n'être marqués `RUNNING` qu'une fois tous les prérequis pré-exécution (préparation Git notamment) réellement satisfaits ? | **`DONE`** (2026-09-25) — `mark_mvp_running`/`mark_work_item_running` déplacés après les prérequis dans `_execute_work_item` et `_resume_dev_b_wait` (deux sites réels) ; invariant de recovery existant inchangé ; 4 nouveaux tests, chacun vérifié rouge sans le correctif ; `WI-M8-01` non modifié rétroactivement (YAGNI) ; voir sous-section P13.7 ci-dessus |
