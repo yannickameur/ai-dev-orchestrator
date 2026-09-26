@@ -94,6 +94,9 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - **P17 (quota-aware worker routing) : `DONE`** — `WorkerSelector` utilise
   les fenêtres observées pour départager les providers disponibles après
   les filtres qualité et gouvernance de review. Indépendant de P14.
+- **P18 (live execution events and graceful interruption) : `À VOTER`**
+  (2026-09-26), voir §13. Prérequis identifié pour AIDO Code M3 ; aucun
+  WorkItem, aucune implémentation.
 
 ## 3. Ce qui existe aujourd'hui
 
@@ -1559,6 +1562,74 @@ second probe n'est effectué : le classement réutilise le même résultat
 `QuotaManager.get()` que la disponibilité. P17 ne concerne que le routing
 à partir du quota observé et reste indépendant de P14 (tokens, coûts et
 métriques d'efficacité).
+
+### P18 — Live execution events and graceful interruption — `À VOTER` (proposé 2026-09-26, revue inter-milestone AIDO Code M2/M2.1 → M3)
+
+**Constat réel**, vérifié par inspection directe de `src/orchestrator/
+engine.py`/`mvp_manager.py`/`execution_store.py`/`adaptive_execution.py`/
+`recovery.py` le 2026-09-26, à l'occasion de la préparation de M3 côté
+AIDO Code (`~/projects/aido-code`) :
+
+1. `OrchestratorEngine.run()` n'émet qu'un événement grossier
+   `work_item.<status>` par appel à `run_next_work_item()`, une fois que
+   toute la séquence DEV A/DEV B/QA/merge de ce WorkItem est déjà
+   terminée (`MVPManager._execute_work_item` exécute cette séquence de
+   façon synchrone, sans bus d'événements interne). C'est exactement le
+   comportement que le propre docstring d'`EngineEvent` documente déjà
+   comme un manque non comblé, jamais une régression de cette revue.
+2. `ExecutionSnapshot` (la façade publique) n'expose ni `backend`, ni
+   `model`, ni un identifiant de profil d'exécution, ni `quality_tier`,
+   ni `reasoning_effort` — alors que `backend`/`model`/`reasoning_effort`
+   existent déjà, durablement, sur `ExecutionRecord`
+   (`execution_store.py`), et que `profile_id`/`quality_tier` existent
+   déjà, durablement, sur `AdaptiveExecutionDecision`
+   (`adaptive_execution.py`) lorsque l'Adaptive Execution Selector est
+   configuré. Rien de tout cela n'est aujourd'hui joint/exposé par
+   `OrchestratorEngine`.
+3. Aucun point du moteur ne traite explicitement `KeyboardInterrupt` : un
+   `Ctrl+C` pendant `.run()` se propage tel quel. Le mécanisme de
+   reprise durable existe déjà et fonctionne indépendamment de ce
+   manque : `execution_store` est déjà transmis à `MVPManager` par
+   `ProjectRuntime.open()`, ce qui active `RecoveryCoordinator` en
+   production ; une exécution laissée `RUNNING` par une interruption est
+   donc déjà reconciliée en `RECOVERY_REQUIRED` au prochain
+   `run_next_work_item()`. Le manque réel est seulement l'absence d'une
+   gestion explicite/propre de l'interruption elle-même (jamais une
+   absence de mécanisme de reprise).
+
+**Besoin produit** : AIDO Code (M3 — pilotage conversationnel et
+exécution live, `DRAFT`) a besoin d'une timeline live (DEV A/DEV B/DEV
+FIX/QA/Git, avec worker/provider/backend/profil/modèle/quality_tier/
+reasoning_effort réellement décidés) et d'une interruption Ctrl+C
+propre pendant un `aido run` réel, sans jamais reconstruire cela en
+lisant Git/SQLite/stdout depuis AIDO Code — frontière cross-repo stricte
+(`ai-dev-orchestrator`/`aido-code` restent deux dépôts séparés).
+
+**REUSE FIRST — rien de ce qui suit n'est une nouvelle donnée** :
+`ExecutionStore`, `AdaptiveExecutionDecisionStore`, `QARunStore`,
+`GitGovernanceService`/`GitWorkItemStatus`, et `RecoveryCoordinator`
+possèdent déjà toutes les données et toute la mécanique de reprise
+nécessaires. Ce qui manque réellement :
+
+- un mécanisme d'exposition en temps réel de transitions plus fines que
+  `work_item.<status>` (callback, itérateur/générateur, ou event sink —
+  la forme exacte reste à trancher côté moteur, jamais imposée depuis
+  AIDO Code) ;
+- l'enrichissement de la snapshot d'exécution publique avec les champs
+  déjà persistés (`backend`/`model`/`reasoning_effort`/`profile_id`/
+  `quality_tier`) ;
+- un traitement explicite de `KeyboardInterrupt` autour de la boucle de
+  `.run()`, qui s'appuie sur le `RecoveryCoordinator` existant — jamais
+  un second mécanisme de recovery.
+
+**Hors périmètre de cette proposition** : aucune nouvelle politique de
+sélection de worker, aucune seconde autorité de QA/merge/recovery,
+aucun changement de comportement de P17 (quota-aware worker routing,
+désormais fusionné dans `main`, `DONE` — voir sous-section P17
+ci-dessus — indépendant de P18).
+
+**Statut** : `À VOTER`. Aucun WorkItem créé, aucune implémentation
+commencée par cette revue.
 
 ### Ordre approuvé
 
