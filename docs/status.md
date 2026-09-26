@@ -21,8 +21,8 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   (deepseek/kimi via `claude_code` redirigé, `development` uniquement,
   **`enabled: false`**, clé API requise, pas encore de preuve
   d'exécution réelle ; voir `ROADMAP.md` §7/§13).
-- **Tests offline** : 1325 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
-  2026-09-26 après P17), 1 avertissement de collecte préexistant
+- **Tests offline** : 1332 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
+  2026-09-26 après P18-01), 1 avertissement de collecte préexistant
   (`TestChangeAuthorization`). Snapshot, pas un contrat ; le compte
   courant fait foi dans la sortie de `pytest -q`.
 - **Roman Numerals** (pilote externe) : `PASS`.
@@ -95,12 +95,14 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   `None` reste inconnu ; le probe existant est réutilisé. P17 est
   indépendant de P14 (aucun suivi tokens/coûts).
 - **P18 (live execution events and graceful interruption)** :
-  `APPROVED` (GO humain 2026-09-26) — **implementation not started**.
-  Contrat détaillé (callback `on_event`, `EngineEvent` étendu, 3
-  WorkItems P18-01/02/03) dans `ROADMAP.md` §13. Adaptive Execution
-  reste non branché en production ; recovery existant
-  (`RecoveryCoordinator`) réutilisé sans modification. `src/`/`tests/`
-  non touchés par cette approbation.
+  `APPROVED` (GO humain 2026-09-26) — **`IN PROGRESS`**. **P18-01
+  `DONE`** (2026-09-26) : `OrchestratorEngine.run(on_event=...)` live,
+  `EngineEvent` dans le module neutre `orchestrator.engine_events`
+  (ré-exporté par `orchestrator.engine`, un seul type), `RunResult`
+  inchangé. **P18-02 (métadonnées fines DEV A/B/FIX/QA/Git)/P18-03
+  (interruption gracieuse) : pas commencés.** Adaptive Execution reste
+  non branché en production ; recovery existant
+  (`RecoveryCoordinator`) réutilisé sans modification.
 - **P13.5 (frontière moteur/librairie : injection du `WorkerRegistry`,
   `workers:` optionnel)** : `DONE` (2026-09-24). `ai-dev-orchestrator` ne
   considère plus `aido.yaml` comme la source de configuration complète du

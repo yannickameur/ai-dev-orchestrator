@@ -23,6 +23,7 @@ import pytest
 from orchestrator.engine import (
     EngineConfigError,
     EngineError,
+    EngineEvent,
     OrchestratorEngine,
     ProjectSnapshot,
     ProjectStatusSnapshot,
@@ -520,6 +521,190 @@ class TestRun:
             # No eligible worker and no diagnosable reset -> NoEligibleWorkerError
             # propagates, exactly like the underlying MVPManager/CLI behavior.
             engine.run()
+
+
+class TestOnEvent:
+    """P18-01: the optional, synchronous ``on_event`` live channel.
+
+    ``RunResult``/``RunResult.events`` must stay byte-for-byte identical
+    to pre-P18 behavior in every scenario here — ``on_event`` is a
+    strictly additive, live delivery channel, never a replacement.
+    """
+
+    def test_on_event_none_is_byte_for_byte_the_pre_p18_behavior(self, tmp_path: Path) -> None:
+        config_path = _write_config(tmp_path)
+        runner = _ScriptedRalphRunner(
+            [
+                {"topic": "work.completed", "mutate": _commit_action("feature.py", "x = 1\n", "DEV A")},
+                {"topic": "work.completed"},
+            ]
+        )
+        engine = OrchestratorEngine.open(
+            str(config_path), provider_adapters={"anthropic": _FakeAdapter(available=True)},
+            subprocess_runner=runner,
+        )
+        result = engine.run()  # on_event omitted entirely, exactly like every pre-P18 caller
+        assert result.all_terminal is True
+        assert result.reached_max_cycles is False
+        assert result.work_items[0].status == "completed"
+        assert [e.kind for e in result.events] == ["work_item.completed"]
+
+    def test_on_event_receives_started_live_before_run_returns_and_events_unchanged(
+        self, tmp_path: Path,
+    ) -> None:
+        config_path = _write_config(tmp_path)
+        runner = _ScriptedRalphRunner(
+            [
+                {"topic": "work.completed", "mutate": _commit_action("feature.py", "x = 1\n", "DEV A")},
+                {"topic": "work.completed"},
+            ]
+        )
+        engine = OrchestratorEngine.open(
+            str(config_path), provider_adapters={"anthropic": _FakeAdapter(available=True)},
+            subprocess_runner=runner,
+        )
+        seen: list[EngineEvent] = []
+        result = engine.run(on_event=seen.append)
+
+        # Live channel: work_item.started fires (new, P18-01), followed by
+        # the historical work_item.completed — in real emission order.
+        assert [e.kind for e in seen] == ["work_item.started", "work_item.completed"]
+        for event in seen:
+            assert event.project_id == "demo"
+            assert event.mvp_id == "mvp-1"
+            assert event.work_item_id == "wi-1"
+
+        # RunResult.events is untouched by on_event: still only the one
+        # coarse historical event, never the fine "started" one.
+        assert [e.kind for e in result.events] == ["work_item.completed"]
+        assert result.events == (seen[1],)
+
+    def test_on_event_exception_propagates_immediately_before_any_development_runs(
+        self, tmp_path: Path,
+    ) -> None:
+        config_path = _write_config(tmp_path)
+        runner = _ScriptedRalphRunner(
+            [
+                {"topic": "work.completed", "mutate": _commit_action("feature.py", "x = 1\n", "DEV A")},
+                {"topic": "work.completed"},
+            ]
+        )
+        engine = OrchestratorEngine.open(
+            str(config_path), provider_adapters={"anthropic": _FakeAdapter(available=True)},
+            subprocess_runner=runner,
+        )
+
+        class _Boom(RuntimeError):
+            pass
+
+        def _raise(event: EngineEvent) -> None:
+            raise _Boom(f"frontend callback failure on {event.kind}")
+
+        with pytest.raises(_Boom):
+            engine.run(on_event=_raise)
+
+        # The callback raised on the very first event (work_item.started,
+        # before DEV A ever ran) -> no development execution was ever
+        # launched, and the exception was never swallowed/converted.
+        assert runner.calls == []
+
+    def test_on_event_deterministic_order_across_two_cycles(self, tmp_path: Path) -> None:
+        config_path = _write_config(tmp_path)
+        runner = _ScriptedRalphRunner(
+            [
+                {"topic": "work.completed", "mutate": _commit_action("feature.py", "x = 1\n", "DEV A")},
+                {"topic": "work.completed"},
+            ]
+        )
+        engine = OrchestratorEngine.open(
+            str(config_path), provider_adapters={"anthropic": _FakeAdapter(available=True)},
+            subprocess_runner=runner,
+        )
+        seen: list[EngineEvent] = []
+        engine.run(on_event=seen.append)
+        # A single WorkItem, one fresh attempt: exactly the real order the
+        # facts occurred in, never reordered/batched.
+        kinds = [e.kind for e in seen]
+        assert kinds.index("work_item.started") < kinds.index("work_item.completed")
+
+    def test_on_event_receives_recovery_required_for_an_orphaned_execution(
+        self, tmp_path: Path,
+    ) -> None:
+        """A WorkItem left RUNNING behind an orphaned execution (e.g. a
+        crashed prior process — the exact scenario ``RecoveryCoordinator``
+        already reconciles, see ``test_recovery.py``) must surface
+        ``work_item.recovery_required`` live, before the resumed attempt's
+        own events."""
+        from orchestrator.project_runtime import ProjectRuntime
+
+        config_path = _write_config(tmp_path)
+        config = ProjectConfig.load(config_path)
+
+        with ProjectRuntime.open(
+            config, clock=lambda: UTC_T0, provider_adapters={"anthropic": _FakeAdapter()},
+        ) as rt:
+            rt.bootstrap()
+            rt.project_store.refresh_readiness("mvp-1")
+            rt.project_store.mark_mvp_running("mvp-1")
+            rt.project_store.mark_work_item_running("wi-1")
+            rt.execution_store.create(
+                execution_id="orphan-exec-1", task_id="wi-1", worker_id="alice",
+                provider="anthropic", backend="claude_code", model="sonnet", role="developer",
+                started_at=UTC_T0,
+            )  # never finalized — simulates a crashed prior process
+
+        runner = _ScriptedRalphRunner(
+            [
+                {"topic": "work.completed", "mutate": _commit_action("feature.py", "x = 1\n", "DEV A")},
+                {"topic": "work.completed"},
+            ]
+        )
+        engine = OrchestratorEngine.open(
+            str(config_path), provider_adapters={"anthropic": _FakeAdapter(available=True)},
+            subprocess_runner=runner,
+        )
+        seen: list[EngineEvent] = []
+        result = engine.run(on_event=seen.append)
+
+        assert [e.kind for e in seen][:2] == ["work_item.recovery_required", "work_item.started"]
+        assert seen[0].work_item_id == "wi-1"
+        assert seen[0].project_id == "demo"
+        assert seen[0].mvp_id == "mvp-1"
+        # RunResult.events (the coarse historical tuple) is unaffected by
+        # this new live-only event: still only the terminal outcome.
+        assert [e.kind for e in result.events] == ["work_item.completed"]
+
+
+class TestEngineEventLayering:
+    """P18-01: EngineEvent lives in a neutral module so MVPManager never
+    has to import the orchestrator.engine façade to construct one."""
+
+    def test_engine_event_historical_import_path_still_works(self) -> None:
+        from orchestrator.engine import EngineEvent as FromEngine
+        from orchestrator.engine_events import EngineEvent as FromNeutralModule
+
+        assert FromEngine is FromNeutralModule  # exactly one public type, never two
+
+    def test_mvp_manager_does_not_import_the_engine_facade(self) -> None:
+        import ast
+        from pathlib import Path
+
+        import orchestrator.mvp_manager as mvp_manager_module
+
+        source = Path(mvp_manager_module.__file__).read_text()
+        tree = ast.parse(source)
+        imported_modules = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        } | {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module is not None
+        }
+        assert "orchestrator.engine" not in imported_modules
+        assert "orchestrator.engine_events" in imported_modules
 
 
 class TestWorkerRegistryInjection:
