@@ -51,6 +51,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Awaitable, Callable, Sequence
 
+from orchestrator.posix_subprocess import run_in_new_process_group
+
 Clock = Callable[[], datetime]
 IdFactory = Callable[[], str]
 
@@ -641,16 +643,21 @@ SubprocessRunner = Callable[[Sequence[str], Path, float], Awaitable[tuple[int, b
 async def _default_subprocess_runner(
     argv: Sequence[str], cwd: Path, timeout: float
 ) -> tuple[int, bytes, bytes]:
-    process = await asyncio.create_subprocess_exec(
-        *argv, cwd=str(cwd), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
+    """Delegates to ``orchestrator.posix_subprocess.run_in_new_process_group``
+    (P18-03): the configured validation command (``pytest``/``ruff``/
+    ``npm``/...) — and any worker process it spawns, staying in the same
+    POSIX process group — is terminated as a whole on a real timeout or
+    an external cancellation (Ctrl+C), never just the direct child PID.
+    A real timeout is translated into this module's own
+    ``ValidationTimeoutError``; an external cancellation
+    (``asyncio.CancelledError``) is never caught here — it propagates
+    unchanged up through ``QualityGateRunner``/``InternalQAEngine`` to
+    ``MVPManager``, which finalizes the ``QARun`` as ``INTERRUPTED``
+    before re-raising it."""
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        return await run_in_new_process_group(argv, cwd, timeout)
     except asyncio.TimeoutError:
-        process.kill()
-        await process.wait()
         raise ValidationTimeoutError(f"validation command timed out after {timeout}s: {list(argv)!r}")
-    return process.returncode, stdout, stderr
 
 
 EnvironmentProbe = Callable[[Sequence[str], Path], ValidationEnvironmentEvidence]

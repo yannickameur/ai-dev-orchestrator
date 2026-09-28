@@ -39,12 +39,16 @@ from orchestrator.project_state import MVPStatus, ProjectStateStore, WorkItemSta
 from orchestrator.qa import (
     VALIDATION_ENVIRONMENT_CHANGED,
     FailureClassification,
+    QAEvidenceManifest,
     QAPhase,
     QAPolicy,
+    QARunStatus,
     QARunStore,
     QAResult,
     QAVerdictStatus,
+    new_qa_run,
 )
+from orchestrator.recovery import RecoveryCoordinator
 from orchestrator.ralph_execution_engine import ExecutionResult
 from orchestrator.validation import (
     ValidationCommand,
@@ -316,12 +320,12 @@ class DynamicQAEngine:
 
 def _manager(
     project_store, handoff_store, selector, engine, *, git_governance_service, qa_engine, qa_run_store,
-    wait_store=None, qa_policy=None,
+    wait_store=None, qa_policy=None, execution_store=None,
 ) -> MVPManager:
     return MVPManager(
         project_store, handoff_store, selector, engine,
         git_governance_service=git_governance_service, qa_engine=qa_engine, qa_policy=qa_policy or QAPolicy(required_invariant_ids=("workitem-qa-check",)),
-        qa_run_store=qa_run_store, wait_store=wait_store,
+        qa_run_store=qa_run_store, wait_store=wait_store, execution_store=execution_store,
         clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
     )
 
@@ -329,6 +333,7 @@ def _manager(
 def _new_stack(
     tmp_path: Path, *, workers: list[Worker], dev_actions=None, qa_script=None, qa_policy=None,
     wait_store=None, unavailable_provider: str | None = None, git_policy: GitGovernancePolicy | None = None,
+    qa_engine=None, execution_store=None,
 ):
     repo = _git_repo(tmp_path)
     project_store, handoff_store = _stores(tmp_path, repo)
@@ -340,11 +345,11 @@ def _new_stack(
         _real_worker_selector(workers) if unavailable_provider is None
         else _real_worker_selector_with_unavailable(workers, unavailable_provider=unavailable_provider)
     )
-    qa_engine = DynamicQAEngine(qa_script)
+    qa_engine = qa_engine if qa_engine is not None else DynamicQAEngine(qa_script)
     manager = _manager(
         project_store, handoff_store, selector, engine,
         git_governance_service=git_service, qa_engine=qa_engine, qa_run_store=qa_run_store,
-        wait_store=wait_store, qa_policy=qa_policy,
+        wait_store=wait_store, qa_policy=qa_policy, execution_store=execution_store,
     )
     return dict(
         repo=repo, project_store=project_store, handoff_store=handoff_store, git_service=git_service,
@@ -1236,3 +1241,277 @@ class TestOnEventFineGrainedEvents:
         )
         result = asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
         assert result.work_item.status is WorkItemStatus.COMPLETED
+
+
+class CancellableQAEngine:
+    """A QAEngine Protocol fake that also exposes ``run_async`` (P18-03) —
+    proves ``MVPManager._run_qa_cycle`` prefers it over
+    ``asyncio.to_thread(self.run, ...)`` (the synchronous ``.run()`` must
+    never be called when ``run_async`` exists), and lets a test drive a
+    real ``asyncio.CancelledError`` into a QA attempt genuinely in
+    flight."""
+
+    engine_id = "fake-qa"
+
+    def __init__(self, script: list | None = None, *, started_event: "asyncio.Event | None" = None) -> None:
+        self._script = list(script) if script is not None else []
+        self._started_event = started_event
+        self.run_calls = 0
+        self.run_async_calls = 0
+        self.requests: list = []
+
+    def run(self, request):
+        self.run_calls += 1
+        raise AssertionError("MVPManager must prefer run_async over the synchronous .run() (P18-03)")
+
+    async def run_async(self, request):
+        self.run_async_calls += 1
+        self.requests.append(request)
+        if self._started_event is not None:
+            self._started_event.set()
+            await asyncio.sleep(3600)  # blocks until the test cancels the awaiting task
+        if self._script:
+            item = self._script.pop(0)
+            if callable(item):
+                return item(request)
+            if item is not None:
+                return item
+        return _qa_result(head_sha=request.head_sha)
+
+
+class TestQAPhaseInterruption:
+    """P18-03: a real cancellation reaching a QA attempt genuinely in
+    flight — the gap this whole extension exists to close (a plain
+    ``asyncio.to_thread(self.run, ...)`` could never be reached by a real
+    cancellation at all, see ``ROADMAP.md``)."""
+
+    def test_cancellation_during_qa_marks_qarun_interrupted_never_completes_never_merges(
+        self, tmp_path: Path,
+    ) -> None:
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+        started = asyncio.Event()
+        qa_engine = CancellableQAEngine(started_event=started)
+        stack = _new_stack(
+            tmp_path, workers=[alice, victor], qa_engine=qa_engine,
+            dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A"), None],
+        )
+        manager = stack["manager"]
+        seen: list[EngineEvent] = []
+
+        async def _drive_and_cancel() -> None:
+            task = asyncio.ensure_future(manager.run_next_work_item("mvp-1", on_event=seen.append))
+            await started.wait()  # QA is genuinely running now, not merely scheduled
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(_drive_and_cancel())
+
+        assert qa_engine.run_calls == 0  # never the synchronous fallback
+        assert qa_engine.run_async_calls == 1
+
+        runs = stack["qa_run_store"].list_for_work_item("wi-1")
+        assert len(runs) == 1
+        assert runs[0].status is QARunStatus.INTERRUPTED
+        assert runs[0].verdict is None  # never a fabricated PASS/FAIL
+
+        work_item = stack["project_store"].get_work_item("wi-1")
+        assert work_item.status is WorkItemStatus.RUNNING  # never COMPLETED
+
+        record = stack["git_store"].get("wi-1")
+        assert record.status is not GitWorkItemStatus.MERGED
+
+        kinds = [e.kind for e in seen]
+        assert kinds[-3:] == ["run.interruption_requested", "qa.interrupted", "run.interrupted"]
+        assert "git.merge_ready" not in kinds
+        assert "git.merge_completed" not in kinds
+
+
+class TestQAOnlyResumeAfterInterruption:
+    """P18-03: a WorkItem recovered from a QA-phase interruption resumes
+    with a brand-new QA attempt only — DEV A/DEV B are never replayed
+    (the gap ``RecoveryCoordinator`` did not originally cover — see
+    ``ROADMAP.md``)."""
+
+    def _seed_interrupted_qa_state(self, tmp_path: Path) -> dict:
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-1", mvp_id="mvp-1", title="A")
+        execution_store = ExecutionStore(tmp_path / "exec.sqlite3", clock=lambda: UTC_NOW)
+        qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
+        git_service, git_store = _git_service(tmp_path)
+
+        # Simulates DEV A -> DEV B corrective review already having
+        # really happened and succeeded, exactly via the same real
+        # GitGovernanceService calls _run_development itself makes.
+        git_service.prepare_work_item(
+            project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-1", repository_path=repo,
+        )
+        _commit_action("feature.py", "x = 1\n", "DEV A+B result")(repo)
+        head_record = git_service.capture_head("wi-1", repository_path=repo)
+        base_sha, head_sha = head_record.base_sha, head_record.current_head_sha
+
+        execution_store.create(
+            execution_id="exec-devb", task_id="wi-1", worker_id="alice",
+            provider="anthropic", backend="claude_code", model="sonnet", role="developer",
+            started_at=UTC_NOW,
+        )
+        execution_store.mark_succeeded("exec-devb", git_sha_after=head_sha, finished_at=UTC_NOW)
+
+        # The QA attempt that was actually interrupted mid-flight.
+        qa_run = new_qa_run(
+            project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-1",
+            engine_id="fake-qa", phase=QAPhase.FINAL_VERIFICATION,
+            expected_base_sha=base_sha, expected_head_sha=head_sha,
+            policy=QAPolicy(required_invariant_ids=("workitem-qa-check",)), manifest=QAEvidenceManifest(),
+            clock=lambda: UTC_NOW, id_factory=lambda: "qarun-original",
+        )
+        qa_run_store.create(qa_run)
+        qa_run_store.update_status(qa_run.run_id, QARunStatus.RUNNING)
+
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-1")
+
+        coordinator = RecoveryCoordinator(
+            execution_store, handoff_store, project_store, qa_run_store=qa_run_store, clock=lambda: UTC_NOW,
+        )
+        updated = coordinator.reconcile_work_item(
+            project_id="proj-1", mvp_id="mvp-1", work_item=project_store.get_work_item("wi-1"),
+        )
+        assert updated is not None and updated.status is WorkItemStatus.RECOVERY_REQUIRED
+        assert qa_run_store.get(qa_run.run_id).status is QARunStatus.INTERRUPTED
+
+        return dict(
+            repo=repo, project_store=project_store, handoff_store=handoff_store,
+            execution_store=execution_store, qa_run_store=qa_run_store,
+            git_service=git_service, git_store=git_store, base_sha=base_sha, head_sha=head_sha,
+        )
+
+    def test_resume_launches_fresh_qa_only_never_replays_dev_and_merges_on_pass(self, tmp_path: Path) -> None:
+        seeded = self._seed_interrupted_qa_state(tmp_path)
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+        dev_engine = WorkItemFlowFakeEngine(dev_actions=[])  # must never be called
+        qa_engine = DynamicQAEngine([])  # defaults to PASS on the request's own head_sha
+        selector = _real_worker_selector([alice, victor])
+        manager = _manager(
+            seeded["project_store"], seeded["handoff_store"], selector, dev_engine,
+            git_governance_service=seeded["git_service"], qa_engine=qa_engine,
+            qa_run_store=seeded["qa_run_store"], execution_store=seeded["execution_store"],
+        )
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert dev_engine.requests == []  # DEV A/DEV B never replayed
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        runs = seeded["qa_run_store"].list_for_work_item("wi-1")
+        assert len(runs) == 2  # the original interrupted run + a brand-new one
+        assert runs[0].run_id == "qarun-original" and runs[0].status is QARunStatus.INTERRUPTED
+        assert runs[-1].status is QARunStatus.COMPLETED
+        record = seeded["git_store"].get("wi-1")
+        assert record.status is GitWorkItemStatus.MERGED
+
+    def test_head_drift_since_interruption_fails_closed_no_qa_no_merge(self, tmp_path: Path) -> None:
+        seeded = self._seed_interrupted_qa_state(tmp_path)
+        # A real, independent change landed on the governed branch after
+        # the interrupted QA's own expected_head_sha was recorded.
+        _commit_action("unexpected.py", "y = 1\n", "unexpected change")(seeded["repo"])
+
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+        dev_engine = WorkItemFlowFakeEngine(dev_actions=[])
+        qa_engine = DynamicQAEngine([])
+        selector = _real_worker_selector([alice, victor])
+        manager = _manager(
+            seeded["project_store"], seeded["handoff_store"], selector, dev_engine,
+            git_governance_service=seeded["git_service"], qa_engine=qa_engine,
+            qa_run_store=seeded["qa_run_store"], execution_store=seeded["execution_store"],
+        )
+
+        with pytest.raises(GitHeadDriftError):
+            asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert dev_engine.requests == []
+        assert qa_engine.requests == []  # never ran QA against an unverified head
+        record = seeded["git_store"].get("wi-1")
+        assert record.status is not GitWorkItemStatus.MERGED
+
+
+class CancellingDevEngine:
+    """A fake execution engine whose ``execute()`` raises
+    ``asyncio.CancelledError`` on a chosen 0-indexed call — simulates a
+    real Ctrl+C reaching a DEV A/DEV B execution in flight (P18-03),
+    exactly the boundary ``RalphExecutionEngine.execute()`` itself is
+    covered for separately in ``tests/test_ralph_execution_engine.py``."""
+
+    def __init__(self, *, cancel_at_call: int) -> None:
+        self._cancel_at_call = cancel_at_call
+        self.calls = 0
+        self.requests: list = []
+
+    async def execute(self, request):
+        self.requests.append(request)
+        call_index = self.calls
+        self.calls += 1
+        if call_index == self._cancel_at_call:
+            raise asyncio.CancelledError()
+        sha = _run_git(request.workspace, "rev-parse", "HEAD").stdout.strip()
+        record = ExecutionRecord(
+            execution_id=request.execution_id, task_id=request.task_id, worker_id=request.worker.worker_id,
+            provider=request.worker.provider, backend=request.worker.backend, model=request.model,
+            role=request.role, started_at=UTC_NOW, finished_at=UTC_NOW, status=ExecutionStatus.SUCCEEDED,
+            git_sha_before=sha, git_sha_after=sha,
+        )
+        return ExecutionResult(record=record, exit_code=0)
+
+
+class TestDevPhaseInterruption:
+    """P18-03: a real cancellation reaching DEV A/DEV B directly, at the
+    MVPManager level (``_run_development``'s own event emission)."""
+
+    def _stack(self, tmp_path: Path, *, cancel_at_call: int):
+        alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
+        repo = _git_repo(tmp_path)
+        project_store, handoff_store = _stores(tmp_path, repo)
+        project_store.create_work_item(work_item_id="wi-1", mvp_id="mvp-1", title="A")
+        git_service, git_store = _git_service(tmp_path)
+        qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
+        selector = _real_worker_selector([alice, victor])
+        engine = CancellingDevEngine(cancel_at_call=cancel_at_call)
+        qa_engine = DynamicQAEngine([])
+        manager = _manager(
+            project_store, handoff_store, selector, engine,
+            git_governance_service=git_service, qa_engine=qa_engine, qa_run_store=qa_run_store,
+        )
+        return dict(
+            project_store=project_store, git_store=git_store, engine=engine, qa_engine=qa_engine, manager=manager,
+        )
+
+    def test_cancellation_during_dev_a_never_completes_never_calls_qa(self, tmp_path: Path) -> None:
+        stack = self._stack(tmp_path, cancel_at_call=0)  # DEV A itself
+        seen: list[EngineEvent] = []
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(stack["manager"].run_next_work_item("mvp-1", on_event=seen.append))
+
+        assert stack["qa_engine"].requests == []  # QA never launched
+        work_item = stack["project_store"].get_work_item("wi-1")
+        assert work_item.status is WorkItemStatus.RUNNING  # never COMPLETED/FAILED
+        record = stack["git_store"].try_get("wi-1")
+        assert record is None or record.status is not GitWorkItemStatus.MERGED
+        kinds = [e.kind for e in seen]
+        assert kinds[-3:] == ["run.interruption_requested", "dev_a.interrupted", "run.interrupted"]
+
+    def test_cancellation_during_dev_b_never_completes_never_calls_qa(self, tmp_path: Path) -> None:
+        stack = self._stack(tmp_path, cancel_at_call=1)  # DEV A succeeds, DEV B cancelled
+        seen: list[EngineEvent] = []
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(stack["manager"].run_next_work_item("mvp-1", on_event=seen.append))
+
+        assert stack["engine"].calls == 2  # DEV A ran, DEV B was the one cancelled
+        assert stack["qa_engine"].requests == []  # QA never launched
+        work_item = stack["project_store"].get_work_item("wi-1")
+        assert work_item.status is WorkItemStatus.RUNNING  # never COMPLETED/FAILED
+        record = stack["git_store"].try_get("wi-1")
+        assert record is not None and record.status is not GitWorkItemStatus.MERGED
+        kinds = [e.kind for e in seen]
+        assert kinds[-3:] == ["run.interruption_requested", "dev_b.interrupted", "run.interrupted"]

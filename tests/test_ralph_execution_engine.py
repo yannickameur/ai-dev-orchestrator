@@ -624,6 +624,24 @@ class TestInvalidEventsAndFailureModes:
 
         assert result.record.status is ExecutionStatus.INTERRUPTED
 
+    def test_cancellation_marks_interrupted_and_reraises_never_returns_a_result(
+        self, tmp_path: Path,
+    ) -> None:
+        """P18-03: unlike a timeout (self-observed, returns normally), an
+        external cancellation (real Ctrl+C via asyncio.run()'s own
+        cancellation pass) must still finalize the ExecutionRecord as
+        INTERRUPTED — but never return an ExecutionResult: it must
+        re-raise so the real caller (MVPManager) sees the actual
+        cancellation and never mistakes this for a completed attempt."""
+        store = _store(tmp_path)
+        runner = _make_fake_runner(raise_exc=asyncio.CancelledError())
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(engine.execute(_request(tmp_path)))
+
+        assert store.get("exec-001").status is ExecutionStatus.INTERRUPTED
+
     def test_ralph_binary_not_found_raises_launch_error_and_finalizes_failed(
         self, tmp_path: Path
     ) -> None:

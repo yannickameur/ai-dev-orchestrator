@@ -1,0 +1,102 @@
+"""A single, shared POSIX process-group subprocess primitive (P18-03).
+
+``ralph_execution_engine.py`` and ``validation.py`` each already ran a
+subprocess via ``asyncio.create_subprocess_exec`` and killed only the
+*direct* child on a timeout — never any descendant it may have spawned
+(a real provider CLI launched by ``ralph``; a test runner's own worker
+processes launched by ``pytest``/``npm``/...). This module is the one
+place that launches a subprocess in its own session/process group and
+terminates the *whole group* — never a second, divergent implementation
+of the same primitive per caller (REUSE FIRST).
+
+POSIX only, deliberately: this project makes no Windows support claim
+anywhere else (no OS classifier, no conditional subprocess handling
+elsewhere) — a Windows equivalent is real, separate, future work, never
+built ahead of a demonstrated need (YAGNI).
+
+Two real interruption sources are handled identically here, through one
+code path, never two:
+
+- a real command timeout (``asyncio.TimeoutError``, existing behavior);
+- an external cancellation of the awaiting task
+  (``asyncio.CancelledError`` — e.g. ``asyncio.run()``'s own cancellation
+  pass on a real Ctrl+C, see ``ROADMAP.md`` P18-03). Neither is ever
+  swallowed: both are re-raised, unchanged, after the process group is
+  terminated and reaped — a caller decides what a timeout means for its
+  own domain (``RalphTimeoutError``/``ValidationTimeoutError``); a
+  cancellation always propagates as exactly that, never converted into
+  a fabricated success.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import signal
+from pathlib import Path
+from typing import Mapping, Sequence
+
+#: How long to wait for a clean SIGTERM exit before escalating to
+#: SIGKILL — short and fixed: this is cleanup after an already-decided
+#: timeout/cancellation, never a second negotiation window.
+GRACE_PERIOD_SECONDS = 5.0
+
+
+async def run_in_new_process_group(
+    argv: Sequence[str], cwd: Path, timeout: float, *, env: Mapping[str, str] | None = None,
+) -> tuple[int, bytes, bytes]:
+    """Runs ``argv`` in its own POSIX session/process group
+    (``start_new_session=True``) so the whole group — not just the
+    direct child — can be terminated together.
+
+    Raises ``asyncio.TimeoutError`` (after terminating the group) on a
+    real timeout, or re-raises ``asyncio.CancelledError`` (after
+    terminating the group) if the awaiting task is cancelled — a caller
+    translates the former into its own domain-specific timeout error;
+    neither is ever swallowed.
+
+    Known limitation, not hidden: this terminates every process that
+    stayed in the launched group. A descendant that itself detaches
+    into a new session/group (a double fork) is outside this group and
+    outside this project's control — ``ralph``/a provider CLI are
+    external binaries already treated as such elsewhere in this
+    codebase.
+    """
+    process = await asyncio.create_subprocess_exec(
+        *argv, cwd=str(cwd), env=dict(env) if env is not None else None,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        await _terminate_process_group(process)
+        raise
+    return process.returncode, stdout, stderr
+
+
+async def _terminate_process_group(process: "asyncio.subprocess.Process") -> None:
+    """SIGTERM the whole group, escalate to SIGKILL if it does not exit
+    within ``GRACE_PERIOD_SECONDS``, then reap — never leaves a zombie,
+    never raises on a group that has already exited on its own."""
+    try:
+        pgid = os.getpgid(process.pid)
+    except ProcessLookupError:
+        return  # already gone — nothing to reap beyond process.wait() below
+
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+    try:
+        await asyncio.wait_for(asyncio.shield(process.wait()), timeout=GRACE_PERIOD_SECONDS)
+        return
+    except asyncio.TimeoutError:
+        pass
+
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    await asyncio.shield(process.wait())
