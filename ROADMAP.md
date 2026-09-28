@@ -2539,7 +2539,170 @@ réel de `GitGovernanceService` après coup — `git.merge_started` reste
 volontairement absent (pas de fait intermédiaire réel, voir la
 relecture de code plus haut). `RunResult.events` toujours inchangé.
 1335 tests (1332 + 3 nouveaux), `git diff --check` propre.
-**P18-03 : pas commencé.**
+**P18-03 : `DONE`** — voir la sous-section P18 ci-dessus pour le détail
+complet (extension de `RecoveryCoordinator` à la QA, `posix_subprocess`
+partagé Ralph/QA, `_resume_qa_only`) ; 1350 tests au SHA `23e68b7`.
+
+### P19 — Gravity worker/backend — `À VOTER` / `DRAFT` (proposition, 2026-09-28)
+
+**Statut** : proposition documentée uniquement — **pas** approuvée, pas
+votée, aucun WorkItem créé. Cette sous-section existe pour donner à une
+future implémentation réelle une référence stable, exactement comme
+P14 (§13) documente un contrat sans engagement de conception définitif.
+**P19 n'est en aucun cas une dépendance implicite d'AIDO Code M3** : M3
+est développé et exécutable avec le pool de workers actuel
+(`config/workers.yaml`), sans Gravity — inversement, rien dans M3
+n'approuve implicitement P19.
+
+**Objectif** : ajouter un worker `gravity`, exécutable via Ralph, en
+réutilisant le mécanisme « custom backend » solo déjà employé par Vibe
+(`orchestrator.vibe_ralph_bridge` — voir §13, note P13 et
+`docs/VIBE_SPIKE.md`) — jamais un second moteur d'exécution. Un seul
+worker au départ ; aucun doublon/fallback Gravity sans preuve de besoin
+réelle (REUSE FIRST/YAGNI).
+
+**Configuration cible conceptuelle** (`config/workers.yaml`, forme
+illustrative — noms définitifs à l'implémentation, sur le modèle exact
+de l'entrée `milo`/`juno` déjà existante pour Vibe) :
+
+```yaml
+- worker_id: gravity
+  display_name: Gravity
+  enabled: false   # jamais true avant P19-03, preuve réelle exigée
+  provider: gravity
+  backend: gravity
+  capabilities:
+    - development
+  default_profile_id: standard
+  estimator_profile_id: standard
+  profiles:
+    standard:
+      quality_tier: STANDARD
+      model: gravity-default   # sentinel explicite tant qu'aucun id
+                                # de modèle réel n'est vérifié via `agy`
+      cost_rank: 20
+```
+
+Profil initial unique : un modèle réel uniquement si `agy` l'expose et
+que cela est vérifié par un spike réel (P19-01) ; sinon le sentinel
+explicite `gravity-default` (même convention que `vibe-default`) —
+jamais un identifiant de modèle inventé.
+
+**Commande utilisateur à intégrer/valider pour Ralph** :
+
+```
+agy --mode=accept-edits --dangerously-skip-permissions
+```
+
+**Permissions — réutilisation stricte de `ExecutionPermissionMode`
+existant (§13, P14 « Mode de permission d'exécution des workers »),
+jamais un bypass hardcodé indépendant de cette politique** :
+
+- **`UNRESTRICTED`** : traduit vers
+  `agy --mode=accept-edits --dangerously-skip-permissions` — exactement
+  la commande utilisateur ci-dessus, gatée sur ce mode explicite, jamais
+  un défaut silencieux (même invariant que `vibe_ralph_bridge.permission_args`
+  pour `unrestricted` → `--auto-approve`).
+- **`STANDARD`** : aucune traduction inventée. `agy --help` doit d'abord
+  être inspecté réellement (comme le spike Vibe l'a fait pour `vibe
+  --help`) pour trouver une combinaison de flags sûre et *unattended*
+  (approbation par défaut refusée/deny déterministe, jamais un prompt
+  interactif qui bloque indéfiniment). Si aucune combinaison sûre et
+  non-interactive n'est prouvée : `UnsupportedPermissionModeError`
+  (même type que `vibe_ralph_bridge.BridgeArgError`/la politique P14),
+  fail-closed avant tout lancement de subprocess — jamais une
+  dégradation silencieuse vers un bypass.
+
+#### P19-01 — Gravity/agy real spike
+
+Kind: research spike (pas de WorkItem gouverné tant que P19 n'est pas
+voté) — produit un `docs/GRAVITY_SPIKE.md` sur le modèle de
+`docs/VIBE_SPIKE.md`.
+
+Acceptance :
+
+- `command -v agy` (présence réelle du binaire) vérifié.
+- Version `agy` observée et consignée.
+- `agy --help` lu intégralement et consigné — jamais deviné.
+- Syntaxe exacte des flags demandés (`--mode=accept-edits`,
+  `--dangerously-skip-permissions`) vérifiée réellement contre le CLI
+  installé, jamais supposée depuis un nom qui semble correct.
+- Comportement *unattended* réel observé (un run sans TTY/sans
+  utilisateur pour répondre à un prompt réussit-il, échoue-t-il
+  proprement, ou reste-t-il bloqué ?).
+- Test contrôlé d'édition réelle dans un dépôt Git temporaire jetable
+  (jamais sur ce dépôt ni un projet réel).
+- Identifie précisément comment Ralph transmet le prompt/fichier à
+  `agy` (argv, stdin, fichier — sur le modèle de la découverte réelle
+  documentée par `vibe_ralph_bridge.py` : chemin embarqué en fin de
+  phrase, jamais un simple argument brut).
+- Aucune intégration permanente (`orchestrator/providers/`,
+  `config/workers.yaml` avec `enabled: true`) avant cette preuve.
+
+#### P19-02 — Gravity provider/backend integration
+
+Dépend de : P19-01 (preuve réelle requise avant tout code).
+
+Acceptance :
+
+- Adaptateur provider `gravity`, sur le modèle minimal des adaptateurs
+  CLI existants (`orchestrator/providers/adapter.py`,
+  `ProviderAdapter`) — jamais une structure parallèle inventée.
+- Disponibilité réelle uniquement, jamais un quota inventé : si `agy`
+  n'expose aucune télémétrie de quota/rate-limit observable (à
+  confirmer par P19-01, exactement le constat qui a produit
+  `EXECUTION_PROBE_ONLY` pour `MistralVibeAdapter` —
+  `orchestrator/providers/mistral_vibe_adapter.py`), l'adaptateur
+  Gravity suit très probablement le même schéma
+  `EXECUTION_PROBE_ONLY` (un appel minimal, borné, réel comme seul
+  signal honnête) — jamais un chiffre de quota fabriqué.
+- Backend Ralph « custom » réutilisant exactement la mécanique déjà
+  employée par Vibe (`cli.backend: "custom"` du mode solo de Ralph,
+  jamais un second point d'entrée d'exécution).
+- Un bridge minimal (`gravity_ralph_bridge.py`, sur le modèle de
+  `vibe_ralph_bridge.py`) seulement si le protocole argv réel de Ralph
+  l'exige (prompt livré en fichier/phrase, jamais en texte brut
+  directement compatible) — jamais construit par anticipation avant
+  que P19-01 ne confirme le besoin exact.
+- Aucun second moteur d'exécution ; `RalphExecutionEngine` reste
+  l'unique point d'exécution.
+- Mode de permission respecté exactement comme spécifié ci-dessus
+  (`UNRESTRICTED`/`STANDARD`/`UnsupportedPermissionModeError`).
+- Réutilise le primitive `orchestrator.posix_subprocess.
+  run_in_new_process_group` (P18-03) pour l'arrêt de groupe de
+  processus et la gestion d'annulation — jamais une seconde
+  implémentation de cleanup.
+- Worker `gravity` ajouté au registry (`enabled: false` par défaut,
+  voir configuration cible ci-dessus).
+- Capacité déclarée : `development` seulement, tant qu'aucune autre
+  capacité réelle n'est prouvée par un run réel.
+
+#### P19-03 — Real validation
+
+Dépend de : P19-02.
+
+Acceptance :
+
+- Run réel via Ralph + Gravity, sur un dépôt de test jetable.
+- Modification contrôlée réellement produite et committée.
+- Événement de terminaison Ralph reconnu (mécanisme
+  `.ralph/events-*.jsonl` déjà partagé par tous les backends, jamais un
+  second parseur d'événements).
+- `ExecutionRecord` correctement peuplé (worker, provider, backend,
+  modèle, statut, SHA avant/après).
+- Commit réellement attribué à l'identité du worker Gravity (même
+  invariant que P13.2 pour tout worker).
+- Un DEV peut réussir de bout en bout avec Gravity.
+- Nettoyage à l'interruption vérifié (P18-03 : arrêt de groupe de
+  processus réel, `ExecutionRecord` finalisé `INTERRUPTED`, jamais
+  `RUNNING` orphelin).
+- `provider unavailable` propre et honnête si `agy` est absent ou non
+  authentifié (jamais une exception non gérée, jamais un faux
+  `available=True`).
+- La suite de tests offline complète reste entièrement verte — aucun
+  test n'appelle `agy` réellement.
+- `enabled: true` n'est décidé qu'après cette preuve réelle complète —
+  jamais avant, jamais par anticipation.
 
 ### Ordre approuvé
 
@@ -2580,6 +2743,10 @@ relecture de code plus haut). `RunResult.events` toujours inchangé.
     (`on_event`) + interruption/recovery propre (DEV A/DEV B/DEV FIX et
     QA), prérequis pour AIDO Code M3 ; P18-01/P18-02/P18-03 `DONE`. Voir
     sous-section P18 ci-dessus.
+13. P19 (`À VOTER`/`DRAFT`, proposition 2026-09-28) : worker/backend
+    Gravity (`agy`), réutilisant le mécanisme custom backend déjà
+    employé par Vibe ; pas approuvée, pas votée, pas une dépendance de
+    M3. Voir sous-section P19 ci-dessus.
 
 ### Table des propositions
 
@@ -2607,7 +2774,8 @@ relecture de code plus haut). `RunResult.events` toujours inchangé.
 | P15 | Prompt optimization externe | Une capacité d'optimisation de prompts basée sur un dataset/métrique réels (candidat : Opik Optimizer) mérite-t-elle d'être étudiée, avant toute intégration ? | **APPROUVÉ POUR ÉTUDE** (2026-09-23). Pas d'intégration ; dépend de P14 (non implémenté) pour la télémétrie. Comparaison complète : `docs/ECOSYSTEM.md` ; voir sous-section P15 ci-dessus |
 | P16 | Revue de simplification YAGNI/REUSE FIRST | Une revue structurée (DELETE → STDLIB → REUSE → PACKAGE → BUILD) doit-elle encadrer toute recommandation de simplification, y compris celles d'un audit externe ? | **APPROUVÉ POUR REVUE** (2026-09-23). Pas de refactor global autorisé par ce seul vote ; candidats déjà identifiés : `Project.current_mvp_id` (DELETE, analyse compatibilité requise), fingerprint d'environnement non-Python (BUILD rejeté, YAGNI) ; voir sous-section P16 ci-dessus |
 | P17 | Quota-aware worker routing | Le `WorkerSelector` doit-il exploiter les `utilization` déjà sondées pour préférer un provider disponible nettement moins consommé ? | **`DONE`** — pression=max(utilization connue), bande de 10 points, inconnu neutre, gouvernance avant quota, aucun second probe ; indépendant de P14 |
-| P18 | Live execution events and graceful interruption | `OrchestratorEngine` doit-il exposer des événements publics fins (DEV A/DEV B/DEV FIX/QA/Git) en temps réel, avec les métadonnées réellement décidées, et traiter explicitement une interruption pendant `run()` ? | **`IN PROGRESS`** (GO humain 2026-09-26) — callback `on_event` optionnel ; **P18-01/P18-02 `DONE`** (transport live + métadonnées fines DEV A/B/FIX/QA/Git, `EngineEvent` dans `orchestrator.engine_events`, `RunResult.events` inchangé) ; P18-03 (interruption) pas commencé ; Adaptive Execution non branché ; recovery existant réutilisé sans changement ; voir sous-section P18 ci-dessus |
+| P18 | Live execution events and graceful interruption | `OrchestratorEngine` doit-il exposer des événements publics fins (DEV A/DEV B/DEV FIX/QA/Git) en temps réel, avec les métadonnées réellement décidées, et traiter explicitement une interruption pendant `run()` ? | **`DONE`** (GO humain 2026-09-26) — callback `on_event` optionnel ; **P18-01/P18-02/P18-03 `DONE`** (transport live + métadonnées fines DEV A/B/FIX/QA/Git, `EngineEvent` dans `orchestrator.engine_events`, `RunResult.events` inchangé, interruption/recovery DEV+QA) ; Adaptive Execution non branché ; recovery étendu (jamais dupliqué) ; voir sous-section P18 ci-dessus |
+| P19 | Gravity worker/backend | Un worker Gravity (`agy`), exécutable via Ralph en réutilisant le mécanisme custom backend déjà employé par Vibe, mérite-t-il d'être intégré ? | À VOTER / `DRAFT` — proposition documentée seulement (2026-09-28), pas approuvée, pas une dépendance de M3 ; voir sous-section P19 ci-dessus |
 | P13.5 | Frontière moteur/librairie : injection du `WorkerRegistry`, `workers:` optionnel | `aido.yaml` doit-il rester la source de configuration complète du pool de workers, ou le moteur doit-il accepter un `WorkerRegistry` construit/injecté par l'application appelante (AIDO Code) ? | **`DONE`** (2026-09-24) — `workers:` optionnel dans `ProjectConfig` ; `OrchestratorEngine`/`ProjectRuntime` acceptent `worker_registry=` ; `WorkerSelector` reste seul propriétaire de la sélection ; chemin legacy fichier intégralement conservé et testé ; voir sous-section P13.5 ci-dessus |
 | P13.6 | Retrait de la commande produit `aido` (cutover AIDO Code) | AIDO Code ayant atteint son propre cutover produit, `ai-dev-orchestrator` doit-il cesser d'installer la commande `aido` ? | **`DONE`** (2026-09-24) — `[project.scripts]` retiré de `pyproject.toml` ; `orchestrator.cli`/`default_workers.yaml` conservés, legacy/internes, toujours réellement testés ; aucun binaire de compatibilité ajouté (YAGNI) ; voir sous-section P13.6 ci-dessus |
 | P13.7 | Pre-execution state safety | Le cutover M8 d'AIDO Code a révélé un défaut réel (`WI-M8-01` resté `RUNNING` durablement, sans `ExecutionRecord`) — un WorkItem/son MVP doivent-ils n'être marqués `RUNNING` qu'une fois tous les prérequis pré-exécution (préparation Git notamment) réellement satisfaits ? | **`DONE`** (2026-09-25) — `mark_mvp_running`/`mark_work_item_running` déplacés après les prérequis dans `_execute_work_item` et `_resume_dev_b_wait` (deux sites réels) ; invariant de recovery existant inchangé ; 4 nouveaux tests, chacun vérifié rouge sans le correctif ; `WI-M8-01` non modifié rétroactivement (YAGNI) ; voir sous-section P13.7 ci-dessus |
@@ -2622,4 +2790,7 @@ d'implémentation créé à ce jour. P15 est `APPROUVÉ POUR ÉTUDE`, P16
 `APPROUVÉ POUR REVUE` — ni l'un ni l'autre n'est implémenté, ni ne bloque
 M2. P4 est `RETIRÉ` : décision terminée, pas un report. Elle ne redevient
 pas un prérequis implicite d'une future proposition sans un nouveau vote
-explicite.
+explicite. P19 (worker Gravity) est une proposition documentée
+(2026-09-28), `À VOTER`/`DRAFT`, sans WorkItem créé — jamais une
+dépendance implicite d'AIDO Code M3, qui reste exécutable avec le pool
+de workers actuel.
