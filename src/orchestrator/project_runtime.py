@@ -23,8 +23,8 @@ Provider composition (§7): the provider adapter for each provider actually
 required by the configured, *enabled* workers is resolved from a small,
 explicit table (``anthropic`` -> ``ClaudeCodeAdapter``, ``openai`` ->
 ``CodexAdapter``, ``mistral`` -> ``MistralVibeAdapter``, ``deepseek`` ->
-``build_deepseek_adapter``, ``kimi`` -> ``build_kimi_adapter``), never
-generic reflection/plugin discovery. An enabled worker on a provider with no
+``build_deepseek_adapter``, ``kimi`` -> ``build_kimi_adapter``, ``gravity``
+-> ``GravityAdapter``, P19), never generic reflection/plugin discovery. An enabled worker on a provider with no
 known adapter fails composition clearly, before any execution, rather than
 being silently dropped. DeepSeek/Kimi are the first two providers reached
 through an API key (read from the process environment, never stored/
@@ -70,6 +70,7 @@ from orchestrator.providers.adapter import ProviderAdapter, ProviderConfigError
 from orchestrator.providers.claude_code_adapter import ClaudeCodeAdapter
 from orchestrator.providers.codex_adapter import CodexAdapter
 from orchestrator.providers.deepseek_adapter import build_deepseek_adapter
+from orchestrator.providers.gravity_adapter import GravityAdapter
 from orchestrator.providers.kimi_adapter import build_kimi_adapter
 from orchestrator.providers.mistral_vibe_adapter import MistralVibeAdapter
 from orchestrator.qa import QAPolicy, QARunStore
@@ -97,6 +98,7 @@ _PROVIDER_ADAPTER_FACTORIES: dict[str, Callable[[], ProviderAdapter]] = {
     "mistral": MistralVibeAdapter,
     "deepseek": build_deepseek_adapter,
     "kimi": build_kimi_adapter,
+    "gravity": GravityAdapter,
 }
 
 # Deterministic, stable filenames under ProjectConfig.project.state_dir —

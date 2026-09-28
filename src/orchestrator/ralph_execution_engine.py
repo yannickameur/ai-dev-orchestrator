@@ -105,18 +105,21 @@ _RESERVED_EVENT_TOPICS = frozenset({"task.start", "task.resume"})
 # where they differ; anything not listed here is passed through unchanged
 # (e.g. "codex" already matches Ralph's own naming).
 #
-# "vibe" maps to Ralph's own "custom" backend type deliberately: Ralph's
-# hats mechanism (used by every other backend below) rejects any backend
-# type it does not natively know — VERIFIED in docs/VIBE_SPIKE.md §5
-# (`ralph doctor` reports "Unknown hat backend" for anything other than
+# "vibe"/"gravity" map to Ralph's own "custom" backend type deliberately:
+# Ralph's hats mechanism (used by every other backend below) rejects any
+# backend type it does not natively know — VERIFIED in docs/VIBE_SPIKE.md
+# §5 (`ralph doctor` reports "Unknown hat backend" for anything other than
 # Ralph's fixed native list). Only Ralph's top-level, solo-mode
 # `cli.backend: "custom"` accepts an arbitrary command — see
 # `_SOLO_MODE_BACKENDS`/`_BACKEND_COMMANDS` below, which drive
 # `_write_runtime_config`/`_build_ralph_args` to skip hats.yml entirely
 # for these backends, exactly as the spike's real experiment required.
+# "gravity" (P19, ROADMAP.md §13) reuses this exact same custom-backend
+# mechanism for the `agy` CLI — never a second execution engine.
 _RALPH_BACKEND_TYPE: dict[str, str] = {
     "claude_code": "claude",
     "vibe": "custom",
+    "gravity": "custom",
 }
 
 # Backends that must run via Ralph's solo/no-hats "custom" mechanism
@@ -126,9 +129,10 @@ _RALPH_BACKEND_TYPE: dict[str, str] = {
 # invocation — never a second execution engine, never business-event
 # logic of its own (Ralph's existing `.ralph/events-*.jsonl` reading is
 # unchanged and unaware of this distinction).
-_SOLO_MODE_BACKENDS: frozenset[str] = frozenset({"vibe"})
+_SOLO_MODE_BACKENDS: frozenset[str] = frozenset({"vibe", "gravity"})
 _BACKEND_COMMANDS: dict[str, Path] = {
     "vibe": Path(__file__).resolve().parent / "vibe_ralph_bridge.py",
+    "gravity": Path(__file__).resolve().parent / "gravity_ralph_bridge.py",
 }
 
 
@@ -329,6 +333,28 @@ def _build_backend_args(
             # a bridge script, never `vibe` directly (see
             # `_SOLO_MODE_BACKENDS`). Only the generic mode crosses this
             # boundary as plain bridge argv, exactly like `--model` above.
+            args += ["--permission-mode", permission_mode.value]
+        return args
+    if backend == "gravity":
+        # Unlike Vibe, `agy --model <id>` is a real, verified CLI flag
+        # (ROADMAP.md, P19 Phase A: `agy models`/`agy --help`) — forwarded
+        # to the bridge exactly like every other flag here, then passed
+        # straight through to `agy` itself (see gravity_ralph_bridge.py).
+        # `agy --effort` exists but was verified rejected for the one
+        # model this project actually configures (`claude-sonnet-4-6`) —
+        # reasoning_effort has no honest translation today, so this fails
+        # closed rather than silently dropping a configured value, exactly
+        # like the vibe branch above.
+        if reasoning_effort:
+            raise UnsupportedProfileOptionError(backend, "reasoning_effort", reasoning_effort)
+        args = ["--model", model]
+        if permission_mode is not None:
+            # The real Gravity/agy flags (`--mode=accept-edits` with or
+            # without `--dangerously-skip-permissions`) are verified and
+            # chosen inside gravity_ralph_bridge.py, not here — this
+            # backend runs through Ralph's solo "custom" mechanism as a
+            # bridge script, never `agy` directly (see
+            # `_SOLO_MODE_BACKENDS`).
             args += ["--permission-mode", permission_mode.value]
         return args
     raise UnsupportedBackendError(backend)

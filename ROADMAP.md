@@ -2605,7 +2605,7 @@ l'entrée `milo`/`juno` déjà existante pour Vibe) :
 ```yaml
 - worker_id: gravity
   display_name: Gravity
-  enabled: true   # activé après validation réelle Ralph+Gravity (P19-03)
+  enabled: true   # décision humaine explicite ; gate séparément pour AIDO Code : P19-03
   provider: gravity
   backend: gravity
   priority: 101   # légèrement au-dessus des autres (100) : augmente
@@ -2716,9 +2716,11 @@ Acceptance :
   run_in_new_process_group` (P18-03) pour l'arrêt de groupe de
   processus et la gestion d'annulation — jamais une seconde
   implémentation de cleanup.
-- Worker `gravity` ajouté au registry avec `enabled: false` à ce stade
-  (P19-02) — flippé `true` seulement après P19-03 (validation réelle),
-  voir configuration cible ci-dessus.
+- Worker `gravity` ajouté au registry moteur (`config/workers.yaml`)
+  avec `enabled: true` (décision humaine explicite) — ce registry n'est
+  de toute façon jamais ce qu'AIDO Code lit (`docs/PROJECT_CONTRACT.md`
+  §4) ; P19-03 gate séparément l'ajout de Gravity à l'override local
+  d'AIDO Code lui-même.
 - Capacité déclarée : `development` seulement, tant qu'aucune autre
   capacité réelle n'est prouvée par un run réel.
 
