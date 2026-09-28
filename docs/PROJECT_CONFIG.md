@@ -310,6 +310,7 @@ exact flags used.
 | `claude_code` | Claude Code 2.1.277 | `--permission-mode manual --permission-prompts none` — explicit approval-required mode, with a would-be-prompted action denied automatically (deterministic, never hangs waiting for an answer nothing can give) | `--dangerously-skip-permissions` — the single dedicated bypass flag | None known |
 | `codex` | codex-cli 0.157.0 | `--sandbox workspace-write` — restrictive sandbox; `--ask-for-approval` is not passed because `codex exec` (the non-interactive subcommand this engine always invokes) rejects it outright as an unrecognized argument, exit code 2 — confirmed against a real failed execution (GitLabPluginRoadmap WI-S0A-01) and reproduced directly against the installed CLI. `codex exec` never has an interactive user to prompt, so the flag was already redundant for it; `--sandbox workspace-write` alone is what keeps `standard` non-`danger-full-access` | `--dangerously-bypass-approvals-and-sandbox` — the single dedicated bypass flag, unaffected by this change | The 0.155.0-era `--ask-for-approval never` combination documented previously was verified against the top-level, interactive `codex` command, not `codex exec` — a real upstream CLI divergence between the two, not a local config drift |
 | `vibe` | Vibe 2.25.4 | `--trust --agent ask` — the real, documented `ask` builtin agent requires approval per tool call | `--trust --auto-approve` (equivalently `--yolo`) — "Approves all tool calls without prompting" | `--trust` is **unconditional** for every mode — VERIFIED to only skip the one-time directory-trust prompt ("Use this for non-interactive automation"), never tool-call approval; omitting it would make even `standard` hang on a prompt nothing can answer. In non-interactive (`-p`) mode with the `ask` agent, an approval that cannot be answered is expected to fail/deny rather than silently proceed — an honest `standard` limitation, not a bug |
+| `gravity` | agy 1.2.12 | `--mode=accept-edits` (no bypass flag) — VERIFIED against the real, installed CLI in a disposable repo: genuinely non-interactive, exit 0, no hang, no prompt reached | `--mode=accept-edits --dangerously-skip-permissions` — the single dedicated bypass flag | Unlike Vibe, `--mode=accept-edits` alone is not merely a directory-trust skip — it was directly, empirically verified to be the full non-bypassing non-interactive mechanism (ROADMAP.md, P19 Phase A). No omitted-mode legacy default exists for this backend (unlike Vibe's pre-P12 unconditional `--auto-approve`): an unconfigured `RalphExecutionEngine` adds no permission flag at all here either, exactly like every other backend |
 
 If a backend cannot honestly represent a requested mode, `RalphExecutionEngine`
 raises `UnsupportedPermissionModeError` **before** any subprocess is
@@ -341,8 +342,9 @@ obviously-wrong key names (`api_key`, `token`, `secret`, `password`,
 `credential`, ...) anywhere in the file as a cheap guard-rail.
 
 **DeepSeek/Kimi exception, stated explicitly:** unlike Claude Code/Codex/
-Vibe (authenticated entirely outside this project, no secret ever handled
-here), the `deepseek`/`kimi` providers are reached through a real API key
+Vibe/Gravity (authenticated entirely outside this project, no secret ever
+handled here), the `deepseek`/`kimi` providers are reached through a real
+API key
 (`DEEPSEEK_API_KEY`/`KIMI_API_KEY`), still never in `aido.yaml`/
 `config/workers.yaml`, always read from the process environment only, at
 the moment `orchestrator.providers.deepseek_adapter`/`kimi_adapter` is
