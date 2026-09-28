@@ -148,7 +148,7 @@ from typing import Callable
 from orchestrator.adaptive_execution import AdaptiveExecutionSelector
 from orchestrator.complexity_estimation import ComplexityEstimationRequest
 from orchestrator.engine_events import EngineEvent
-from orchestrator.execution_store import ExecutionStatus, ExecutionStore, UnknownExecutionError
+from orchestrator.execution_store import ExecutionRecord, ExecutionStatus, ExecutionStore, UnknownExecutionError
 from orchestrator.git_governance import (
     RALPH_RUNTIME_NOISE_PREFIXES,
     GitGovernanceService,
@@ -334,7 +334,7 @@ class MVPManager:
         self._recovery_coordinator = (
             RecoveryCoordinator(
                 execution_store, handoff_store, project_state_store,
-                clock=self._clock, id_factory=self._id_factory,
+                qa_run_store=qa_run_store, clock=self._clock, id_factory=self._id_factory,
             )
             if execution_store is not None
             else None
@@ -575,7 +575,32 @@ class MVPManager:
                 profile_id=profile.profile_id, model=model,
                 quality_tier=profile.quality_tier.name, reasoning_effort=reasoning_effort,
             ))
-        result = await self._execution_engine.execute(request)
+        try:
+            result = await self._execution_engine.execute(request)
+        except asyncio.CancelledError:
+            # P18-03: RalphExecutionEngine.execute() already terminated
+            # the subprocess's whole process group and finalized the
+            # ExecutionRecord as INTERRUPTED before re-raising — never
+            # RUNNING, never a fabricated SUCCEEDED. No QA/merge is ever
+            # reached (this call chain never returns to _execute_work_item's
+            # caller). RecoveryCoordinator reconciles this exactly like a
+            # Ralph timeout at the next run.
+            if on_event is not None:
+                common = dict(
+                    timestamp=self._clock().isoformat(), project_id=project.project_id,
+                    mvp_id=mvp_id, work_item_id=work_item.work_item_id, payload={},
+                )
+                on_event(EngineEvent(kind="run.interruption_requested", **common))
+                on_event(EngineEvent(
+                    kind=f"{phase}.interrupted", phase=phase, status="interrupted",
+                    execution_id=execution_id, worker_id=worker.worker_id,
+                    worker_display_name=worker.display_name, provider=worker.provider,
+                    backend=worker.backend, profile_id=profile.profile_id, model=model,
+                    quality_tier=profile.quality_tier.name, reasoning_effort=reasoning_effort,
+                    **common,
+                ))
+                on_event(EngineEvent(kind="run.interrupted", **common))
+            raise
         if self._git_governance_service is not None:
             self._git_governance_service.capture_head(
                 work_item.work_item_id, repository_path=project.workspace,
@@ -862,7 +887,24 @@ class MVPManager:
             objective=work_item.title, acceptance_criteria=work_item.acceptance_criteria,
             phase=QAPhase.FINAL_VERIFICATION,
         )
-        run = await self._run_qa_cycle(request=request, phase=QAPhase.FINAL_VERIFICATION)
+        try:
+            run = await self._run_qa_cycle(request=request, phase=QAPhase.FINAL_VERIFICATION)
+        except asyncio.CancelledError:
+            # P18-03: QA itself was interrupted — _run_qa_cycle already
+            # finalized the QARun as INTERRUPTED (never a fabricated
+            # verdict). No merge is ever attempted (this call chain
+            # never reaches that code below). RecoveryCoordinator
+            # (extended, P18-03) reconciles this at the next run without
+            # replaying DEV A/DEV B — see ROADMAP.md.
+            if on_event is not None:
+                common = dict(
+                    timestamp=self._clock().isoformat(), project_id=project.project_id,
+                    mvp_id=mvp_id, work_item_id=work_item.work_item_id, payload={},
+                )
+                on_event(EngineEvent(kind="run.interruption_requested", **common))
+                on_event(EngineEvent(kind="qa.interrupted", phase="qa", **common))
+                on_event(EngineEvent(kind="run.interrupted", **common))
+            raise
         if on_event is not None:
             qa_kind = {
                 QAVerdictStatus.PASS: "qa.pass",
@@ -1062,6 +1104,32 @@ class MVPManager:
         otherwise falls back to a manifest built from
         ``request``/``self._qa_policy`` alone — still real, provider-
         independent data, never a lie.
+
+        P18-03: when the configured engine also exposes an async
+        ``run_async(request)`` (duck-typed, e.g. ``InternalQAEngine``),
+        it is awaited directly on *this* task/event loop instead of
+        ``asyncio.to_thread(self._qa_engine.run, request)``. This is not
+        an optimization: ``InternalQAEngine.run`` (the synchronous
+        ``QAEngine`` Protocol method) internally wraps
+        ``asyncio.run(self.run_async(request))`` — run via
+        ``asyncio.to_thread``, that inner ``asyncio.run()`` owns its own,
+        independent event loop in a separate thread, which an external
+        cancellation of *this* task can never reach (a cancelled
+        ``to_thread`` awaitable detaches from its thread; the thread,
+        and whatever real subprocess it is blocked on, keeps running to
+        completion regardless, and could still write a result to
+        ``QARunStore``/``ValidationStore`` afterward — see
+        ``ROADMAP.md`` P18-03). Calling ``run_async`` directly keeps QA
+        on the one real task ``OrchestratorEngine.run()`` drives, so a
+        real cancellation reaches it exactly like it reaches DEV A/DEV
+        B/DEV FIX. ``asyncio.to_thread`` remains the fallback for a
+        genuinely synchronous external ``QAEngine`` — the ``QAEngine``
+        Protocol itself is unchanged, still exactly ``.run(request) ->
+        QAResult``.
+
+        A ``CancelledError`` here means a real interruption reached this
+        exact QA attempt: the run is finalized ``INTERRUPTED`` (never a
+        fabricated verdict) and re-raised — never swallowed.
         """
         build_plan = getattr(self._qa_engine, "build_plan", None)
         build_manifest = getattr(self._qa_engine, "build_manifest", None)
@@ -1085,8 +1153,15 @@ class MVPManager:
         self._qa_run_store.create(run)
         self._qa_run_store.update_status(run.run_id, QARunStatus.RUNNING)
 
+        run_async = getattr(self._qa_engine, "run_async", None)
         try:
-            result = await asyncio.to_thread(self._qa_engine.run, request)
+            if callable(run_async):
+                result = await run_async(request)
+            else:
+                result = await asyncio.to_thread(self._qa_engine.run, request)
+        except asyncio.CancelledError:
+            self._qa_run_store.update_status(run.run_id, QARunStatus.INTERRUPTED)
+            raise
         except Exception:  # noqa: BLE001 - any engine failure is an infra outcome, never a fabricated PASS
             self._qa_run_store.update_status(run.run_id, QARunStatus.FAILED)
             run = self._qa_run_store.get(run.run_id)
@@ -1267,12 +1342,20 @@ class MVPManager:
         """Resumes the one RECOVERY_REQUIRED WorkItem of this MVP, if any.
 
         Unlike a quota wait, there is no deadline to check — reconciliation
-        already established that this WorkItem's execution is genuinely
-        orphaned/interrupted, so it is immediately re-orchestrable. Both DEV
-        A and DEV B executions carry the same ``DEFAULT_WORK_ITEM_ROLE`` —
-        ``_run_development`` (shared by both) always resumes as a
-        fresh development attempt; there is no separate phase to
-        distinguish here.
+        already established that this WorkItem is genuinely re-orchestrable.
+        Two, mutually exclusive continuations exist (P18-03,
+        ``RecoveryCoordinator``'s own two recovery families):
+
+        - the last developer execution is NOT durably SUCCEEDED (still
+          orphaned/interrupted) -> a fresh development attempt, exactly as
+          before P18-03. Both DEV A and DEV B executions carry the same
+          ``DEFAULT_WORK_ITEM_ROLE`` — ``_run_development`` (shared by
+          both) always resumes as a fresh development attempt; there is no
+          separate phase to distinguish here.
+        - the last developer execution IS durably SUCCEEDED (recovery came
+          from an interrupted QA attempt instead) -> ``_resume_qa_only``:
+          a brand-new QA attempt on that same, already-governed code —
+          DEV A/DEV B are NEVER replayed.
         """
         candidates = sorted(
             (
@@ -1287,6 +1370,20 @@ class MVPManager:
         work_item = candidates[0]
         mvp = self._project_state_store.get_mvp(mvp_id)
 
+        last_dev: ExecutionRecord | None = None
+        if self._execution_store is not None:
+            relevant = [
+                e for e in self._execution_store.list_for_task(work_item.work_item_id)
+                if e.role == DEFAULT_WORK_ITEM_ROLE
+            ]
+            last_dev = relevant[-1] if relevant else None
+
+        if last_dev is not None and last_dev.status is ExecutionStatus.SUCCEEDED:
+            project = self._project_state_store.get_project(mvp.project_id)
+            return await self._resume_qa_only(
+                project=project, mvp_id=mvp_id, work_item=work_item, on_event=on_event,
+            )
+
         dev_worker, dev_model, dev_reasoning_effort = await self._select_dev_worker(
             mvp=mvp, work_item=work_item, is_rework=False,
         )
@@ -1296,6 +1393,48 @@ class MVPManager:
             is_rework=False, resume_context=resume_context,
             dev_model=dev_model, dev_reasoning_effort=dev_reasoning_effort,
             on_event=on_event,
+        )
+
+    async def _resume_qa_only(
+        self, *, project: Project, mvp_id: str, work_item: WorkItem,
+        on_event: Callable[[EngineEvent], None] | None = None,
+    ) -> WorkItemRunResult:
+        """Resumes a WorkItem recovered from a QA-phase interruption
+        (P18-03): DEV A/DEV B already durably SUCCEEDED (the caller,
+        ``_try_resume_recovery_required``, only reaches this method after
+        confirming exactly that), so only a brand-new QA attempt is
+        launched on that same code — never a replayed development
+        execution.
+
+        Reads ``expected_base_sha``/``expected_head_sha`` directly from
+        the interrupted ``QARun`` itself (``RecoveryCoordinator`` already
+        identified exactly this run) — the durable fact this resume is
+        honoring is the QA attempt that got interrupted, not a guess
+        reconstructed from an unrelated record. Reconciles/validates the
+        governed HEAD first,
+        exactly like ``_resume_dev_b_wait`` does before its own review
+        resume: a real drift since the interruption fails closed
+        (``GitHeadDriftError``/``DirtyWorkingTreeError``, existing
+        invariants, never a new one), instead of running QA against code
+        nobody actually decided to trust.
+        """
+        interrupted_run = self._qa_run_store.latest_for_work_item(work_item.work_item_id)
+        assert interrupted_run is not None  # RecoveryCoordinator only reaches RECOVERY_REQUIRED via this fact
+        base_sha = interrupted_run.expected_base_sha
+        head_sha = interrupted_run.expected_head_sha
+        if self._git_governance_service is not None:
+            record = self._reconcile_governed_head(work_item.work_item_id, project.workspace)
+            base_sha = record.base_sha
+        work_item = self._project_state_store.mark_work_item_running(work_item.work_item_id)
+        if on_event is not None:
+            on_event(EngineEvent(
+                kind="work_item.started", timestamp=self._clock().isoformat(),
+                project_id=project.project_id, mvp_id=mvp_id,
+                work_item_id=work_item.work_item_id, payload={},
+            ))
+        return await self._run_qa_and_finalize(
+            project=project, mvp_id=mvp_id, work_item=work_item,
+            head_sha=head_sha, base_sha=base_sha, on_event=on_event,
         )
 
     def _requeue_or_give_up(

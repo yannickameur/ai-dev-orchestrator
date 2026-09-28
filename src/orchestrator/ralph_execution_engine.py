@@ -89,6 +89,7 @@ from typing import Awaitable, Callable, Iterator, Mapping, Sequence
 
 from orchestrator.execution_policy import ExecutionPermissionMode
 from orchestrator.execution_store import ExecutionRecord, ExecutionStore
+from orchestrator.posix_subprocess import run_in_new_process_group
 from orchestrator.qa_protection import hash_file
 from orchestrator.worker_selector import Worker
 
@@ -953,21 +954,22 @@ async def _default_subprocess_runner(
     ``env`` is supplied only when this exact default implementation is in
     use (a custom/fake ``subprocess_runner``, as every test in this
     codebase injects, never spawns a real process, so it never needs or
-    receives this extra ``env`` — it stays a plain 3-arg callable)."""
-    process = await asyncio.create_subprocess_exec(
-        *args,
-        cwd=str(cwd),
-        env={**os.environ, **(env or {})},
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    receives this extra ``env`` — it stays a plain 3-arg callable).
+
+    Delegates the actual launch/wait/cleanup to
+    ``orchestrator.posix_subprocess.run_in_new_process_group`` (P18-03):
+    ``ralph`` — and any provider CLI it launches as a real child, staying
+    in the same POSIX process group — is terminated as a whole on a real
+    timeout or an external cancellation (Ctrl+C), never just the direct
+    ``ralph`` PID. A real timeout is translated into this module's own
+    ``RalphTimeoutError``; an external cancellation
+    (``asyncio.CancelledError``) is never caught here — it propagates
+    unchanged to ``RalphExecutionEngine.execute``, which finalizes the
+    ``ExecutionRecord`` as ``INTERRUPTED`` before re-raising it."""
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        return await run_in_new_process_group(args, cwd, timeout, env={**os.environ, **(env or {})})
     except asyncio.TimeoutError:
-        process.kill()
-        await process.wait()
         raise RalphTimeoutError(f"ralph run timed out after {timeout}s")
-    return process.returncode, stdout, stderr
 
 
 class RalphExecutionEngine:
@@ -1061,6 +1063,23 @@ class RalphExecutionEngine:
                         untracked_before, _list_untracked_files_with_hashes(request.workspace)
                     )
                     return ExecutionResult(record=updated, untracked_changes=untracked_changes)
+                except asyncio.CancelledError:
+                    # P18-03: an external cancellation (real Ctrl+C, via
+                    # asyncio.run()'s own cancellation pass) — the
+                    # subprocess's whole process group is already
+                    # terminated by `_default_subprocess_runner`/
+                    # `run_in_new_process_group` before this exception
+                    # ever reaches here. Finalize exactly like a timeout
+                    # (never RUNNING, never a fabricated SUCCEEDED) but
+                    # re-raise — never return an ExecutionResult: the
+                    # caller (MVPManager) must see the real cancellation
+                    # to emit its own live events and let it propagate,
+                    # never silently treat this as a completed attempt.
+                    loop_id = _read_ralph_loop_id(request.workspace)
+                    self._execution_store.mark_interrupted(
+                        request.execution_id, ralph_loop_id=loop_id, finished_at=self._clock()
+                    )
+                    raise
                 except FileNotFoundError as exc:
                     self._execution_store.mark_failed(request.execution_id, finished_at=self._clock())
                     raise RalphLaunchError(f"could not launch {self._ralph_binary!r}: {exc}") from exc

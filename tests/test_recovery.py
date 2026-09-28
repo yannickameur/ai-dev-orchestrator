@@ -14,6 +14,15 @@ from pathlib import Path
 from orchestrator.execution_store import ExecutionStatus, ExecutionStore
 from orchestrator.handoff import HandoffStore
 from orchestrator.project_state import ProjectStateStore, WorkItemStatus
+from orchestrator.qa import (
+    QAEvidenceManifest,
+    QAPhase,
+    QAPolicy,
+    QARun,
+    QARunStatus,
+    QARunStore,
+    new_qa_run,
+)
 from orchestrator.recovery import RECOVERY_NEXT_ACTION, RECOVERY_OPEN_ISSUE, RecoveryCoordinator
 
 UTC_NOW = datetime(2026, 9, 12, 18, 0, tzinfo=timezone.utc)
@@ -175,10 +184,155 @@ class TestInterruptedExecutionStaysHistorical:
         execution_store.mark_succeeded("exec-1")
         # WorkItem status manually left at RUNNING to simulate stale data
         # (the WorkItem-side transition failed to apply for some reason);
-        # a SUCCEEDED execution is not something this module re-interprets.
+        # a SUCCEEDED execution is never re-interpreted by itself. QA
+        # recovery (P18-03, TestQARecovery below) is a distinct,
+        # opt-in check on top of exactly this same SUCCEEDED fact — this
+        # coordinator here has no ``qa_run_store`` configured, so that
+        # check never fires either.
 
         coordinator = _coordinator(execution_store, handoff_store, project_store)
         updated = coordinator.reconcile_work_item(project_id="proj-1", mvp_id="mvp-1", work_item=project_store.get_work_item("wi-a"))
+
+        assert updated is None
+
+
+class TestQARecovery:
+    """P18-03: a real gap found while designing graceful interruption —
+    a WorkItem interrupted *during QA* (after DEV A/DEV B already
+    durably SUCCEEDED) was invisible to this coordinator entirely (QA is
+    tracked in QARunStore, never ExecutionStore) and stayed RUNNING
+    forever. These tests cover the new, second recognized family
+    (``_reconcile_qa``), never a second, parallel recovery engine."""
+
+    def _seed_succeeded_dev(self, execution_store: ExecutionStore, *, git_sha_after: str = "b" * 40) -> None:
+        execution_store.create(
+            execution_id="exec-dev-1", task_id="wi-a", worker_id="alice",
+            provider="anthropic", backend="claude_code", model="sonnet", role="developer",
+        )
+        execution_store.mark_succeeded("exec-dev-1", git_sha_after=git_sha_after, finished_at=UTC_NOW)
+
+    def _seed_qa_run(
+        self, qa_run_store: QARunStore, *, status: QARunStatus,
+        base_sha: str = "a" * 40, head_sha: str = "b" * 40, run_id: str = "qarun-1",
+    ) -> QARun:
+        run = new_qa_run(
+            project_id="proj-1", mvp_id="mvp-1", work_item_id="wi-a",
+            engine_id="fake-qa", phase=QAPhase.FINAL_VERIFICATION,
+            expected_base_sha=base_sha, expected_head_sha=head_sha,
+            policy=QAPolicy(), manifest=QAEvidenceManifest(),
+            clock=lambda: UTC_NOW, id_factory=lambda: run_id,
+        )
+        qa_run_store.create(run)
+        if status is not QARunStatus.CREATED:
+            # CREATED -> RUNNING -> {COMPLETED, FAILED, INTERRUPTED}: the
+            # real transition table (QARunStatus) has no CREATED ->
+            # COMPLETED/FAILED direct edge, so route through RUNNING first
+            # whenever the target itself is not RUNNING.
+            if status is not QARunStatus.RUNNING:
+                qa_run_store.update_status(run.run_id, QARunStatus.RUNNING)
+            qa_run_store.update_status(run.run_id, status)
+        return run
+
+    def test_orphaned_running_qa_run_is_marked_interrupted_and_workitem_recovery_required(
+        self, tmp_path: Path,
+    ) -> None:
+        execution_store, handoff_store, project_store = _stores(tmp_path)
+        _seed(project_store, tmp_path)
+        qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        self._seed_succeeded_dev(execution_store)
+        run = self._seed_qa_run(qa_run_store, status=QARunStatus.RUNNING)
+
+        coordinator = RecoveryCoordinator(
+            execution_store, handoff_store, project_store, qa_run_store=qa_run_store, clock=lambda: UTC_NOW,
+        )
+        updated = coordinator.reconcile_work_item(
+            project_id="proj-1", mvp_id="mvp-1", work_item=project_store.get_work_item("wi-a"),
+        )
+
+        assert updated is not None
+        assert updated.status is WorkItemStatus.RECOVERY_REQUIRED
+        reconciled_run = qa_run_store.get(run.run_id)
+        assert reconciled_run.status is QARunStatus.INTERRUPTED
+        assert reconciled_run.verdict is None  # never a fabricated PASS/FAIL
+
+    def test_already_interrupted_qa_run_still_recovers_the_workitem_unchanged(self, tmp_path: Path) -> None:
+        execution_store, handoff_store, project_store = _stores(tmp_path)
+        _seed(project_store, tmp_path)
+        qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        self._seed_succeeded_dev(execution_store)
+        run = self._seed_qa_run(qa_run_store, status=QARunStatus.INTERRUPTED)
+
+        coordinator = RecoveryCoordinator(
+            execution_store, handoff_store, project_store, qa_run_store=qa_run_store, clock=lambda: UTC_NOW,
+        )
+        updated = coordinator.reconcile_work_item(
+            project_id="proj-1", mvp_id="mvp-1", work_item=project_store.get_work_item("wi-a"),
+        )
+
+        assert updated is not None and updated.status is WorkItemStatus.RECOVERY_REQUIRED
+        # Already a genuine terminal outcome — stays exactly as-is, never
+        # a second QARunStore transition invented.
+        assert qa_run_store.get(run.run_id).status is QARunStatus.INTERRUPTED
+
+    def test_qa_run_completed_is_never_touched(self, tmp_path: Path) -> None:
+        execution_store, handoff_store, project_store = _stores(tmp_path)
+        _seed(project_store, tmp_path)
+        qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        self._seed_succeeded_dev(execution_store)
+        # A genuine terminal QA outcome already exists — this WorkItem's
+        # own RUNNING status is stale for some unrelated reason, out of
+        # scope here.
+        self._seed_qa_run(qa_run_store, status=QARunStatus.COMPLETED)
+
+        coordinator = RecoveryCoordinator(
+            execution_store, handoff_store, project_store, qa_run_store=qa_run_store, clock=lambda: UTC_NOW,
+        )
+        updated = coordinator.reconcile_work_item(
+            project_id="proj-1", mvp_id="mvp-1", work_item=project_store.get_work_item("wi-a"),
+        )
+
+        assert updated is None
+
+    def test_qa_recovery_never_fires_without_a_configured_qa_run_store(self, tmp_path: Path) -> None:
+        execution_store, handoff_store, project_store = _stores(tmp_path)
+        _seed(project_store, tmp_path)
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        self._seed_succeeded_dev(execution_store)
+        # No qa_run_store passed to RecoveryCoordinator at all (QA not
+        # configured for this MVPManager) — family B must never crash or
+        # silently invent a recovery here.
+
+        coordinator = _coordinator(execution_store, handoff_store, project_store)
+        updated = coordinator.reconcile_work_item(
+            project_id="proj-1", mvp_id="mvp-1", work_item=project_store.get_work_item("wi-a"),
+        )
+
+        assert updated is None
+
+    def test_no_qa_run_at_all_yet_is_left_alone(self, tmp_path: Path) -> None:
+        """A developer execution just succeeded and QA has not even been
+        attempted yet (no QARun exists) — never confused with an
+        interrupted QA attempt."""
+        execution_store, handoff_store, project_store = _stores(tmp_path)
+        _seed(project_store, tmp_path)
+        qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
+        project_store.refresh_readiness("mvp-1")
+        project_store.mark_work_item_running("wi-a")
+        self._seed_succeeded_dev(execution_store)
+
+        coordinator = RecoveryCoordinator(
+            execution_store, handoff_store, project_store, qa_run_store=qa_run_store, clock=lambda: UTC_NOW,
+        )
+        updated = coordinator.reconcile_work_item(
+            project_id="proj-1", mvp_id="mvp-1", work_item=project_store.get_work_item("wi-a"),
+        )
 
         assert updated is None
 
