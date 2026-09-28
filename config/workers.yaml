@@ -280,3 +280,41 @@ workers:
         quality_tier: STANDARD
         model: kimi-for-coding
         cost_rank: 20
+
+  # Gravity (P19, ROADMAP.md §13) — `agy` CLI, reusing the exact custom-
+  # backend mechanism already proven by Vibe (`gravity_ralph_bridge.py`).
+  # Phase A (2026-09-28) verified `agy` 1.2.12 real/installed/authenticated
+  # on the maintainer's machine, `--mode=accept-edits` alone (no bypass)
+  # genuinely non-interactive, and `claude-sonnet-4-6` a real, selectable
+  # model id (`agy models`) — never a sentinel. No reasoning_effort:
+  # `--effort` exists but `agy` itself rejects it for this model.
+  # `priority: 101` (one above the default 100): a deliberate, minimal
+  # tie-break nudge so WorkerSelector's existing quota-pressure ->
+  # priority -> worker_id rule (P17, unchanged) actually prefers Gravity
+  # for DEV A when it is AVAILABLE and otherwise eligible, without
+  # touching WorkerSelector itself. `enabled: true` by human decision
+  # (ROADMAP.md, P19) — EXECUTION_PROBE_ONLY (GravityAdapter) means a
+  # machine without `agy` installed/authenticated simply observes Gravity
+  # as unavailable, same graceful degradation already relied on for
+  # Alice/Victor/Milo; this is a single-worker exception to the
+  # >=2-workers-per-provider rule below (see
+  # tests/test_worker_registry.py) until a real, demonstrated need for a
+  # second Gravity identity exists.
+  - worker_id: gravity
+    display_name: Gravity
+    enabled: true
+    provider: gravity
+    backend: gravity
+    priority: 101
+
+    capabilities:
+      - development
+
+    default_profile_id: standard
+    estimator_profile_id: standard
+
+    profiles:
+      standard:
+        quality_tier: STANDARD
+        model: claude-sonnet-4-6
+        cost_rank: 20
