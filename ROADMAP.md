@@ -1564,7 +1564,7 @@ second probe n'est effectué : le classement réutilise le même résultat
 à partir du quota observé et reste indépendant de P14 (tokens, coûts et
 métriques d'efficacité).
 
-### P18 — Live execution events and graceful interruption — `APPROUVÉ` / `IN PROGRESS` (GO humain 2026-09-26 ; P18-01/P18-02 `DONE`)
+### P18 — Live execution events and graceful interruption — `DONE` (GO humain 2026-09-26 ; P18-01/P18-02/P18-03 `DONE`)
 
 **Constat réel**, vérifié par inspection directe de `src/orchestrator/
 engine.py`/`mvp_manager.py`/`execution_store.py`/`adaptive_execution.py`/
@@ -2079,6 +2079,13 @@ mécanisme de recovery :
   d'implémentation de P18-03, à trancher sans introduire un second
   système de statut.
 
+Ce qui précède couvre l'interruption pendant une exécution DEV
+(`ExecutionStore`) — **une interruption pendant QA elle-même est un cas
+distinct, réellement invisible du `RecoveryCoordinator` tel que décrit
+ci-dessus** ; voir "Gap réel découvert en construisant P18-03" plus loin
+pour le constat exact et son correctif (extension de
+`RecoveryCoordinator` à `QARunStore`, jamais un second moteur).
+
 #### Arrêt de l'arbre de processus, pas seulement de `ralph` (précision 2026-09-26)
 
 **Constat** : aujourd'hui, `process.kill()` (appelé uniquement sur
@@ -2274,11 +2281,99 @@ Non-objectifs : aucune gestion d'interruption (P18-03) ; aucun
 branchement Adaptive Execution ; aucune modification de
 `WorkerSelector`.
 
+#### Gap réel découvert en construisant P18-03 — recovery pendant QA (corrigé)
+
+**Constat, confirmé empiriquement (2026-09-27)**, avant toute
+implémentation de P18-03 : le contrat approuvé supposait qu'une
+interruption pendant QA serait reprise « exactement comme pour un
+timeout Ralph », via `RecoveryCoordinator`. C'est faux. QA est suivie
+dans `QARunStore`, jamais dans `ExecutionStore` — `RecoveryCoordinator`
+ne regardait que ce dernier. Séquence réelle, reproduite par un script
+direct contre `RecoveryCoordinator.reconcile_work_item` : DEV A/DEV B
+réussissent (`ExecutionRecord` `SUCCEEDED`) → WorkItem `RUNNING` → QA
+démarre → interruption → `reconcile_work_item` voit `SUCCEEDED`,
+retourne `None`, **le WorkItem reste `RUNNING` indéfiniment** — plus
+aucun mécanisme existant ne le touche jamais.
+
+**Décision produit** : P18-03 couvre bien Ctrl+C pendant DEV A, DEV B,
+DEV FIX **et QA** — ce gap est corrigé dans le mécanisme existant,
+jamais dans un second moteur de recovery.
+
+**Correctif — extension de `RecoveryCoordinator` (une seule
+coordination, deux familles reconnues)** :
+
+- **Famille A** (inchangée) : `ExecutionStore`, `ExecutionRecord`
+  `RUNNING`/`INTERRUPTED`.
+- **Famille B** (nouvelle) : quand le dernier `ExecutionRecord`
+  développeur est `SUCCEEDED` (famille A n'a plus rien à dire) et que le
+  dernier `QARun` de ce WorkItem est `RUNNING` (orphelin) ou déjà
+  `INTERRUPTED` — jamais quand un verdict durable existe déjà
+  (`COMPLETED`/`FAILED`). Un `QARun` `RUNNING` orphelin est basculé
+  `INTERRUPTED` (transition déjà permise par `QARunStatus`, jamais un
+  faux verdict PASS/FAIL) ; le WorkItem devient `RECOVERY_REQUIRED`,
+  exactement comme pour la famille A. `RecoveryCoordinator` reste
+  construit avec `qa_run_store=None` par défaut (opt-in, comme toute
+  autre capacité de `MVPManager` — aucun changement pour un appelant qui
+  n'active pas QA).
+
+**Correctif — reprise QA seule, DEV jamais rejoué** :
+`MVPManager._try_resume_recovery_required` distingue désormais les deux
+cas au moment de reprendre un WorkItem `RECOVERY_REQUIRED` : si le
+dernier `ExecutionRecord` développeur est `SUCCEEDED`, la reprise passe
+par une nouvelle méthode, `_resume_qa_only` — elle lit
+`expected_base_sha`/`expected_head_sha` directement sur le `QARun`
+interrompu (jamais reconstruits), reconcilie le HEAD gouverné
+(`_reconcile_governed_head`, exactement le même invariant que
+`_resume_dev_b_wait` utilise déjà — `GitHeadDriftError` fail-closed en
+cas de dérive réelle), puis relance `_run_qa_and_finalize` directement.
+**DEV A et DEV B ne sont jamais rejoués** — prouvé par test (l'engine de
+développement fake n'est jamais appelé). Sinon (dernier développeur
+`RUNNING`/`INTERRUPTED`), le chemin de reprise DEV existant, inchangé,
+s'applique.
+
+**Correctif — `asyncio.to_thread` ne suffisait pas** : `_run_qa_cycle`
+lançait `self._qa_engine.run` via `asyncio.to_thread`.
+`InternalQAEngine.run()` (méthode synchrone du Protocol `QAEngine`)
+enveloppe elle-même `asyncio.run(self.run_async(...))` — exécutée dans
+un thread séparé, cette boucle asyncio interne est totalement hors
+d'atteinte d'une annulation de la tâche externe : `to_thread` se
+détache simplement du thread, qui continue de tourner jusqu'à sa fin
+(vrai sous-processus `pytest`/`ruff`/... compris), avec un risque réel
+d'écriture tardive dans `QARunStore`/`ValidationStore` après que le run
+principal s'est déjà arrêté. **Correctif retenu (le plus petit
+possible, REUSE FIRST)** : `_run_qa_cycle` détecte (duck-typing, comme
+`build_plan`/`build_manifest` déjà) un `run_async(request)` sur le
+`QAEngine` configuré et l'attend directement, sur la même tâche/boucle
+que le reste du `WorkItem Flow` — une vraie annulation atteint alors QA
+exactement comme elle atteint DEV A/DEV B/DEV FIX. Le Protocol
+`QAEngine` lui-même est inchangé (`.run(request) -> QAResult`) ;
+`asyncio.to_thread` reste le repli pour un moteur externe strictement
+synchrone. `InternalQAEngine.run_async` existait déjà — aucune
+modification de `internal_qa_engine.py` n'a été nécessaire.
+
+**Correctif — arrêt de process réel côté QA** : `QualityGateRunner`
+(`validation.py`) avait exactement le même défaut que
+`RalphExecutionEngine` (un `process.kill()` sur le seul PID direct au
+timeout, rien à l'annulation). Un seul primitive partagé, nouveau
+module `orchestrator.posix_subprocess`
+(`run_in_new_process_group`), est désormais utilisé par les deux
+runners (`ralph_execution_engine.py` et `validation.py`) — jamais deux
+implémentations divergentes. Lance la commande dans sa propre
+session/groupe de processus POSIX (`start_new_session=True`) ; au
+timeout **ou** à l'annulation, `SIGTERM` le groupe entier, escalade
+`SIGKILL` après un court délai fixe, puis `wait()` pour reaper — jamais
+un simple `process.kill()`. `asyncio.TimeoutError`/
+`asyncio.CancelledError` sont gérés par le même code, jamais deux
+chemins. Aucune nouvelle dépendance (stdlib uniquement). Limite
+assumée, non dissimulée : un descendant qui se détache lui-même
+(double fork) échappe au groupe — hors du contrôle de ce projet.
+
 #### P18-03 — Graceful interruption and recovery integration
 
 **Objectif** : rendre l'interruption d'un `run()` actif explicite et
-propre, en réutilisant `RecoveryCoordinator` sans le modifier, avec les
-événements `run.*`/`*.interrupted` correspondants.
+propre pendant DEV A/DEV B/DEV FIX **et QA**, en étendant
+`RecoveryCoordinator` (jamais un second moteur de recovery), avec les
+événements `run.*`/`*.interrupted`/`qa.interrupted` correspondants.
 
 Dépendances : P18-01, P18-02.
 
@@ -2321,17 +2416,31 @@ Critères d'acceptation :
   jamais `SUCCEEDED`.
 - Aucune QA n'est lancée et aucun merge n'est tenté après une
   interruption DEV A/DEV B/DEV FIX (prouvé par test, pas seulement par
-  construction).
-- `RecoveryCoordinator` (code inchangé) reconcilie cette exécution
-  `INTERRUPTED` en `RECOVERY_REQUIRED` au prochain
-  `run_next_work_item()`, exactement comme pour un timeout Ralph
-  aujourd'hui.
-- Le prochain `run()` reprend via le chemin
-  `_try_resume_recovery_required` existant (inchangé) — aucun second
-  mécanisme de recovery.
+  construction) ; aucun merge n'est tenté après une interruption QA
+  elle-même.
+- `_run_qa_cycle` préfère un `run_async(request)` réellement exposé par
+  le `QAEngine` configuré (duck-typing, `InternalQAEngine` en
+  production) sur `asyncio.to_thread(self._qa_engine.run, ...)` — le
+  Protocol `QAEngine` (`.run(request) -> QAResult`) reste inchangé,
+  `to_thread` reste le repli pour un moteur externe strictement
+  synchrone.
+- `RecoveryCoordinator` est **étendu** (jamais un second moteur) avec
+  une seconde famille reconnue, opt-in via `qa_run_store=` : un dernier
+  `ExecutionRecord` développeur `SUCCEEDED` combiné à un dernier `QARun`
+  `RUNNING` (orphelin, basculé `INTERRUPTED`, jamais un faux verdict) ou
+  déjà `INTERRUPTED` bascule le WorkItem en `RECOVERY_REQUIRED` — sans
+  toucher à la famille A existante (`ExecutionStore`).
+- Le prochain `run()` reprend via `_try_resume_recovery_required`
+  (étendu, jamais un second mécanisme) : si le dernier développeur est
+  `SUCCEEDED`, `_resume_qa_only` relance uniquement une nouvelle QA
+  (lisant `expected_base_sha`/`expected_head_sha` du `QARun` interrompu,
+  reconciliant le HEAD gouverné, fail-closed sur dérive réelle) —
+  **DEV A/DEV B ne sont jamais rejoués**, prouvé par test. Sinon, le
+  chemin de reprise DEV existant, inchangé, s'applique.
 - `run.interruption_requested` est émis dès la capture de
-  `asyncio.CancelledError` ; `(dev_a|dev_b|dev_fix).interrupted` est
-  émis pour l'exécution concernée ; `run.interrupted` est émis juste
+  `asyncio.CancelledError` (côté DEV comme côté QA) ;
+  `(dev_a|dev_b|dev_fix).interrupted` ou `qa.interrupted` est émis pour
+  l'exécution/l'attempt concerné ; `run.interrupted` est émis juste
   avant la re-propagation de l'annulation — tous les trois via
   `on_event`, avant que `.run()` ne retourne/lève à la frontière
   synchrone.
@@ -2341,43 +2450,49 @@ Critères d'acceptation :
 - `aido resume`/`/resume` (frontend, M2) restent hors de portée : P18
   ne touche à rien côté session AIDO Code.
 
-Tests attendus (offline, `subprocess_runner` fake capable de simuler
-une annulation mi-exécution — jamais un vrai `ralph`/provider) :
+Tests attendus (offline, fakes capables de simuler une annulation
+mi-exécution — jamais un vrai `ralph`/provider) — **tous réellement
+écrits et verts** :
 
-- Annulation async simulée (`asyncio.CancelledError` levée dans le fake
-  `subprocess_runner` pendant l'attente) pendant DEV A :
-  `ExecutionRecord` finalisé `INTERRUPTED` (jamais `RUNNING`, jamais
-  `SUCCEEDED`) ; aucun appel QA/merge observé (mock/spy) après
-  l'interruption ; l'annulation est bien re-propagée après le
-  nettoyage (le test l'attend explicitement, ex. `pytest.raises
-  (asyncio.CancelledError)` autour de l'appel interne concerné).
-- Même scénario pendant DEV B (corrective review) : mêmes garanties.
-- Le fake subprocess expose un indicateur vérifiable que le
-  **groupe/l'arbre** a été ciblé pour terminaison (pas seulement le PID
-  direct) — ex. un fake enregistrant l'appel `killpg`/l'équivalent
-  simulé, avec le bon signal puis, si besoin, l'escalade.
-- Le process fake est bien "reaped" (`wait()` observé appelé) — pas de
-  zombie simulé laissé en suspens dans le test.
-- Un `run()` suivant, sur le même projet/état persisté, reprend le
-  WorkItem via `RECOVERY_REQUIRED` (fixture reprenant
-  `test_recovery.py`) sans relance manuelle, sans double exécution —
-  utilise `RecoveryCoordinator` inchangé.
-- Les événements
-  `run.interruption_requested`/`*.interrupted`/`run.interrupted` sont
-  reçus par `on_event`, dans cet ordre, avec les champs attendus,
-  **avant** que l'annulation ne soit re-propagée à l'appelant du test.
-- Un test dédié prouve qu'aucun handler `signal.SIGINT` global n'est
-  installé par ce package (ex. inspection de `signal.getsignal` avant/
-  après un `run()`, inchangé).
-- Aucun test de cette tranche ne consomme un vrai `ralph`/provider —
-  uniquement les seams `subprocess_runner`/`provider_adapters` déjà
-  établis dans ce dépôt.
+- `tests/test_ralph_execution_engine.py` : `execute()` annulé
+  (`subprocess_runner` fake levant `CancelledError`) finalise
+  `INTERRUPTED` et **re-lève**, ne retourne jamais un `ExecutionResult`.
+- `tests/test_mvp_manager_workitem_flow.py::TestDevPhaseInterruption` :
+  annulation pendant DEV A et pendant DEV B — WorkItem jamais
+  `COMPLETED`/`FAILED`, QA jamais appelée, événements
+  `run.interruption_requested`/`{phase}.interrupted`/`run.interrupted`
+  reçus dans cet ordre.
+- `tests/test_mvp_manager_workitem_flow.py::TestQAPhaseInterruption` :
+  annulation pendant une QA réellement en vol (`asyncio.Event`
+  synchronise le test avec l'attempt réel, jamais un sleep arbitraire) —
+  `QARun` finalisé `INTERRUPTED` (`verdict is None`), WorkItem jamais
+  `COMPLETED`, aucun `git.merge_*`, `.run()` (synchrone) n'est jamais
+  appelée (preuve que le chemin async réel est utilisé, jamais
+  `to_thread`).
+- `tests/test_recovery.py::TestQARecovery` : `QARun` `RUNNING` orphelin
+  → `INTERRUPTED` + WorkItem `RECOVERY_REQUIRED` ; `QARun` déjà
+  `INTERRUPTED` → inchangé, WorkItem quand même `RECOVERY_REQUIRED` ;
+  `QARun` `COMPLETED` → jamais touché ; sans `qa_run_store` configuré →
+  jamais déclenché ; aucun `QARun` du tout → laissé tel quel.
+- `tests/test_mvp_manager_workitem_flow.py::TestQAOnlyResumeAfterInterruption` :
+  reprise après un `QARun` `INTERRUPTED` — un nouveau `QARun` est créé,
+  PASS → merge normal, **l'engine de développement fake n'est jamais
+  appelé** (`dev_engine.requests == []`) ; HEAD dérivé depuis
+  l'interruption → `GitHeadDriftError`, aucune QA tentée, aucun merge.
+- `tests/test_posix_subprocess.py` : un vrai sous-processus (`sh`/
+  `sleep`, jamais un provider) lançant lui-même un vrai enfant — timeout
+  et annulation tuent le **groupe entier** (l'enfant réellement vérifié
+  mort via son PID), reaping sans zombie ; l'annulation n'est jamais
+  observée comme un succès.
 
-Non-objectifs : aucun second système de recovery ; aucun changement à
-`RecoveryCoordinator`/la taxonomie existante d'`ExecutionStore`
-(`INTERRUPTED`/`RECOVERY_REQUIRED` déjà là) ; aucune UI/session AIDO
-Code ; aucun changement à `WorkerSelector`/P17 ; aucun serveur/queue/
-broker.
+Non-objectifs : aucun second système de recovery (une seule
+`RecoveryCoordinator`, deux familles) ; aucun changement à la taxonomie
+existante d'`ExecutionStore`/`QARunStore`
+(`INTERRUPTED`/`RECOVERY_REQUIRED` déjà là) ; aucun checkpoint intra-QA,
+aucun replay d'un `QARun` interrompu au niveau commande individuelle
+(YAGNI — un `QARun` interrompu est abandonné, une QA neuve et complète
+est relancée) ; aucune UI/session AIDO Code ; aucun changement à
+`WorkerSelector`/P17 ; aucun serveur/queue/broker.
 
 #### Hors périmètre de P18 (l'ensemble des trois WorkItems)
 
@@ -2461,9 +2576,9 @@ relecture de code plus haut). `RunResult.events` toujours inchangé.
 11. P17 (`DONE`) : routing quota-aware déterministe dans l'unique
     `WorkerSelector`, après disponibilité et gouvernance, sans probe
     additionnel ; indépendant de P14.
-12. P18 (`IN PROGRESS`, GO humain 2026-09-26) : événements live publics
-    (`on_event`) + interruption/recovery propre, prérequis pour AIDO
-    Code M3 ; P18-01/P18-02 `DONE`, P18-03 pas commencé. Voir
+12. P18 (`DONE`, GO humain 2026-09-26) : événements live publics
+    (`on_event`) + interruption/recovery propre (DEV A/DEV B/DEV FIX et
+    QA), prérequis pour AIDO Code M3 ; P18-01/P18-02/P18-03 `DONE`. Voir
     sous-section P18 ci-dessus.
 
 ### Table des propositions
