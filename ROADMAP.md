@@ -2724,7 +2724,7 @@ Acceptance :
 - Capacité déclarée : `development` seulement, tant qu'aucune autre
   capacité réelle n'est prouvée par un run réel.
 
-#### P19-03 — Real validation
+#### P19-03 — Real validation (`DONE`, 2026-09-28)
 
 Dépend de : P19-02.
 
@@ -2750,6 +2750,52 @@ Acceptance :
   test n'appelle `agy` réellement.
 - `enabled: true` n'est décidé qu'après cette preuve réelle complète —
   jamais avant, jamais par anticipation.
+
+**Résultat réel (2026-09-28)**, `RalphExecutionEngine` réel (jamais de
+subprocess_runner factice), worker `gravity`/`claude-sonnet-4-6`, dans
+un dépôt Git jetable hors des deux projets :
+
+- **Run nominal** : `ExecutionStatus.SUCCEEDED`, `provider=gravity`,
+  `backend=gravity`, `model=claude-sonnet-4-6`. Fichier créé avec le
+  contenu exact demandé. Commit réel produit
+  (`git_sha_before` ≠ `git_sha_after`), auteur Git
+  `Gravity <gravity_spike_01@workers.ai-dev-orchestrator.local>` —
+  conforme à P13.2, jamais un nom de vendor. `.ralph/events-*.jsonl`
+  contient bien l'événement `work.completed` réel émis par `agy` via
+  `ralph emit` (mécanisme déjà partagé, aucun second parseur).
+- **Interruption** : tâche annulée après 8s (`asyncio` `task.cancel()`)
+  pendant un run réel plus long. `ExecutionRecord` correctement
+  finalisé `INTERRUPTED` (jamais laissé `RUNNING`) — ce point précis de
+  l'acceptance est bien vérifié. **Mais** : un descendant du process
+  Ralph (`gravity_ralph_bridge.py`, puis `agy` lui-même) a survécu à
+  l'annulation, observé réellement vivant (`ps`) plusieurs secondes
+  après le retour de `engine.execute()`, PPID réattribué (reparenté),
+  PGID distinct de celui du groupe lancé par
+  `run_in_new_process_group`. **Ce n'est pas une régression P19** :
+  c'est exactement la limite déjà documentée, non dissimulée, dans
+  `posix_subprocess.py` depuis P18-03 (« a descendant that itself
+  detaches into a new session/group (a double fork) is outside this
+  group and outside this project's control ») — `ralph` (binaire
+  externe) détache visiblement son propre enfant custom-backend dans un
+  groupe/session distinct, exactement le cas déjà anticipé. Le même
+  mécanisme partagé (`_SOLO_MODE_BACKENDS`) s'applique identiquement à
+  Vibe ; rien n'indique que Vibe échapperait à la même limite si
+  soumis au même test réel (jamais vérifié en conditions réelles
+  avant aujourd'hui pour aucun backend solo-mode — la suite P18-03
+  reste entièrement offline). Processus orphelins nettoyés
+  manuellement après constat (`kill`), aucun run réel laissé actif.
+  **Conséquence opérationnelle à connaître** : interrompre une tâche
+  Gravity (ou Vibe) en cours peut laisser un appel `agy`/`vibe` réel
+  continuer en arrière-plan jusqu'à sa propre fin naturelle — coût réel
+  possible au-delà de l'annulation logique. Corriger cette limite
+  (si jamais possible côté `ralph` lui-même) est hors du périmètre de
+  P19 ; documenté ici pour que ce ne soit plus un angle mort.
+- Suite de tests offline complète : verte (voir commit d'implémentation
+  ci-dessus), aucun test n'appelle `agy` réellement.
+- Décision : `enabled: true` maintenu (déjà positionné en P19-02) — le
+  run nominal réel est un succès complet et sans réserve ; la réserve
+  ci-dessus concerne une limite pré-existante et déjà acceptée de
+  l'annulation, pas le fonctionnement de Gravity lui-même.
 
 ### Ordre approuvé
 
