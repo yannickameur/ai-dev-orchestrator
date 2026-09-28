@@ -23,9 +23,9 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The full suite is offline — no real Anthropic/OpenAI/Mistral calls, no
-provider credentials required, no quota consumed. It is what CI runs
-(`.github/workflows/ci.yml`).
+The full suite is offline — no real Anthropic/OpenAI/Mistral/Gravity
+calls, no provider credentials required, no quota consumed. It is what
+CI runs (`.github/workflows/ci.yml`).
 
 A few scripts under `scripts/` are deliberately **excluded** from the
 offline suite (their own docstrings say so explicitly, e.g. "NEVER run
@@ -86,7 +86,7 @@ contribution workflow, described above.
 
 The offline test suite (`pytest`, what CI runs) needs no provider access
 or permission configuration at all — it never touches a real Claude/
-Codex/Vibe/Ralph subprocess. `tests/test_cli.py`/`tests/test_project_runtime.py`
+Codex/Vibe/Gravity/Ralph subprocess. `tests/test_cli.py`/`tests/test_project_runtime.py`
 exercise the full public `aido` composition path (including a real,
 scripted 2-execution WorkItem Flow through `aido run`) entirely offline,
 with fake provider adapters and a fake Ralph subprocess runner injected
@@ -98,9 +98,9 @@ Running `aido run` for real (or `scripts/run_external_project_pilot.py`,
 or your own harness) is different, and there are real, current
 limitations/costs you should know about before trying it:
 
-- The provider CLI you use (Claude Code, Codex, Mistral Vibe) must
-  already be installed and authenticated on your machine — AIDO never
-  manages provider credentials.
+- The provider CLI you use (Claude Code, Codex, Mistral Vibe, Gravity's
+  `agy`) must already be installed and authenticated on your machine —
+  AIDO never manages provider credentials.
 - A real `aido run` **consumes real provider quota** — it is the only
   `aido` command that ever causes a real provider probe or worker
   execution (`init`/`validate`/`status` never do, and this is tested).
@@ -117,7 +117,7 @@ limitations/costs you should know about before trying it:
   backend boundary (`orchestrator.ralph_execution_engine`). See
   [`docs/PROJECT_CONFIG.md`](docs/PROJECT_CONFIG.md) for the full
   contract and the verified per-backend flag mapping (Claude Code, Codex,
-  Vibe). `unrestricted` is always explicit opt-in — never a silent
+  Vibe, Gravity). `unrestricted` is always explicit opt-in — never a silent
   default, never inferred from the host machine's own configuration;
   `aido run` prints a visible warning before executing anything when a
   project requests it, without ever prompting for confirmation

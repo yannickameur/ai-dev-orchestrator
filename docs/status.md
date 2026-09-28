@@ -1,6 +1,6 @@
 # Status
 
-Snapshot factuel court — mis à jour le 2026-09-26 (P17). Pas un journal ;
+Snapshot factuel court — mis à jour le 2026-09-28 (P19). Pas un journal ;
 l'historique détaillé daté (Slices, incidents, diagnostics) vit dans
 l'historique Git (`git log`) et dans les rapports sous `docs/reports/`.
 Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
@@ -14,19 +14,26 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
 - **Workflow** : WorkItem Flow — le seul workflow d'exécution de WorkItem
   implémenté (`GOVERNED_FULL` retiré avant la première release publique,
   2026-09-18 ; `WorkflowMode` lui-même supprimé, un seul mode restant).
-- **Providers/workers** (`config/workers.yaml`, source de vérité) : 8
-  workers déclarés (6 activés), **5 providers de premier niveau** :
+- **Providers/workers** (`config/workers.yaml`, source de vérité) : 9
+  workers déclarés (7 activés), **6 providers de premier niveau** :
   `alice`/`bob` (anthropic/claude_code), `victor`/`oscar` (openai/codex),
-  `milo`/`juno` (mistral/vibe, `development` uniquement), `dana`/`kai`
+  `milo`/`juno` (mistral/vibe, `development` uniquement), `gravity`
+  (gravity/agy, `development` uniquement, `enabled: true`, exception
+  volontaire à un seul worker — voir `ROADMAP.md` §13, P19), `dana`/`kai`
   (deepseek/kimi via `claude_code` redirigé, `development` uniquement,
   **`enabled: false`**, clé API requise, pas encore de preuve
   d'exécution réelle ; voir `ROADMAP.md` §7/§13).
-- **Tests offline** : 1335 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
-  2026-09-26 après P18-02), 1 avertissement de collecte préexistant
+- **Tests offline** : 1387 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
+  2026-09-28 après P19), 1 avertissement de collecte préexistant
   (`TestChangeAuthorization`). Snapshot, pas un contrat ; le compte
   courant fait foi dans la sortie de `pytest -q`.
 - **Roman Numerals** (pilote externe) : `PASS`.
 - **Mistral / Vibe** : ✅ `VALIDATED`.
+- **Gravity / agy** : ✅ `VALIDATED` — spike réel (Phase A) et run réel
+  Ralph+Gravity (P19-03) ; voir `ROADMAP.md` §13, sous-section P19. Le
+  seul point de réserve connu (nettoyage de groupe de processus après
+  une interruption réelle) est une limite pré-existante déjà documentée
+  depuis P18-03, partagée avec Vibe, pas une régression P19.
 - **Morpion Web 3D** (pilote externe) : `DONE`. SHA final :
   `593c615e66e6a2cb585fb465ded0185da46a3319`.
 - **P12** (format de configuration de projet public `aido.yaml` + mode de
@@ -43,8 +50,8 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   commit, working tree propre et `aido validate` OK. Voir `ROADMAP.md` §13
   et `docs/PROJECT_CONFIG.md`.
 - **Développement actif** : aucun.
-- **5 providers implémentés, 3 validés, 2 en attente de validation réelle** :
-  Anthropic/OpenAI/Mistral `VALIDATED` ; DeepSeek/Kimi `IMPLEMENTED — REAL
+- **6 providers implémentés, 4 validés, 2 en attente de validation réelle** :
+  Anthropic/OpenAI/Mistral/Gravity `VALIDATED` ; DeepSeek/Kimi `IMPLEMENTED — REAL
   VALIDATION PENDING`.
 - **P3 (DeepSeek + Kimi comme providers de premier niveau)** :
   implémentation `DONE`, validation réelle `PENDING` (2026-09-19). Voir
@@ -94,17 +101,27 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   dans une bande de 10 points, après disponibilité et gouvernance de review.
   `None` reste inconnu ; le probe existant est réutilisé. P17 est
   indépendant de P14 (aucun suivi tokens/coûts).
-- **P18 (live execution events and graceful interruption)** :
-  `APPROVED` (GO humain 2026-09-26) — **`IN PROGRESS`**. **P18-01/P18-02
-  `DONE`** (2026-09-26) : `OrchestratorEngine.run(on_event=...)` live ;
-  `EngineEvent` dans le module neutre `orchestrator.engine_events`
-  (ré-exporté par `orchestrator.engine`, un seul type) ; DEV A/DEV B/DEV
-  FIX/QA/Git émettent leurs événements réels avec métadonnées
+- **P18 (live execution events and graceful interruption)** : `DONE`
+  (GO humain 2026-09-26). **P18-01/P18-02/P18-03 `DONE`** :
+  `OrchestratorEngine.run(on_event=...)` live ; `EngineEvent` dans le
+  module neutre `orchestrator.engine_events` (ré-exporté par
+  `orchestrator.engine`, un seul type) ; DEV A/DEV B/DEV FIX/QA/Git
+  émettent leurs événements réels avec métadonnées
   (worker/provider/backend/profile_id/model/quality_tier/
-  reasoning_effort/commit_sha) ; `RunResult` inchangé. **P18-03
-  (interruption gracieuse) : pas commencé.** Adaptive Execution reste
-  non branché en production ; recovery existant
-  (`RecoveryCoordinator`) réutilisé sans modification.
+  reasoning_effort/commit_sha) ; `RunResult` inchangé. Interruption
+  gracieuse : `posix_subprocess.run_in_new_process_group` partagé,
+  `RecoveryCoordinator` étendu (jamais dupliqué) pour reconcilier aussi
+  une QA interrompue. Adaptive Execution reste non branché en
+  production. Voir `ROADMAP.md` §13, sous-section P18.
+- **P19 (Gravity worker/backend)** : `DONE` (GO humain 2026-09-28).
+  `GravityAdapter` (`EXECUTION_PROBE_ONLY`, même schéma que
+  `MistralVibeAdapter`) ; `gravity_ralph_bridge.py` sur le modèle exact
+  de `vibe_ralph_bridge.py`, réutilisant le mécanisme custom-backend de
+  Ralph déjà prouvé par Vibe — jamais un second moteur d'exécution ;
+  worker `gravity` (`enabled: true`, `priority: 101`, exception
+  délibérée à un seul worker). Spike réel (Phase A) et run réel
+  Ralph+Gravity (P19-03) validés. Voir `ROADMAP.md` §13, sous-section
+  P19.
 - **P13.5 (frontière moteur/librairie : injection du `WorkerRegistry`,
   `workers:` optionnel)** : `DONE` (2026-09-24). `ai-dev-orchestrator` ne
   considère plus `aido.yaml` comme la source de configuration complète du

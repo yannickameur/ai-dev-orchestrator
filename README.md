@@ -2,9 +2,9 @@
 
 Une couche mince de gouvernance/quota/sélection au-dessus de Ralph
 Orchestrator (le CLI `ralph`) qui fait travailler plusieurs agents IA
-développeurs (Claude Code, Codex CLI, Mistral Vibe) sur un vrai dépôt
-Git, sous revue indépendante et QA déterministe obligatoire — jamais sur
-la seule parole d'un LLM.
+développeurs (Claude Code, Codex CLI, Mistral Vibe, Gravity) sur un vrai
+dépôt Git, sous revue indépendante et QA déterministe obligatoire —
+jamais sur la seule parole d'un LLM.
 
 ## Ce que ça fait
 
@@ -144,6 +144,7 @@ boundary », et `ROADMAP.md` §13.
 | Anthropic | Claude Code | ✅ VALIDATED |
 | OpenAI | Codex CLI | ✅ VALIDATED |
 | Mistral | Vibe | ✅ VALIDATED — voir [`docs/VIBE_SPIKE.md`](docs/VIBE_SPIKE.md). Son signal de disponibilité reste `EXECUTION_PROBE_ONLY` (pas de fenêtre de quota observable), jamais fabriqué en pourcentage |
+| Gravity | agy | ✅ VALIDATED — voir `ROADMAP.md` §13, section P19 (spike réel + run réel Ralph+Gravity). Même signal `EXECUTION_PROBE_ONLY` que Vibe (pas de fenêtre de quota observable) ; un seul worker déclaré (exception volontaire, pas encore de second besoin démontré) |
 | DeepSeek | Claude Code, redirigé (`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`) | `IMPLEMENTED` — validation réelle `PENDING`, désactivé par défaut (`config/workers.yaml`, worker `dana`). Nécessite une vraie `DEEPSEEK_API_KEY` (facturé à la consommation, jamais requis pour les autres providers) |
 | Kimi | Claude Code, redirigé (`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`) | `IMPLEMENTED` — validation réelle `PENDING`, désactivé par défaut (`config/workers.yaml`, worker `kai`). Nécessite une vraie `KIMI_API_KEY` (abonnement Kimi Code, jamais requis pour les autres providers) |
 
@@ -160,8 +161,9 @@ un travail approuvé, ni un travail en cours.
 Prérequis :
 - Python 3.10+ ;
 - Ralph CLI (`ralph`) installé et sur le `PATH` ;
-- Claude Code CLI et/ou Codex CLI et/ou Mistral Vibe CLI, authentifiés
-  pour les providers que vous comptez utiliser réellement ;
+- Claude Code CLI et/ou Codex CLI et/ou Mistral Vibe CLI et/ou Gravity
+  (`agy`), authentifiés pour les providers que vous comptez utiliser
+  réellement ;
 - Pour DeepSeek/Kimi (optionnels, désactivés par défaut) : Claude Code CLI
   installé (même binaire, réutilisé) et une vraie clé (`DEEPSEEK_API_KEY`
   et/ou `KIMI_API_KEY`) exportée dans votre environnement, jamais dans un
