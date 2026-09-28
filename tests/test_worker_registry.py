@@ -377,12 +377,12 @@ class TestShippedExampleConfig:
     def test_config_workers_yaml_loads(self) -> None:
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
         assert {w.worker_id for w in registry.all_workers()} == {
-            "alice", "bob", "victor", "oscar", "milo", "juno", "dana", "kai",
+            "alice", "bob", "victor", "oscar", "milo", "juno", "dana", "kai", "gravity",
         }
 
     def test_config_workers_yaml_workers_are_enabled(self) -> None:
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
-        assert len(registry.enabled_workers()) == 6
+        assert len(registry.enabled_workers()) == 7  # was 6 before gravity (P19)
 
     def test_config_workers_yaml_deepseek_and_kimi_are_disabled_by_default(self) -> None:
         """DeepSeek (billed) and Kimi (subscription) both require a real
@@ -404,13 +404,21 @@ class TestShippedExampleConfig:
         the *other* provider to reset when the author's own provider is
         still available — see ROADMAP.md, "Worker pool". Mistral (milo/
         juno, added post-MVP 0.1, see docs/VIBE_SPIKE.md) follows the same
-        rule."""
+        rule. Gravity (P19, ROADMAP.md §13) is a deliberate, explicit
+        exception: a single worker only, no artificial second identity
+        without a real, demonstrated need (REUSE FIRST/YAGNI) — DEV B
+        selection still works for it via the existing cross-provider
+        preference (WorkerSelector, unchanged), same as any single-worker
+        provider would."""
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
         by_provider: dict[str, list] = {}
         for worker in registry.enabled_workers():
             by_provider.setdefault(worker.provider, []).append(worker)
-        assert set(by_provider) == {"anthropic", "openai", "mistral"}
+        assert set(by_provider) == {"anthropic", "openai", "mistral", "gravity"}
         for provider, workers in by_provider.items():
+            if provider == "gravity":
+                assert len(workers) == 1, "gravity is a deliberate single-worker exception (P19)"
+                continue
             assert len(workers) >= 2, f"provider {provider!r} has fewer than 2 enabled workers"
 
     def test_config_workers_yaml_secondary_workers_mirror_their_primary(self) -> None:

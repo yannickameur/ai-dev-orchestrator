@@ -84,6 +84,15 @@ def _milo(**overrides) -> Worker:
     return Worker.with_single_profile(**fields)
 
 
+def _gravity(**overrides) -> Worker:
+    fields = dict(
+        worker_id="gravity_dev_01", display_name="Gravity", provider="gravity",
+        backend="gravity", model="claude-sonnet-4-6", capabilities=frozenset({"developer"}),
+    )
+    fields.update(overrides)
+    return Worker.with_single_profile(**fields)
+
+
 def _request(tmp_path: Path, **overrides) -> ExecutionRequest:
     worker = overrides.get("worker", _alice())
     profile = worker.profile()
@@ -501,6 +510,131 @@ class TestVibeBackendMapping:
         assert result.record.git_sha_before != result.record.git_sha_after
 
 
+class TestGravityBackendMapping:
+    """Gravity (P19, ROADMAP.md §13) reuses the exact same solo/no-hats
+    "custom" mechanism already proven by Vibe (`TestVibeBackendMapping`
+    above) — these tests mirror that class's own structure to prove the
+    same invariants for `gravity_ralph_bridge.py`, never a second
+    execution engine, and that Claude/Codex/Vibe remain untouched."""
+
+    def test_gravity_backend_omits_hats_flag_entirely(self, tmp_path: Path) -> None:
+        captured = {}
+
+        def _on_call(args, cwd, timeout):
+            captured["args"] = list(args)
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        asyncio.run(engine.execute(_request(tmp_path, worker=_gravity())))
+
+        assert "-H" not in captured["args"]
+
+    def test_gravity_config_uses_custom_backend_with_bridge_command(self, tmp_path: Path) -> None:
+        captured = {}
+
+        def _on_call(args, cwd, timeout):
+            config_path = Path(args[args.index("-c") + 1])
+            captured["config"] = config_path.read_text()
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        asyncio.run(engine.execute(_request(tmp_path, worker=_gravity())))
+
+        assert 'backend: "custom"' in captured["config"]
+        assert "gravity_ralph_bridge.py" in captured["config"]
+        assert '"--model", "claude-sonnet-4-6"' in captured["config"]
+
+    def test_gravity_prompt_and_cwd_still_delivered_like_every_other_backend(self, tmp_path: Path) -> None:
+        captured = {}
+
+        def _on_call(args, cwd, timeout):
+            captured["cwd"] = cwd
+            captured["prompt_text"] = Path(args[args.index("-P") + 1]).read_text()
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        asyncio.run(
+            engine.execute(_request(tmp_path, worker=_gravity(), instructions="Do the gravity thing."))
+        )
+
+        assert captured["cwd"] == tmp_path
+        assert captured["prompt_text"] == "Do the gravity thing."
+
+    def test_gravity_result_is_normalized_through_the_same_execution_result(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")])
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        result = asyncio.run(engine.execute(_request(tmp_path, worker=_gravity())))
+
+        assert result.record.worker_id == "gravity_dev_01"
+        assert result.record.provider == "gravity"
+        assert result.record.backend == "gravity"
+        assert result.record.model == "claude-sonnet-4-6"
+        assert result.record.status is ExecutionStatus.SUCCEEDED
+
+    def test_gravity_reasoning_effort_is_rejected_not_silently_dropped(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")])
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+        worker = _gravity(reasoning_effort="high")
+
+        with pytest.raises(UnsupportedProfileOptionError):
+            asyncio.run(engine.execute(_request(tmp_path, worker=worker, execution_id="exec-gravity-re")))
+
+        assert store.get("exec-gravity-re").status is ExecutionStatus.FAILED
+
+    def test_gravity_timeout_is_handled_identically_to_native_backends(self, tmp_path: Path) -> None:
+        from orchestrator.ralph_execution_engine import RalphTimeoutError
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(raise_exc=RalphTimeoutError("timed out"))
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        result = asyncio.run(engine.execute(_request(tmp_path, worker=_gravity(), execution_id="exec-gravity-to")))
+
+        assert result.record.status is ExecutionStatus.INTERRUPTED
+
+    def test_gravity_git_sha_is_captured_only_after_process_completion(self, tmp_path: Path) -> None:
+        """No special-casing for gravity: git facts are still only read
+        before-launch and after-the-whole-subprocess-returns, exactly like
+        every other backend (mirrors TestVibeBackendMapping's own
+        equivalent, worker=_gravity())."""
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+        (tmp_path / "seed.txt").write_text("seed\n")
+        subprocess.run(["git", "add", "seed.txt"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=tmp_path, check=True)
+        sha_before_expected = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+        def _on_call(args, cwd, timeout):
+            (Path(cwd) / "work.txt").write_text("done\n")
+            subprocess.run(["git", "add", "work.txt"], cwd=cwd, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "gravity work"], cwd=cwd, check=True)
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        engine = RalphExecutionEngine(store, subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        result = asyncio.run(engine.execute(_request(tmp_path, worker=_gravity())))
+        sha_after_expected = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+        assert result.record.git_sha_before == sha_before_expected
+        assert result.record.git_sha_after == sha_after_expected
+        assert result.record.git_sha_before != result.record.git_sha_after
+
+
 class TestBusinessVerdict:
     def test_success_event_yields_succeeded(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
@@ -745,6 +879,11 @@ class TestWorkerGitIdentity:
         # "claude_dev_01" for unrelated historical reasons; real
         # config/workers.yaml worker_ids are plain first names like
         # "alice"/"victor").
+        # Gravity (P19) is deliberately excluded from this loop: unlike
+        # Alice/Victor/Milo (anonymized human first names), its
+        # `display_name` is explicitly "Gravity" itself, by explicit
+        # product decision (ROADMAP.md, P19) — not an oversight this test
+        # should flag.
         for worker in (_alice(), _victor(), _milo()):
             env = _worker_git_identity_env(worker)
             name_blob = f"{env['GIT_AUTHOR_NAME']} {env['GIT_COMMITTER_NAME']}".lower()
@@ -755,7 +894,7 @@ class TestWorkerGitIdentity:
         # A clearly non-human, non-guessable email domain — never
         # something that could be mistaken for the maintainer's own
         # GitHub-linked email or a real human account.
-        for worker in (_alice(), _victor(), _milo()):
+        for worker in (_alice(), _victor(), _milo(), _gravity()):
             env = _worker_git_identity_env(worker)
             assert env["GIT_AUTHOR_EMAIL"].endswith("@workers.ai-dev-orchestrator.local")
 
@@ -935,6 +1074,21 @@ class TestExecutionPermissionMode:
         asyncio.run(engine.execute(_request(tmp_path, worker=_milo())))
         return captured["config"]
 
+    def _captured_gravity_config(self, tmp_path: Path, *, permission_mode) -> str:
+        captured = {}
+
+        def _on_call(args, cwd, timeout):
+            config_path = Path(args[args.index("-c") + 1])
+            captured["config"] = config_path.read_text()
+
+        store = _store(tmp_path)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        engine = RalphExecutionEngine(
+            store, subprocess_runner=runner, clock=lambda: UTC_NOW, permission_mode=permission_mode,
+        )
+        asyncio.run(engine.execute(_request(tmp_path, worker=_gravity())))
+        return captured["config"]
+
     # --- claude_code -----------------------------------------------------
 
     def test_claude_code_standard_uses_verified_manual_deny_mechanism(self, tmp_path: Path) -> None:
@@ -998,6 +1152,16 @@ class TestExecutionPermissionMode:
         config = self._captured_vibe_config(tmp_path, permission_mode=ExecutionPermissionMode.UNRESTRICTED)
         assert '"--permission-mode", "unrestricted"' in config
 
+    # --- gravity (generic mode crosses to the bridge as plain argv) --------
+
+    def test_gravity_standard_passes_generic_mode_to_bridge(self, tmp_path: Path) -> None:
+        config = self._captured_gravity_config(tmp_path, permission_mode=ExecutionPermissionMode.STANDARD)
+        assert '"--permission-mode", "standard"' in config
+
+    def test_gravity_unrestricted_passes_generic_mode_to_bridge(self, tmp_path: Path) -> None:
+        config = self._captured_gravity_config(tmp_path, permission_mode=ExecutionPermissionMode.UNRESTRICTED)
+        assert '"--permission-mode", "unrestricted"' in config
+
     # --- omitted mode (engine unconfigured) == unchanged legacy behavior --
 
     def test_omitted_permission_mode_adds_no_flags_for_claude_code(self, tmp_path: Path) -> None:
@@ -1012,6 +1176,10 @@ class TestExecutionPermissionMode:
 
     def test_omitted_permission_mode_adds_no_bridge_flag_for_vibe(self, tmp_path: Path) -> None:
         config = self._captured_vibe_config(tmp_path, permission_mode=None)
+        assert "--permission-mode" not in config
+
+    def test_omitted_permission_mode_adds_no_bridge_flag_for_gravity(self, tmp_path: Path) -> None:
+        config = self._captured_gravity_config(tmp_path, permission_mode=None)
         assert "--permission-mode" not in config
 
     # --- fail-closed: an unmapped mode never silently passes --------------

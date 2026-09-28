@@ -37,8 +37,8 @@ def test_parses_via_worker_registry():
     try:
         registry = WorkerRegistry.load(path)
         worker_ids = {w.worker_id for w in registry.all_workers()}
-        assert worker_ids == {"alice", "bob", "victor", "oscar", "milo", "juno", "dana", "kai"}
-        assert len(registry.enabled_workers()) == 6
+        assert worker_ids == {"alice", "bob", "victor", "oscar", "milo", "juno", "dana", "kai", "gravity"}
+        assert len(registry.enabled_workers()) == 7  # was 6 before gravity (P19)
     finally:
         path.unlink()
 
