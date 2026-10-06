@@ -1,6 +1,6 @@
 # Status
 
-Snapshot factuel court — mis à jour le 2026-10-06 (préparation P21). Pas un journal ;
+Snapshot factuel court — mis à jour le 2026-10-06 (clôture P21). Pas un journal ;
 l'historique détaillé daté (Slices, incidents, diagnostics) vit dans
 l'historique Git (`git log`) et dans les rapports sous `docs/reports/`.
 Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
@@ -21,8 +21,8 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   (gravity/agy, `development` uniquement). L'état de quota Gravity provient
   du probe read-only `agy -p "/usage" --output-format json`. Voir
   `ROADMAP.md` §13, P19/P20.
-- **Tests offline** : 1374 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
-  2026-10-06 avant P21), 1 avertissement de collecte préexistant
+- **Tests offline** : 1413 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
+  2026-10-06 après P21), 1 avertissement de collecte préexistant
   (`TestChangeAuthorization`). Snapshot, pas un contrat ; le compte
   courant fait foi dans la sortie de `pytest -q`.
 - **Roman Numerals** (pilote externe) : `PASS`.
@@ -47,15 +47,22 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   conservé, aucun provider/runtime lancé. Test manuel réel : bootstrap,
   commit, working tree propre et `aido validate` OK. Voir `ROADMAP.md` §13
   et `docs/PROJECT_CONFIG.md`.
-- **Développement actif** : aucun code P21 commencé. P21 est préparé
-  documentairement pour un prochain WorkItem Flow moteur.
-- **P21 (Live worker execution observability)** : `PRÉPARÉ` (2026-10-06),
-  WorkItems P21-01/02/03 proposés dans `ROADMAP.md` ; sortie worker
-  progressive, `EngineEvent` public, diagnostic FAILED sans verdict et
-  heartbeat à réaliser dans le moteur. La suite moteur avant ce travail :
-  1374 tests PASS, 1 avertissement de collecte préexistant. AIDO Code
-  M3-03 est livré ; M3-01 a échoué en DEV A sans événement métier ni
-  commit ; M3-02/M3-04 sont bloqués. Aucun de ces états n'a été rouvert.
+- **Développement actif** : P21 moteur terminé ; prochain jalon prévu :
+  AIDO Code M3.1, pas commencé ici.
+- **P21 (Live worker execution observability)** : `DONE` (2026-10-06),
+  WorkItems P21-01/02/03/04 livrés via le WorkItem Flow moteur et PR #36.
+  Le moteur émet `execution.output`, `execution.output_truncated` et
+  `execution.heartbeat` via `EngineEvent` ; `RunResult.diagnostics`
+  fournit les faits typés d'un FAILED sans verdict métier. Le flux live
+  est borné ; les captures et le dernier extrait diagnostique subsistent.
+  CI Python 3.10/3.12 PASS. Acceptance réelle jetable Arthur/Gravity :
+  62 sorties stdout progressives, deux heartbeats puis reprise ; Ralph
+  `max_iterations` après cinq itérations, aucun événement métier terminal,
+  `exit_code=2`, aucun commit et nettoyage correct. Aucun outil ou
+  commande du provider ne peut être affirmé depuis ce flux brut ; la
+  cause de cet échec d'exécution reste non établie. AIDO Code M3-03 est livré ;
+  M3-01 a échoué, M3-02/M3-04 sont bloqués. Aucun état terminal n'a été
+  rouvert.
 - **4 providers, tous `VALIDATED`** : Anthropic/OpenAI/Mistral/Gravity.
 - **P3 (DeepSeek + Kimi)** : `RETIRÉ` (P20, 2026-09-28), faute de preuve
   d'exécution réelle. Voir `ROADMAP.md` §13. **P4 (étude build-vs-reuse Mammouth AI)** :
