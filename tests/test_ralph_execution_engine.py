@@ -1805,6 +1805,38 @@ class TestProgressiveOutputObserver:
         asyncio.run(engine.execute(_request(tmp_path)))
         assert received == [("stdout", "hello\n")]
 
+    def test_request_observer_is_combined_and_failure_isolated(self, tmp_path: Path) -> None:
+        import dataclasses
+
+        received: list[tuple[str, str]] = []
+        inner = _make_fake_runner(events_lines=[_event_line("work.completed")])
+
+        async def _runner(args, cwd, timeout, *, on_output=None):
+            on_output("stdout", "hi\n")
+            return await inner(args, cwd, timeout)
+
+        def _raise(stream: str, text: str) -> None:
+            raise RuntimeError("bug")
+
+        engine = RalphExecutionEngine(
+            _store(tmp_path), subprocess_runner=_runner, clock=lambda: UTC_NOW,
+            output_observer=lambda stream, text: received.append((stream, text)),
+        )
+        request = dataclasses.replace(_request(tmp_path), output_observer=_raise)
+        result = asyncio.run(engine.execute(request))
+        assert result.exit_code == 0
+        assert received == [("stdout", "hi\n")]
+
+    def test_three_arg_runner_is_not_given_on_output_even_with_request_observer(self, tmp_path: Path) -> None:
+        import dataclasses
+
+        engine = RalphExecutionEngine(
+            _store(tmp_path), subprocess_runner=_make_fake_runner(events_lines=[_event_line("work.completed")]),
+            clock=lambda: UTC_NOW,
+        )
+        request = dataclasses.replace(_request(tmp_path), output_observer=lambda s, t: None)
+        assert asyncio.run(engine.execute(request)).exit_code == 0
+
     def test_failing_observer_does_not_abort_injected_runner(self, tmp_path: Path) -> None:
         inner = _make_fake_runner(events_lines=[_event_line("work.completed")])
 

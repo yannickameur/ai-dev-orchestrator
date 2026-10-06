@@ -47,7 +47,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from orchestrator.engine_events import EngineEvent
+from orchestrator.engine_events import EngineEvent, FailureDiagnostic
 from orchestrator.project_config import ProjectConfig, ProjectConfigError
 from orchestrator.project_runtime import (
     ConfigRuntimeConflictError,
@@ -249,6 +249,9 @@ class RunResult:
     reached_max_cycles: bool
     work_items: tuple[WorkItemSnapshot, ...]
     events: tuple[EngineEvent, ...] = ()
+    #: P21-02 — one typed diagnostic per development execution that
+    #: failed during this call, in order; empty when none did.
+    diagnostics: tuple[FailureDiagnostic, ...] = ()
 
 
 class OrchestratorEngine:
@@ -536,6 +539,7 @@ class OrchestratorEngine:
     ) -> RunResult:
         mvp_id = self._config.mvp.id
         events: list[EngineEvent] = []
+        diagnostics: list[FailureDiagnostic] = []
         cycles_run = 0
         reached_max_cycles = False
 
@@ -544,6 +548,8 @@ class OrchestratorEngine:
             result = asyncio.run(runtime.manager.run_next_work_item(mvp_id, on_event=on_event))
             if result is None:
                 break
+            if result.failure_diagnostic is not None:
+                diagnostics.append(result.failure_diagnostic)
             event = self._event_from_result(result)
             events.append(event)
             if on_event is not None:
@@ -564,6 +570,7 @@ class OrchestratorEngine:
             reached_max_cycles=reached_max_cycles,
             work_items=work_items,
             events=tuple(events),
+            diagnostics=tuple(diagnostics),
         )
 
     def _event_from_result(self, result: Any) -> EngineEvent:

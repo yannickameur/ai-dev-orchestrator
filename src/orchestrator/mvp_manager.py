@@ -139,6 +139,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -147,7 +149,7 @@ from typing import Callable
 
 from orchestrator.adaptive_execution import AdaptiveExecutionSelector
 from orchestrator.complexity_estimation import ComplexityEstimationRequest
-from orchestrator.engine_events import EngineEvent
+from orchestrator.engine_events import EngineEvent, FailureDiagnostic
 from orchestrator.execution_store import ExecutionRecord, ExecutionStatus, ExecutionStore, UnknownExecutionError
 from orchestrator.git_governance import (
     RALPH_RUNTIME_NOISE_PREFIXES,
@@ -184,6 +186,8 @@ from orchestrator.ralph_execution_engine import (
     ExecutionResult,
     RalphExecutionEngine,
     RalphExecutionEngineError,
+    RalphEvent,
+    _determine_verdict,
 )
 from orchestrator.recovery import RecoveryCoordinator
 from orchestrator.validation import QualityGateResult, ValidationStore
@@ -205,6 +209,69 @@ DEFAULT_TIMEOUT_SECONDS = 900.0
 INITIAL_EVENT_TOPIC = "work.start"
 SUCCESS_TOPIC = "work.completed"
 FAILURE_TOPIC = "work.failed"
+
+logger = logging.getLogger(__name__)
+
+_MAX_DELIVERY_ERROR_CHARS = 200
+_RALPH_REASON_RE = re.compile(r"^## Reason\s*\n\s*(\S+)", re.MULTILINE)
+_RALPH_ITERATIONS_RE = re.compile(r"^- Iterations:\s*(\d+)", re.MULTILINE)
+_NEXT_ACTION_AFTER_FAILURE = (
+    "Inspect the observed output and decide on a new governed WorkItem; "
+    "the terminal WorkItem is never relaunched automatically."
+)
+
+
+def _ralph_termination(events: tuple[RalphEvent, ...]) -> tuple[str | None, int | None]:
+    """Reason/iteration count of the last readable ``loop.terminate``
+    event, each ``None`` when Ralph's payload does not actually state it."""
+    for event in reversed(events):
+        if event.topic != "loop.terminate":
+            continue
+        payload = event.payload or ""
+        reason = _RALPH_REASON_RE.search(payload)
+        iterations = _RALPH_ITERATIONS_RE.search(payload)
+        count = int(iterations.group(1)) if iterations else event.iteration
+        return (reason.group(1) if reason else None), count
+    return None, None
+
+
+def _build_failure_diagnostic(
+    *, work_item_id: str, phase: str, worker: Worker, profile_id: str | None, model: str | None,
+    result: ExecutionResult, delivery_failures: int, last_delivery_error: str | None,
+) -> FailureDiagnostic:
+    verdict = _determine_verdict(
+        result.events, success_topics=frozenset({SUCCESS_TOPIC}), failure_topics=frozenset({FAILURE_TOPIC}),
+    )
+    business_verdict = {True: "completed", False: "failed", None: "absent"}[verdict]
+    reason, iterations = _ralph_termination(result.events)
+    if reason is None and not any(e.topic == "loop.terminate" for e in result.events):
+        termination = "Ralph reported no loop.terminate event"
+    elif reason is None:
+        termination = "Ralph termination reason unknown"
+    else:
+        termination = f"Ralph terminated with {reason}"
+        if iterations is not None:
+            termination += f" after {iterations} iterations"
+    if business_verdict == "absent":
+        outcome = f"no {SUCCESS_TOPIC}/{FAILURE_TOPIC} event"
+    elif business_verdict == "failed":
+        outcome = f"{FAILURE_TOPIC} event emitted"
+    else:
+        outcome = f"{SUCCESS_TOPIC} event emitted"
+    exit_part = f"exit_code={result.exit_code}" if result.exit_code is not None else "exit_code unknown"
+    summary = f"{termination}; {outcome}; {exit_part}."
+    if result.record.status is ExecutionStatus.INTERRUPTED:
+        summary = f"Execution interrupted (timeout or cancellation); {summary}"
+    return FailureDiagnostic(
+        work_item_id=work_item_id, phase=phase, execution_id=result.record.execution_id,
+        worker_id=worker.worker_id, worker_display_name=worker.display_name,
+        provider=worker.provider, backend=worker.backend, profile_id=profile_id, model=model,
+        execution_status=result.record.status.value, exit_code=result.exit_code,
+        business_verdict=business_verdict, ralph_termination_reason=reason, ralph_iterations=iterations,
+        last_output=result.last_output or None, last_output_stream=result.last_output_stream,
+        summary=summary, next_action=_NEXT_ACTION_AFTER_FAILURE,
+        output_delivery_failures=delivery_failures, last_output_delivery_error=last_delivery_error,
+    )
 
 
 def _default_id_factory() -> str:
@@ -285,6 +352,8 @@ class WorkItemRunResult:
     handoff: HandoffRecord | None
     gate_result: QualityGateResult | None = None
     wait: WaitRecord | None = None
+    #: P21-02 — set only when a development execution failed this call.
+    failure_diagnostic: FailureDiagnostic | None = None
 
 
 class MVPManagerError(Exception):
@@ -521,7 +590,7 @@ class MVPManager:
         self, *, project: Project, mvp_id: str, work_item: WorkItem, worker: Worker,
         model: str | None, reasoning_effort: str | None, instructions: str, phase: str,
         on_event: Callable[[EngineEvent], None] | None = None,
-    ) -> ExecutionResult:
+    ) -> tuple[ExecutionResult, FailureDiagnostic | None]:
         """One real, write-capable execution directly in the governed
         target workspace (no isolation — DEV A/DEV B/a post-QA-FAIL fix
         are all real development, by design). Shared by every development
@@ -556,12 +625,36 @@ class MVPManager:
                 profile_id=profile.profile_id, model=model,
                 quality_tier=profile.quality_tier.name, reasoning_effort=reasoning_effort,
             ))
+        delivery = {"failures": 0, "last_error": None}
+
+        def observe_output(stream: str, text: str) -> None:
+            # P21-02: purely observational, never a worker/QA/Git verdict
+            # — a failing presentation callback is counted (bounded), never
+            # propagated. Transition callbacks keep their P18 contract.
+            try:
+                on_event(EngineEvent(
+                    kind="execution.output",
+                    timestamp=self._clock().isoformat(),
+                    project_id=project.project_id, mvp_id=mvp_id,
+                    work_item_id=work_item.work_item_id, payload={"stream": stream, "text": text},
+                    execution_id=execution_id, phase=phase,
+                    worker_id=worker.worker_id, worker_display_name=worker.display_name,
+                    provider=worker.provider, backend=worker.backend,
+                    profile_id=profile.profile_id, model=model,
+                    quality_tier=profile.quality_tier.name, reasoning_effort=reasoning_effort,
+                ))
+            except Exception as exc:
+                delivery["failures"] += 1
+                delivery["last_error"] = f"{type(exc).__name__}: {exc}"[:_MAX_DELIVERY_ERROR_CHARS]
+                logger.warning("execution.output delivery failed; ignored", exc_info=True)
+
         request = ExecutionRequest(
             execution_id=execution_id, task_id=work_item.work_item_id, worker=worker,
             role=DEFAULT_WORK_ITEM_ROLE, workspace=project.workspace, instructions=instructions,
             initial_event_topic=INITIAL_EVENT_TOPIC, success_topics=frozenset({SUCCESS_TOPIC}),
             failure_topics=frozenset({FAILURE_TOPIC}), timeout_seconds=self._timeout_seconds,
             model=model, reasoning_effort=reasoning_effort,
+            output_observer=observe_output if on_event is not None else None,
         )
         if on_event is not None:
             on_event(EngineEvent(
@@ -622,7 +715,14 @@ class MVPManager:
                 quality_tier=profile.quality_tier.name, reasoning_effort=reasoning_effort,
                 commit_sha=result.record.git_sha_after,
             ))
-        return result
+        diagnostic = None
+        if result.record.status is not ExecutionStatus.SUCCEEDED:
+            diagnostic = _build_failure_diagnostic(
+                work_item_id=work_item.work_item_id, phase=phase, worker=worker,
+                profile_id=profile.profile_id, model=model, result=result,
+                delivery_failures=delivery["failures"], last_delivery_error=delivery["last_error"],
+            )
+        return result, diagnostic
 
     async def _execute_work_item(
         self, *, mvp_id: str, mvp: MVP, work_item: WorkItem, dev_worker: Worker, is_rework: bool,
@@ -681,7 +781,7 @@ class MVPManager:
             fix_context = resume_context
             if latest_handoff is not None and latest_handoff.open_issues:
                 fix_context = f"QA findings from the previous attempt: {latest_handoff.open_issues}"
-            dev_result = await self._run_development(
+            dev_result, dev_diagnostic = await self._run_development(
                 project=project, mvp_id=mvp_id, work_item=work_item, worker=dev_worker,
                 model=dev_model, reasoning_effort=dev_reasoning_effort,
                 instructions=_build_dev_instructions(work_item, resume_context=fix_context),
@@ -691,6 +791,7 @@ class MVPManager:
                 work_item = self._project_state_store.mark_work_item_failed(work_item.work_item_id)
                 return WorkItemRunResult(
                     work_item=work_item, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
+                failure_diagnostic=dev_diagnostic,
                 )
             head_sha = dev_result.record.git_sha_after
             return await self._run_qa_and_finalize(
@@ -699,7 +800,7 @@ class MVPManager:
             )
 
         # --- fresh attempt: DEV A ---
-        dev_a_result = await self._run_development(
+        dev_a_result, dev_a_diagnostic = await self._run_development(
             project=project, mvp_id=mvp_id, work_item=work_item, worker=dev_worker,
             model=dev_model, reasoning_effort=dev_reasoning_effort,
             instructions=_build_dev_instructions(work_item, resume_context=resume_context),
@@ -709,6 +810,7 @@ class MVPManager:
             work_item = self._project_state_store.mark_work_item_failed(work_item.work_item_id)
             return WorkItemRunResult(
                 work_item=work_item, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
+                failure_diagnostic=dev_a_diagnostic,
             )
         head_after_a = dev_a_result.record.git_sha_after
         self._handoff_store.create(
@@ -758,7 +860,7 @@ class MVPManager:
         to QA. Shared by the fresh-attempt path and the DEV_B_REVIEW wait
         resume, so both go through the exact same continuation."""
         profile = dev_b_worker.profile()
-        dev_b_result = await self._run_development(
+        dev_b_result, dev_b_diagnostic = await self._run_development(
             project=project, mvp_id=mvp_id, work_item=work_item, worker=dev_b_worker,
             model=profile.model, reasoning_effort=profile.reasoning_effort,
             instructions=_build_dev_b_instructions(work_item, dev_a_worker_id=dev_a_worker_id),
@@ -768,6 +870,7 @@ class MVPManager:
             work_item = self._project_state_store.mark_work_item_failed(work_item.work_item_id)
             return WorkItemRunResult(
                 work_item=work_item, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
+                failure_diagnostic=dev_b_diagnostic,
             )
         head_after_b = dev_b_result.record.git_sha_after
         changed_by_b = head_after_b != head_after_a
