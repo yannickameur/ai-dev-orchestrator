@@ -2904,6 +2904,17 @@ lisant ses stores internes.
    constater `execution.output` pendant l'exécution, `execution.heartbeat`
    pendant un silence prolongé, puis la reprise de sortie ; noter ce
    qu'Arthur expose réellement, sans conclusion anticipée.
+4. **WI-P21-04 — Bound live output delivery** (dépend de 01, 02 et 03) :
+   revue d'acceptance des WorkItems précédents : les chunks individuels
+   sont bornés, mais un worker très bavard peut encore émettre un nombre
+   illimité d'événements `execution.output`. Appliquer au flux public une
+   limite simple de volume et de fréquence par exécution, avec un signal
+   explicite de troncature. Continuer à drainer stdout/stderr et conserver
+   les captures finales ainsi que le dernier extrait diagnostique ; ne
+   jamais ralentir ou tuer le worker à cause de l'affichage. Tester hors
+   ligne le débordement, le signal unique de troncature et l'absence de
+   régression sur un flux normal. Aucun parser ou traitement propre à un
+   provider.
 
 **Gates P21** : tests offline stdout/stderr séparés et simultanés,
 progression avant fin de processus, ordre intra-stream, dernière ligne,
