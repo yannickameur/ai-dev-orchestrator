@@ -867,9 +867,12 @@ class _StreamingRalphRunner(_ScriptedRalphRunner):
     """Same as ``_ScriptedRalphRunner`` but opts into progressive
     observation (``on_output``) and replays scripted ``output`` chunks."""
 
-    async def __call__(self, args, cwd, timeout, *, on_output=None):
-        for stream, text in self._steps[0].get("output", ()):
-            on_output(stream, text)
+    async def __call__(self, args, cwd, timeout, *, on_output=None, on_heartbeat=None):
+        for item in self._steps[0].get("output", ()):
+            if item[0] == "heartbeat":
+                on_heartbeat(item[1])
+            else:
+                on_output(*item)
         return await super().__call__(args, cwd, timeout)
 
 
@@ -915,6 +918,39 @@ class TestExecutionOutputAndDiagnostics:
         assert kinds.index("dev_a.started") < kinds.index("execution.output") < kinds.index("dev_a.completed")
         assert all(e.kind != "execution.output" for e in result.events)
         assert result.diagnostics == ()
+
+    def test_heartbeat_event_carries_identity_and_elapsed_only_then_output_resumes(self, tmp_path: Path) -> None:
+        engine = _open_engine(tmp_path, [
+            {"topic": "work.completed", "mutate": _commit_action("f.py", "x = 1\n", "DEV A"),
+             "output": [("heartbeat", 15.25), ("stdout", "back\n")]},
+            {"topic": "work.completed"},
+        ])
+        seen: list[EngineEvent] = []
+        result = engine.run(on_event=seen.append)
+
+        live = [e for e in seen if e.kind.startswith("execution.")]
+        assert [e.kind for e in live] == ["execution.heartbeat", "execution.output"]
+        beat = live[0]
+        assert beat.payload == {"elapsed_seconds": 15.25}
+        assert beat.phase == "dev_a" and beat.execution_id is not None
+        assert (beat.provider, beat.backend, beat.model) == ("anthropic", "claude_code", "sonnet")
+        assert beat.execution_id == live[1].execution_id
+        assert all(not e.kind.startswith("execution.") for e in result.events)
+        assert result.work_items[0].status == "completed"
+
+    def test_failing_heartbeat_callback_is_counted_not_fatal(self, tmp_path: Path) -> None:
+        engine = _open_engine(tmp_path, [
+            {"topic": "loop.terminate", "payload": _MAX_ITERATIONS_TERMINATE, "exit_code": 2,
+             "output": [("heartbeat", 1.0)]},
+        ])
+
+        def _on_event(event: EngineEvent) -> None:
+            if event.kind == "execution.heartbeat":
+                raise RuntimeError("renderer bug")
+
+        (diag,) = engine.run(on_event=_on_event).diagnostics
+        assert diag.output_delivery_failures == 1
+        assert diag.business_verdict == "absent"
 
     def test_non_live_run_result_explains_max_iterations_failure(self, tmp_path: Path) -> None:
         engine = _open_engine(tmp_path, [
