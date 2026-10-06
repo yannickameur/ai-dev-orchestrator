@@ -2768,10 +2768,10 @@ un dépôt Git jetable hors des deux projets :
   ci-dessus concerne une limite pré-existante et déjà acceptée de
   l'annulation, pas le fonctionnement de Gravity lui-même.
 
-### P20 — Keep only validated providers and normalize Gravity workers — `IN PROGRESS`
+### P20 — Keep only validated providers and normalize Gravity workers — `DONE`
 
-**Statut** : `IN PROGRESS` (GO humain déjà donné) ; sera marqué `DONE`
-uniquement après tests complets verts et PR mergée.
+**Statut** : `DONE` (GO humain donné) — PR #32 mergée, SHA final `bac2216`,
+1374 tests PASS (`pytest -q`).
 
 **Résultat attendu** :
 - DeepSeek/Kimi retirés (adapters, tests, workers `dana`/`kai`, factories
@@ -2831,7 +2831,7 @@ uniquement après tests complets verts et PR mergée.
     (`agy`), réutilisant le mécanisme custom backend déjà employé par
     Vibe ; Phase A (spike réel) `DONE` — pas une dépendance de M3. Voir
     sous-section P19 ci-dessus.
-14. P20 (`IN PROGRESS`) : ne garder que les providers validés et normaliser
+14. P20 (`DONE`) : ne garder que les providers validés et normaliser
     les workers Gravity (Arthur/Nora). Voir sous-section P20 ci-dessus.
 
 ### Table des propositions
