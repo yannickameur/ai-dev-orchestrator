@@ -99,7 +99,11 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - **P21 (Live worker execution observability) : `DONE`** (2026-10-06),
   voir §13. Sorties worker progressives et bornées, événements publics,
   diagnostic d'échec typé et heartbeat livrés dans le moteur. Le rendu
-  terminal appartient au prochain jalon AIDO Code M3.1.
+  terminal a été livré dans AIDO Code M3.1. Son acceptance réelle a révélé
+  un défaut de sûreté du contenu public ; voir P21.1 proposé ci-dessous.
+- **P21.1 (Safe public execution output) : `PROPOSÉ`, non implémenté**
+  (2026-10-06), voir §13. Séparer l'observation publiquement affichable
+  des captures brutes à la frontière d'exécution moteur.
 
 ## 3. Ce qui existe aujourd'hui
 
@@ -2940,8 +2944,92 @@ valide le transport live et le diagnostic P21 dans le cas observé.
 Tests offline : 1413 PASS (un avertissement de collecte préexistant) ;
 CI Python 3.10/3.12 PASS. Limite P18 inchangée : un descendant détaché
 dans une autre session ne relève pas du nettoyage du groupe POSIX.
-**Next** : préparer AIDO Code M3.1 avec de nouveaux IDs ; ne pas rouvrir
-les WorkItems terminaux M3 et ne pas réimplémenter M3-03.
+**Suite constatée** : AIDO Code M3.1 a livré ses trois nouveaux
+WorkItems, mais son acceptance live reste partielle : une sortie brute
+Claude a exposé un bloc structuré de raisonnement privé. Voir P21.1.
+
+### P21.1 — Safe public execution output — `PROPOSÉ` (2026-10-06)
+
+**Défaut observé** : pendant le run gouverné AIDO Code M3.1, un bloc
+Claude `thinking` présent dans une ligne JSON structurée a été affiché
+par le frontend. Le contenu privé n'est reproduit dans aucun document.
+La suite moteur de référence reste à 1413 PASS ; AIDO Code à 311 PASS.
+P21 reste livré comme transport live, mais la sûreté de son contenu
+public n'est pas prouvée. M3.1 reste `PARTIAL` côté produit.
+
+**Chemin vérifié** : `ralph_execution_engine._build_ralph_args()` lance
+`ralph run -a -q`. Pour Claude, Ralph 2.10.1 utilise `CliExecutor` et
+`claude --print --verbose --output-format stream-json` ; sa branche
+stdout recopie chaque ligne JSON brute même avec `-q`. Le moteur draine
+ces lignes dans `posix_subprocess._drain()`, puis les transmet par
+`ExecutionRequest.output_observer` à `MVPManager.observe_output()`, qui
+les émet telles quelles en `EngineEvent(execution.output)`. Le rendu AIDO
+Code ne classe pas le contenu. Sur échec, `RalphExecutionEngine` remplit
+`ExecutionResult.last_output` depuis le stdout/stderr brut, et
+`_build_failure_diagnostic()` choisit cet extrait avant le dernier texte
+observé : la fuite peut donc réapparaître dans `FailureDiagnostic`.
+
+**Décision d'architecture proposée : C, filtre structuré minimal à la
+frontière moteur/backend.** Aucune modification fonctionnelle n'est
+autorisée par ce seul document ; approbation explicite du contrat puis
+WorkItem Flow requis. Ordre de réutilisation audité :
+
+- **A indisponible dans le mode courant** : `-q` est déjà actif et la
+  fuite est réelle. `claude --help` 2.1.291 n'offre pas de garantie
+  documentée pour ôter uniquement les blocs privés du flux structuré.
+  Changer l'effort ou demander du texte ne prouverait pas la séparation
+  et risquerait de modifier la lecture des événements métier par Ralph.
+- **B non substituable sans changer le contrôle** : Ralph possède un
+  parseur Claude et un mode `--rpc` qui sépare certains événements.
+  `--rpc` est incompatible avec `-a`, active un autre chemin PTY et un
+  protocole bidirectionnel ; il n'est pas une option de sortie du
+  `CliExecutor` actuellement utilisé. Les événements `.ralph` servent
+  aux verdicts métier, pas à une chronologie opérationnelle sûre.
+- **C retenu pour le contrat** : exploiter les lignes NDJSON déjà
+  garanties par Claude, à l'emplacement moteur où le backend est connu.
+  Recomposer les lignes coupées par la borne de chunks P21 avant de les
+  analyser ; borner le tampon. N'émettre que les champs structurés
+  explicitement classables et affichables. Un bloc privé, inconnu,
+  incomplet ou malformé est supprimé du flux public sans interrompre le
+  worker. Ne pas parser du texte libre avec une regex. Ne pas disperser
+  la connaissance Claude dans `MVPManager`, `EngineEvent` ou AIDO Code.
+
+**Invariant public** : `execution.output` désigne une observation sûre
+pour affichage, jamais un octet brut du provider. Les captures brutes
+peuvent rester internes au fonctionnement et à l'audit de Ralph ; ni
+`FailureDiagnostic.last_output`, ni `summary`, ni les autres champs
+publics dérivés de la sortie (dont les erreurs de livraison du callback)
+ne doivent reprendre un bloc privé. Les raisons d'arrêt et codes
+doivent rester des faits vérifiés. Un heartbeat suffit pendant une
+suppression ; aucun nouvel événement `output_suppressed` n'est prévu.
+La borne/troncature P21 s'applique au texte publiable après filtrage.
+
+**WI-P21.1-01 — Safe observable-output boundary**. Dépendances : aucune.
+Réutiliser les options amont si une variante réellement sûre est
+démontrée avant le code ; sinon implémenter C au point de traduction
+Claude existant. Garder stdout/stderr bruts internes et le transport
+progressif. Filtrer aussi les diagnostics finaux et les erreurs de
+callback destinées au public. Tests synthétiques offline avec un
+marqueur fictif `PRIVATE_REASONING_SENTINEL` : bloc privé absent de
+`execution.output` et de tous les diagnostics ; sortie opérationnelle
+voisine conservée lorsqu'elle est séparée de façon fiable ; JSON
+scindé entre chunks ou malformé supprimé sans fuite ; stdout/stderr,
+heartbeat, troncature, captures finales, callbacks, timeout,
+annulation et nettoyage P18/P21 préservés. Aucun vrai provider dans
+pytest ; Codex/Vibe/Gravity inchangés sauf invariant public commun.
+
+**WI-P21.1-02 — Real acceptance and regression**. Dépend de 01.
+Suite moteur complète et CI Python 3.10/3.12, puis exécution jetable
+Claude/Ralph dans un processus neuf. Constater séparément la présence
+éventuelle de raisonnement à la frontière brute/interne, son absence
+obligatoire dans événements et diagnostics publics, la sortie
+opérationnelle sûre, les heartbeats, le verdict et le nettoyage.
+Ne reproduire aucun contenu privé dans les preuves. Après livraison,
+rejouer AIDO Code M3.1 depuis un runner neuf avant de le clore ; aucun
+filtre provider dans son frontend.
+
+**Next** : faire approuver ce contrat documentaire, puis seulement
+exécuter WI-P21.1-01/02 par le WorkItem Flow. Ne pas commencer M4.
 
 ### Ordre approuvé
 
@@ -3020,6 +3108,7 @@ les WorkItems terminaux M3 et ne pas réimplémenter M3-03.
 | P18 | Live execution events and graceful interruption | `OrchestratorEngine` doit-il exposer des événements publics fins (DEV A/DEV B/DEV FIX/QA/Git) en temps réel, avec les métadonnées réellement décidées, et traiter explicitement une interruption pendant `run()` ? | **`DONE`** (GO humain 2026-09-26) — callback `on_event` optionnel ; **P18-01/P18-02/P18-03 `DONE`** (transport live + métadonnées fines DEV A/B/FIX/QA/Git, `EngineEvent` dans `orchestrator.engine_events`, `RunResult.events` inchangé, interruption/recovery DEV+QA) ; Adaptive Execution non branché ; recovery étendu (jamais dupliqué) ; voir sous-section P18 ci-dessus |
 | P19 | Gravity worker/backend | Un worker Gravity (`agy`), exécutable via Ralph en réutilisant le mécanisme custom backend déjà employé par Vibe, mérite-t-il d'être intégré ? | **`APPROUVÉ`** (GO humain 2026-09-28) — Phase A (spike réel) `DONE` ; implémentation en cours (branche `feature/p19-gravity-worker-backend`) ; pas une dépendance de M3 ; voir sous-section P19 ci-dessus |
 | P21 | Live worker execution observability | Comment rendre visibles les sorties réelles du worker et les échecs sans verdict métier dans `aido run`, sans scraping frontend ni retry ? | **`DONE` (2026-10-06)** — WorkItems P21-01/02/03/04 livrés, PR #36, CI Python 3.10/3.12 et acceptance Gravity jetable ; voir sous-section P21 ci-dessus |
+| P21.1 | Safe public execution output | Comment garantir que sorties et diagnostics publics n'exposent aucun bloc de raisonnement privé ? | **`PROPOSÉ` (2026-10-06)** — architecture C retenue après audit de Ralph/Claude installés ; deux WorkItems documentés, aucune implémentation ni approbation d'exécution ; voir sous-section P21.1 ci-dessus |
 | P13.5 | Frontière moteur/librairie : injection du `WorkerRegistry`, `workers:` optionnel | `aido.yaml` doit-il rester la source de configuration complète du pool de workers, ou le moteur doit-il accepter un `WorkerRegistry` construit/injecté par l'application appelante (AIDO Code) ? | **`DONE`** (2026-09-24) — `workers:` optionnel dans `ProjectConfig` ; `OrchestratorEngine`/`ProjectRuntime` acceptent `worker_registry=` ; `WorkerSelector` reste seul propriétaire de la sélection ; chemin legacy fichier intégralement conservé et testé ; voir sous-section P13.5 ci-dessus |
 | P13.6 | Retrait de la commande produit `aido` (cutover AIDO Code) | AIDO Code ayant atteint son propre cutover produit, `ai-dev-orchestrator` doit-il cesser d'installer la commande `aido` ? | **`DONE`** (2026-09-24) — `[project.scripts]` retiré de `pyproject.toml` ; `orchestrator.cli`/`default_workers.yaml` conservés, legacy/internes, toujours réellement testés ; aucun binaire de compatibilité ajouté (YAGNI) ; voir sous-section P13.6 ci-dessus |
 | P13.7 | Pre-execution state safety | Le cutover M8 d'AIDO Code a révélé un défaut réel (`WI-M8-01` resté `RUNNING` durablement, sans `ExecutionRecord`) — un WorkItem/son MVP doivent-ils n'être marqués `RUNNING` qu'une fois tous les prérequis pré-exécution (préparation Git notamment) réellement satisfaits ? | **`DONE`** (2026-09-25) — `mark_mvp_running`/`mark_work_item_running` déplacés après les prérequis dans `_execute_work_item` et `_resume_dev_b_wait` (deux sites réels) ; invariant de recovery existant inchangé ; 4 nouveaux tests, chacun vérifié rouge sans le correctif ; `WI-M8-01` non modifié rétroactivement (YAGNI) ; voir sous-section P13.7 ci-dessus |
