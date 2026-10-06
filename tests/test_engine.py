@@ -1082,6 +1082,23 @@ class TestBoundedLiveOutput:
         kinds = [e.kind for e in seen]
         assert kinds.index("execution.output_truncated") < kinds.index("dev_a.completed")
 
+    def test_total_event_budget_is_shared_across_streams(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from orchestrator import mvp_manager
+
+        # Keep the rate gate out of this case so the lifetime event gate is exercised.
+        monkeypatch.setattr(mvp_manager, "_MAX_LIVE_OUTPUT_EVENTS_PER_SECOND", 1_000)
+        output = [("stdout" if i % 2 else "stderr", "x") for i in range(502)]
+        engine = _open_engine(tmp_path, self._steps(output))
+        seen: list[EngineEvent] = []
+        assert engine.run(on_event=seen.append).work_items[0].status == "completed"
+        delivered = [e for e in seen if e.kind == "execution.output"]
+        assert len(delivered) == 500
+        assert {e.payload["stream"] for e in delivered} == {"stdout", "stderr"}
+        (signal,) = [e for e in seen if e.kind == "execution.output_truncated"]
+        assert signal.payload == {"reason": "max_events", "delivered_events": 500, "delivered_chars": 500}
+
     def test_volume_overflow_cuts_at_char_budget_with_single_signal(self, tmp_path: Path) -> None:
         big = "y" * 30_000
         engine = _open_engine(tmp_path, self._steps([("stdout", big)] * 4 + [("stderr", "tail\n")]))
@@ -1112,6 +1129,19 @@ class TestBoundedLiveOutput:
         assert diag.last_output == "final words" and diag.last_output_stream == "stderr"
         assert sum(e.kind == "execution.output_truncated" for e in seen) == 1
         assert all(e.payload.get("text") != "final words\n" for e in seen if e.kind == "execution.output")
+
+    def test_final_capture_survives_live_truncation(self, tmp_path: Path) -> None:
+        engine = _open_engine(tmp_path, [
+            {"topic": "work.failed", "output": [("stdout", "noise\n")] * 101 +
+             [("stderr", "late diagnostic\n")], "stderr": b"late diagnostic\n"},
+        ])
+        seen: list[EngineEvent] = []
+        result = engine.run(on_event=seen.append)
+        (diag,) = result.diagnostics
+        assert diag.last_output == "late diagnostic"
+        assert diag.last_output_stream == "stderr"
+        assert sum(e.kind == "execution.output_truncated" for e in seen) == 1
+        assert all(e.payload.get("text") != "late diagnostic\n" for e in seen if e.kind == "execution.output")
 
     def test_failing_callback_on_truncation_signal_is_not_fatal(self, tmp_path: Path) -> None:
         engine = _open_engine(tmp_path, self._steps([("stdout", "x\n")] * 150))
