@@ -377,49 +377,47 @@ class TestShippedExampleConfig:
     def test_config_workers_yaml_loads(self) -> None:
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
         assert {w.worker_id for w in registry.all_workers()} == {
-            "alice", "bob", "victor", "oscar", "milo", "juno", "dana", "kai", "gravity",
+            "alice", "bob", "victor", "oscar", "milo", "juno", "gravity_primary", "gravity_secondary",
         }
 
     def test_config_workers_yaml_workers_are_enabled(self) -> None:
+        """P20 (ROADMAP.md §13): DeepSeek/Kimi (never validated by a real
+        execution) were removed from the active product entirely, rather
+        than kept `enabled: false` — the product now exposes exactly the
+        4 real, VALIDATED providers, all 8 of whose workers are enabled."""
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
-        assert len(registry.enabled_workers()) == 7  # was 6 before gravity (P19)
-
-    def test_config_workers_yaml_deepseek_and_kimi_are_disabled_by_default(self) -> None:
-        """DeepSeek (billed) and Kimi (subscription) both require a real
-        API key this repository's own CI/dev machines do not have, and
-        neither has real execution evidence yet (unlike Mistral/Vibe: see
-        docs/VIBE_SPIKE.md), so neither is enabled by default. Adding
-        them must never make the orchestrator require a key it doesn't
-        need; see orchestrator.providers.deepseek_adapter/kimi_adapter."""
-        registry = WorkerRegistry.load(Path("config/workers.yaml"))
-        dana, kai = registry.get("dana"), registry.get("kai")
-        assert dana.enabled is False
-        assert dana.provider == "deepseek"
-        assert kai.enabled is False
-        assert kai.provider == "kimi"
+        assert len(registry.enabled_workers()) == 8
+        assert len(registry.all_workers()) == 8
 
     def test_config_workers_yaml_worker_pool_is_at_least_two_per_provider(self) -> None:
         """Worker pool fallback (2026-09-17): >= 2 independent workers per
         participating provider, so DEV B selection never has to wait for
         the *other* provider to reset when the author's own provider is
         still available — see ROADMAP.md, "Worker pool". Mistral (milo/
-        juno, added post-MVP 0.1, see docs/VIBE_SPIKE.md) follows the same
-        rule. Gravity (P19, ROADMAP.md §13) is a deliberate, explicit
-        exception: a single worker only, no artificial second identity
-        without a real, demonstrated need (REUSE FIRST/YAGNI) — DEV B
-        selection still works for it via the existing cross-provider
-        preference (WorkerSelector, unchanged), same as any single-worker
-        provider would."""
+        juno, added post-MVP 0.1, see docs/VIBE_SPIKE.md) and Gravity
+        (gravity_primary/gravity_secondary, P20) follow the same rule —
+        no single-worker exception remains."""
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
         by_provider: dict[str, list] = {}
         for worker in registry.enabled_workers():
             by_provider.setdefault(worker.provider, []).append(worker)
         assert set(by_provider) == {"anthropic", "openai", "mistral", "gravity"}
         for provider, workers in by_provider.items():
-            if provider == "gravity":
-                assert len(workers) == 1, "gravity is a deliberate single-worker exception (P19)"
-                continue
             assert len(workers) >= 2, f"provider {provider!r} has fewer than 2 enabled workers"
+
+    def test_gravity_workers_never_use_gravity_as_a_display_name(self) -> None:
+        """P20 product decision (ROADMAP.md §13): Gravity is the
+        provider/backend identifier, never a worker's human display_name —
+        exactly two real identities, Arthur (primary) and Nora
+        (secondary)."""
+        registry = WorkerRegistry.load(Path("config/workers.yaml"))
+        primary, secondary = registry.get("gravity_primary"), registry.get("gravity_secondary")
+        assert primary.display_name == "Arthur"
+        assert secondary.display_name == "Nora"
+        assert primary.provider == secondary.provider == "gravity"
+        assert primary.backend == secondary.backend == "gravity"
+        assert "gravity" not in primary.display_name.lower()
+        assert "gravity" not in secondary.display_name.lower()
 
     def test_config_workers_yaml_secondary_workers_mirror_their_primary(self) -> None:
         """The secondary workers (worker_id bob/oscar) must declare the
@@ -428,7 +426,7 @@ class TestShippedExampleConfig:
         (secondary workers are a fallback, not a distinct role); this
         holds regardless of either worker's own display_name."""
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
-        for primary_id, secondary_id in (("alice", "bob"), ("victor", "oscar")):
+        for primary_id, secondary_id in (("alice", "bob"), ("victor", "oscar"), ("gravity_primary", "gravity_secondary")):
             primary, secondary = registry.get(primary_id), registry.get(secondary_id)
             assert secondary.provider == primary.provider
             assert secondary.backend == primary.backend
