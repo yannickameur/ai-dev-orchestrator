@@ -1805,6 +1805,37 @@ class TestProgressiveOutputObserver:
         asyncio.run(engine.execute(_request(tmp_path)))
         assert received == [("stdout", "hello\n")]
 
+    def test_failing_observer_does_not_abort_injected_runner(self, tmp_path: Path) -> None:
+        inner = _make_fake_runner(events_lines=[_event_line("work.completed")])
+
+        async def _runner(args, cwd, timeout, *, on_output=None):
+            on_output("stdout", "first\n")
+            on_output("stderr", "second\n")
+            return await inner(args, cwd, timeout)
+
+        def _raise(stream: str, text: str) -> None:
+            raise RuntimeError("observer bug")
+
+        engine = RalphExecutionEngine(
+            _store(tmp_path), subprocess_runner=_runner, clock=lambda: UTC_NOW,
+            output_observer=_raise,
+        )
+        result = asyncio.run(engine.execute(_request(tmp_path)))
+        assert result.exit_code == 0
+
+    def test_observer_preserves_final_capture_bound(self, tmp_path: Path) -> None:
+        async def _runner(args, cwd, timeout, *, on_output=None):
+            on_output("stdout", "first\n")
+            return 0, b"x" * 5000, b"y" * 5000
+
+        engine = RalphExecutionEngine(
+            _store(tmp_path), subprocess_runner=_runner, clock=lambda: UTC_NOW,
+            output_observer=lambda stream, text: None,
+        )
+        result = asyncio.run(engine.execute(_request(tmp_path)))
+        assert result.stdout == "x" * 4000 + "...<truncated>"
+        assert result.stderr == "y" * 4000 + "...<truncated>"
+
     def test_absent_observer_keeps_three_arg_runner_contract(self, tmp_path: Path) -> None:
         runner = _make_fake_runner(events_lines=[_event_line("work.completed")])
         engine = RalphExecutionEngine(_store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW)
