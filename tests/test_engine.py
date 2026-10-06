@@ -949,6 +949,25 @@ class TestExecutionOutputAndDiagnostics:
         assert diag.business_verdict == "absent"
         assert diag.summary.startswith("Ralph termination reason unknown;")
 
+    def test_timeout_diagnostic_retains_observed_output_without_live_callback(self, tmp_path: Path) -> None:
+        from orchestrator.ralph_execution_engine import RalphTimeoutError
+
+        class TimingOutRunner:
+            async def __call__(self, args, cwd, timeout, *, on_output=None):
+                on_output("stderr", "worker progress before timeout\n")
+                raise RalphTimeoutError("timed out")
+
+        engine = OrchestratorEngine.open(
+            str(_write_config(tmp_path)),
+            provider_adapters={"anthropic": _FakeAdapter(available=True)},
+            subprocess_runner=TimingOutRunner(),
+        )
+        (diag,) = engine.run().diagnostics
+        assert diag.execution_status == "interrupted"
+        assert diag.business_verdict == "absent"
+        assert diag.last_output == "worker progress before timeout"
+        assert diag.last_output_stream == "stderr"
+
     def test_explicit_work_failed_keeps_business_verdict_failed(self, tmp_path: Path) -> None:
         engine = _open_engine(tmp_path, [{"topic": "work.failed", "exit_code": 0}])
         (diag,) = engine.run().diagnostics

@@ -213,6 +213,7 @@ FAILURE_TOPIC = "work.failed"
 logger = logging.getLogger(__name__)
 
 _MAX_DELIVERY_ERROR_CHARS = 200
+_MAX_DIAGNOSTIC_OUTPUT_CHARS = 600
 _RALPH_REASON_RE = re.compile(r"^## Reason\s*\n\s*(\S+)", re.MULTILINE)
 _RALPH_ITERATIONS_RE = re.compile(r"^- Iterations:\s*(\d+)", re.MULTILINE)
 _NEXT_ACTION_AFTER_FAILURE = (
@@ -238,6 +239,7 @@ def _ralph_termination(events: tuple[RalphEvent, ...]) -> tuple[str | None, int 
 def _build_failure_diagnostic(
     *, work_item_id: str, phase: str, worker: Worker, profile_id: str | None, model: str | None,
     result: ExecutionResult, delivery_failures: int, last_delivery_error: str | None,
+    observed_output: str, observed_stream: str | None,
 ) -> FailureDiagnostic:
     verdict = _determine_verdict(
         result.events, success_topics=frozenset({SUCCESS_TOPIC}), failure_topics=frozenset({FAILURE_TOPIC}),
@@ -268,7 +270,8 @@ def _build_failure_diagnostic(
         provider=worker.provider, backend=worker.backend, profile_id=profile_id, model=model,
         execution_status=result.record.status.value, exit_code=result.exit_code,
         business_verdict=business_verdict, ralph_termination_reason=reason, ralph_iterations=iterations,
-        last_output=result.last_output or None, last_output_stream=result.last_output_stream,
+        last_output=result.last_output or observed_output or None,
+        last_output_stream=(result.last_output_stream if result.last_output else observed_stream if observed_output else None),
         summary=summary, next_action=_NEXT_ACTION_AFTER_FAILURE,
         output_delivery_failures=delivery_failures, last_output_delivery_error=last_delivery_error,
     )
@@ -626,8 +629,16 @@ class MVPManager:
                 quality_tier=profile.quality_tier.name, reasoning_effort=reasoning_effort,
             ))
         delivery = {"failures": 0, "last_error": None}
+        observed = {"text": "", "stream": None}
 
         def observe_output(stream: str, text: str) -> None:
+            # A timeout returns no final stdout/stderr. Retain a bounded
+            # excerpt even when there is no live presentation callback.
+            previous = observed["text"] if observed["stream"] == stream else ""
+            observed["text"] = (previous + text)[-_MAX_DIAGNOSTIC_OUTPUT_CHARS:]
+            observed["stream"] = stream
+            if on_event is None:
+                return
             # P21-02: purely observational, never a worker/QA/Git verdict
             # — a failing presentation callback is counted (bounded), never
             # propagated. Transition callbacks keep their P18 contract.
@@ -654,7 +665,7 @@ class MVPManager:
             initial_event_topic=INITIAL_EVENT_TOPIC, success_topics=frozenset({SUCCESS_TOPIC}),
             failure_topics=frozenset({FAILURE_TOPIC}), timeout_seconds=self._timeout_seconds,
             model=model, reasoning_effort=reasoning_effort,
-            output_observer=observe_output if on_event is not None else None,
+            output_observer=observe_output,
         )
         if on_event is not None:
             on_event(EngineEvent(
@@ -721,6 +732,7 @@ class MVPManager:
                 work_item_id=work_item.work_item_id, phase=phase, worker=worker,
                 profile_id=profile.profile_id, model=model, result=result,
                 delivery_failures=delivery["failures"], last_delivery_error=delivery["last_error"],
+                observed_output=observed["text"].strip(), observed_stream=observed["stream"],
             )
         return result, diagnostic
 
