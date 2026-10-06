@@ -861,3 +861,138 @@ class TestEngineLibraryBoundaryIntegration:
         assert result.work_items[0].status == "completed"
         assert not (tmp_path / "workers.yaml").exists()
         assert not (tmp_path / "aido.yaml").exists()
+
+
+class _StreamingRalphRunner(_ScriptedRalphRunner):
+    """Same as ``_ScriptedRalphRunner`` but opts into progressive
+    observation (``on_output``) and replays scripted ``output`` chunks."""
+
+    async def __call__(self, args, cwd, timeout, *, on_output=None):
+        for stream, text in self._steps[0].get("output", ()):
+            on_output(stream, text)
+        return await super().__call__(args, cwd, timeout)
+
+
+_MAX_ITERATIONS_TERMINATE = (
+    "## Reason\nmax_iterations\n\n## Status\nLoop stopped.\n\n"
+    "## Summary\n- Iterations: 5\n- Duration: 1m\n- Exit code: 2"
+)
+
+
+def _open_engine(tmp_path: Path, steps: list[dict]) -> OrchestratorEngine:
+    return OrchestratorEngine.open(
+        str(_write_config(tmp_path)), provider_adapters={"anthropic": _FakeAdapter(available=True)},
+        subprocess_runner=_StreamingRalphRunner(steps),
+    )
+
+
+class TestExecutionOutputAndDiagnostics:
+    """P21-02: ``execution.output`` live events and typed failure diagnostics."""
+
+    def test_execution_output_reaches_on_event_with_real_identity(self, tmp_path: Path) -> None:
+        engine = _open_engine(tmp_path, [
+            {"topic": "work.completed", "mutate": _commit_action("f.py", "x = 1\n", "DEV A"),
+             "output": [("stdout", "hello\n"), ("stderr", "warn\n")]},
+            {"topic": "work.completed"},
+        ])
+        seen: list[EngineEvent] = []
+        result = engine.run(on_event=seen.append)
+
+        outputs = [e for e in seen if e.kind == "execution.output"]
+        assert [(e.payload["stream"], e.payload["text"]) for e in outputs] == [
+            ("stdout", "hello\n"), ("stderr", "warn\n"),
+        ]
+        first = outputs[0]
+        assert first.phase == "dev_a"
+        assert first.execution_id is not None
+        assert first.worker_display_name in {"Alice", "Bob"}
+        assert (first.provider, first.backend) == ("anthropic", "claude_code")
+        assert (first.profile_id, first.model) == ("standard", "sonnet")
+        assert (first.project_id, first.mvp_id, first.work_item_id) == ("demo", "mvp-1", "wi-1")
+        # Output comes between dev_a.started and dev_a.completed, and
+        # never enters RunResult.events nor diagnostics on success.
+        kinds = [e.kind for e in seen]
+        assert kinds.index("dev_a.started") < kinds.index("execution.output") < kinds.index("dev_a.completed")
+        assert all(e.kind != "execution.output" for e in result.events)
+        assert result.diagnostics == ()
+
+    def test_non_live_run_result_explains_max_iterations_failure(self, tmp_path: Path) -> None:
+        engine = _open_engine(tmp_path, [
+            {"topic": "loop.terminate", "payload": _MAX_ITERATIONS_TERMINATE, "exit_code": 2,
+             "stderr": b"line 1\nbackend said something\n"},
+        ])
+        result = engine.run()
+
+        assert result.work_items[0].status == "failed"
+        (diag,) = result.diagnostics
+        assert diag.phase == "dev_a"
+        assert diag.business_verdict == "absent"
+        assert diag.exit_code == 2
+        assert diag.ralph_termination_reason == "max_iterations"
+        assert diag.ralph_iterations == 5
+        assert diag.last_output_stream == "stderr"
+        assert diag.last_output.endswith("backend said something")
+        assert diag.summary == (
+            "Ralph terminated with max_iterations after 5 iterations; "
+            "no work.completed/work.failed event; exit_code=2."
+        )
+        assert "new governed WorkItem" in diag.next_action
+        assert "provider" not in diag.summary.lower()
+        assert (diag.model, diag.provider, diag.backend) == ("sonnet", "anthropic", "claude_code")
+
+    def test_unknown_termination_payload_is_reported_as_unknown(self, tmp_path: Path) -> None:
+        engine = _open_engine(tmp_path, [
+            {"topic": "loop.terminate", "payload": "garbled", "exit_code": 1},
+        ])
+        (diag,) = engine.run().diagnostics
+        assert diag.ralph_termination_reason is None
+        assert diag.business_verdict == "absent"
+        assert diag.summary.startswith("Ralph termination reason unknown;")
+
+    def test_explicit_work_failed_keeps_business_verdict_failed(self, tmp_path: Path) -> None:
+        engine = _open_engine(tmp_path, [{"topic": "work.failed", "exit_code": 0}])
+        (diag,) = engine.run().diagnostics
+        assert diag.business_verdict == "failed"
+        assert diag.exit_code == 0
+
+    def test_failing_output_callback_never_kills_worker(self, tmp_path: Path) -> None:
+        engine = _open_engine(tmp_path, [
+            {"topic": "work.completed", "mutate": _commit_action("f.py", "x = 1\n", "DEV A"),
+             "output": [("stdout", "a\n"), ("stdout", "b\n")]},
+            {"topic": "work.completed"},
+        ])
+        seen: list[str] = []
+
+        def _on_event(event: EngineEvent) -> None:
+            seen.append(event.kind)
+            if event.kind == "execution.output":
+                raise RuntimeError("renderer bug")
+
+        result = engine.run(on_event=_on_event)
+        assert result.work_items[0].status == "completed"
+        assert seen.count("execution.output") == 2
+
+    def test_failing_output_callback_is_counted_in_diagnostic_not_blamed(self, tmp_path: Path) -> None:
+        engine = _open_engine(tmp_path, [
+            {"topic": "loop.terminate", "payload": _MAX_ITERATIONS_TERMINATE, "exit_code": 2,
+             "output": [("stdout", "a\n")]},
+        ])
+
+        def _on_event(event: EngineEvent) -> None:
+            if event.kind == "execution.output":
+                raise RuntimeError("renderer bug")
+
+        (diag,) = engine.run(on_event=_on_event).diagnostics
+        assert diag.output_delivery_failures == 1
+        assert "renderer bug" in (diag.last_output_delivery_error or "")
+        assert diag.business_verdict == "absent"
+
+    def test_transition_callback_exception_still_propagates(self, tmp_path: Path) -> None:
+        engine = _open_engine(tmp_path, [{"topic": "work.completed"}])
+
+        def _on_event(event: EngineEvent) -> None:
+            if event.kind == "dev_a.started":
+                raise RuntimeError("transition renderer bug")
+
+        with pytest.raises(RuntimeError, match="transition renderer bug"):
+            engine.run(on_event=_on_event)
