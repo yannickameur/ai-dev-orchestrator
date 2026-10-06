@@ -639,15 +639,24 @@ class MVPManager:
             observed["stream"] = stream
             if on_event is None:
                 return
+            deliver("execution.output", {"stream": stream, "text": text})
+
+        def observe_heartbeat(elapsed_seconds: float) -> None:
+            # P21-03: purely temporal "still running" signal — real elapsed
+            # time and identity only, never a progress or verdict claim.
+            if on_event is not None:
+                deliver("execution.heartbeat", {"elapsed_seconds": round(elapsed_seconds, 3)})
+
+        def deliver(kind: str, payload: dict) -> None:
             # P21-02: purely observational, never a worker/QA/Git verdict
             # — a failing presentation callback is counted (bounded), never
             # propagated. Transition callbacks keep their P18 contract.
             try:
                 on_event(EngineEvent(
-                    kind="execution.output",
+                    kind=kind,
                     timestamp=self._clock().isoformat(),
                     project_id=project.project_id, mvp_id=mvp_id,
-                    work_item_id=work_item.work_item_id, payload={"stream": stream, "text": text},
+                    work_item_id=work_item.work_item_id, payload=payload,
                     execution_id=execution_id, phase=phase,
                     worker_id=worker.worker_id, worker_display_name=worker.display_name,
                     provider=worker.provider, backend=worker.backend,
@@ -657,7 +666,7 @@ class MVPManager:
             except Exception as exc:
                 delivery["failures"] += 1
                 delivery["last_error"] = f"{type(exc).__name__}: {exc}"[:_MAX_DELIVERY_ERROR_CHARS]
-                logger.warning("execution.output delivery failed; ignored", exc_info=True)
+                logger.warning("%s delivery failed; ignored", kind, exc_info=True)
 
         request = ExecutionRequest(
             execution_id=execution_id, task_id=work_item.work_item_id, worker=worker,
@@ -665,7 +674,7 @@ class MVPManager:
             initial_event_topic=INITIAL_EVENT_TOPIC, success_topics=frozenset({SUCCESS_TOPIC}),
             failure_topics=frozenset({FAILURE_TOPIC}), timeout_seconds=self._timeout_seconds,
             model=model, reasoning_effort=reasoning_effort,
-            output_observer=observe_output,
+            output_observer=observe_output, heartbeat_observer=observe_heartbeat,
         )
         if on_event is not None:
             on_event(EngineEvent(

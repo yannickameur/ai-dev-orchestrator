@@ -2891,6 +2891,20 @@ lisant ses stores internes.
    `WorkerSelector`. Si le heartbeat complexifie 01/02, le garder dans
    ce WorkItem séparé.
 
+   *Livré (WI-P21-03)* : `execution.heartbeat` (payload
+   `{"elapsed_seconds"}` seul, identité réelle de l'exécution), émis par
+   `run_in_new_process_group(on_heartbeat=, heartbeat_interval=)` après
+   15 s de silence stdout/stderr (puis un par intervalle silencieux ; toute
+   sortie remet le compteur à zéro). Purement temporel : aucun message de
+   progression, aucun verdict ; un callback défaillant est compté dans
+   `output_delivery_failures`, jamais fatal.
+   *Acceptation manuelle (à exécuter **après merge**, processus neuf, dépôt
+   Gravity jetable, jamais dans pytest)* : lancer un run réel via
+   `OrchestratorEngine.run(on_event=print)` sur un WorkItem jetable ;
+   constater `execution.output` pendant l'exécution, `execution.heartbeat`
+   pendant un silence prolongé, puis la reprise de sortie ; noter ce
+   qu'Arthur expose réellement, sans conclusion anticipée.
+
 **Gates P21** : tests offline stdout/stderr séparés et simultanés,
 progression avant fin de processus, ordre intra-stream, dernière ligne,
 captures et flux bornés, timeout, annulation et nettoyage du groupe,
