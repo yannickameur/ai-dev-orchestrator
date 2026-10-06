@@ -37,20 +37,10 @@ def test_parses_via_worker_registry():
     try:
         registry = WorkerRegistry.load(path)
         worker_ids = {w.worker_id for w in registry.all_workers()}
-        assert worker_ids == {"alice", "bob", "victor", "oscar", "milo", "juno", "dana", "kai", "gravity"}
-        assert len(registry.enabled_workers()) == 7  # was 6 before gravity (P19)
-    finally:
-        path.unlink()
-
-
-def test_deepseek_and_kimi_disabled_by_default():
-    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
-        f.write(_default_registry_text())
-        path = Path(f.name)
-    try:
-        registry = WorkerRegistry.load(path)
-        assert registry.get("dana").enabled is False
-        assert registry.get("kai").enabled is False
+        assert worker_ids == {
+            "alice", "bob", "victor", "oscar", "milo", "juno", "gravity_primary", "gravity_secondary",
+        }
+        assert len(registry.enabled_workers()) == 8  # P20: DeepSeek/Kimi removed, all 8 now enabled
     finally:
         path.unlink()
 
@@ -131,7 +121,7 @@ def test_bob_oscar_milo_display_names_updated_worker_ids_unchanged():
 
 def test_other_workers_display_names_unaffected():
     registry = _load_default_registry()
-    unaffected = {"alice": "Alice", "victor": "Victor", "juno": "Juno", "dana": "Dana", "kai": "Kai"}
+    unaffected = {"alice": "Alice", "victor": "Victor", "juno": "Juno"}
     for worker_id, display_name in unaffected.items():
         assert registry.get(worker_id).display_name == display_name
 

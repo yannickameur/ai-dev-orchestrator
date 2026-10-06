@@ -314,7 +314,7 @@ class TestDefaultSubprocessRunnerTimeout:
     def test_env_kwarg_is_visible_to_the_subprocess(self) -> None:
         # Real subprocess (python3 -c ...), no Claude/network involved:
         # proves the new `env` kwarg actually reaches the child process,
-        # the mechanism DeepSeek/Kimi reuse (ANTHROPIC_BASE_URL/
+        # the mechanism an Anthropic-compatible provider reuses (ANTHROPIC_BASE_URL/
         # ANTHROPIC_API_KEY).
         env = {**os.environ, "AIDO_TEST_PROBE_VAR": "hello-from-env"}
         exit_code, stdout, _ = asyncio.run(
@@ -341,7 +341,7 @@ class TestDefaultSubprocessRunnerTimeout:
 
 
 class TestProviderNameAndExtraEnvReuse:
-    """provider_name/extra_env: the seam DeepSeek/Kimi reuse instead of a
+    """provider_name/extra_env: the seam an Anthropic-compatible provider reuses instead of a
     second, independent adapter (see module docstring, "Reuse beyond real
     Anthropic")."""
 
@@ -357,22 +357,22 @@ class TestProviderNameAndExtraEnvReuse:
             return 0, fixture_bytes, b""
 
         adapter = ClaudeCodeAdapter(
-            provider_name="deepseek", subprocess_runner=fake_runner, clock=lambda: UTC_NOW
+            provider_name="compatible", subprocess_runner=fake_runner, clock=lambda: UTC_NOW
         )
 
         state = asyncio.run(adapter.probe())
 
-        assert state.provider == "deepseek"
+        assert state.provider == "compatible"
 
     def test_extra_env_is_overlaid_onto_the_default_runner(self) -> None:
         adapter = ClaudeCodeAdapter(
-            extra_env={"ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic", "ANTHROPIC_API_KEY": "sk-test"}
+            extra_env={"ANTHROPIC_BASE_URL": "https://compatible.example/anthropic", "ANTHROPIC_API_KEY": "sk-test"}
         )
 
         assert isinstance(adapter._run_subprocess, functools.partial)
         assert adapter._run_subprocess.func is _default_subprocess_runner
         merged_env = adapter._run_subprocess.keywords["env"]
-        assert merged_env["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com/anthropic"
+        assert merged_env["ANTHROPIC_BASE_URL"] == "https://compatible.example/anthropic"
         assert merged_env["ANTHROPIC_API_KEY"] == "sk-test"
         # Overlaid onto (not replacing) the ambient environment.
         assert merged_env.get("PATH") == os.environ.get("PATH")
