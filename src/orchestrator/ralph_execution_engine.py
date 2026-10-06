@@ -89,7 +89,7 @@ from typing import Awaitable, Callable, Iterator, Mapping, Sequence
 
 from orchestrator.execution_policy import ExecutionPermissionMode
 from orchestrator.execution_store import ExecutionRecord, ExecutionStore
-from orchestrator.posix_subprocess import run_in_new_process_group
+from orchestrator.posix_subprocess import OutputObserver, run_in_new_process_group
 from orchestrator.qa_protection import hash_file
 from orchestrator.worker_selector import Worker
 
@@ -971,6 +971,7 @@ def _audit_worker_commit_identity(
 
 async def _default_subprocess_runner(
     args: Sequence[str], cwd: Path, timeout: float, *, env: Mapping[str, str] | None = None,
+    on_output: OutputObserver | None = None,
 ) -> tuple[int, bytes, bytes]:
     """``env`` is keyword-only with a ``None`` default so this remains a
     drop-in ``SubprocessRunner`` (3 positional args) for any caller
@@ -993,7 +994,7 @@ async def _default_subprocess_runner(
     unchanged to ``RalphExecutionEngine.execute``, which finalizes the
     ``ExecutionRecord`` as ``INTERRUPTED`` before re-raising it."""
     try:
-        return await run_in_new_process_group(args, cwd, timeout, env={**os.environ, **(env or {})})
+        return await run_in_new_process_group(args, cwd, timeout, env={**os.environ, **(env or {})}, on_output=on_output)
     except asyncio.TimeoutError:
         raise RalphTimeoutError(f"ralph run timed out after {timeout}s")
 
@@ -1009,7 +1010,11 @@ class RalphExecutionEngine:
         clock: Clock | None = None,
         subprocess_runner: SubprocessRunner | None = None,
         permission_mode: ExecutionPermissionMode | None = None,
+        output_observer: OutputObserver | None = None,
     ) -> None:
+        # Optional progressive observation (P21-01): `(stream, text)`
+        # per output line while the worker runs. Absent = old behavior.
+        self._output_observer = output_observer
         self._execution_store = execution_store
         self._ralph_binary = ralph_binary
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -1075,6 +1080,12 @@ class RalphExecutionEngine:
                         exit_code, stdout, stderr = await _default_subprocess_runner(
                             args, request.workspace, request.timeout_seconds,
                             env=_worker_git_identity_env(request.worker),
+                            on_output=self._output_observer,
+                        )
+                    elif self._output_observer is not None:
+                        exit_code, stdout, stderr = await self._run_subprocess(
+                            args, request.workspace, request.timeout_seconds,
+                            on_output=self._output_observer,  # type: ignore[call-arg]
                         )
                     else:
                         exit_code, stdout, stderr = await self._run_subprocess(

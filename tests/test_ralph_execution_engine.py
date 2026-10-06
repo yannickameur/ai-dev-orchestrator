@@ -1787,3 +1787,38 @@ def _head(path: Path) -> str:
     return subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True, check=True,
     ).stdout.strip()
+
+
+class TestProgressiveOutputObserver:
+    def test_observer_is_forwarded_to_custom_runner_only_when_set(self, tmp_path: Path) -> None:
+        received: list[tuple[str, str]] = []
+        inner = _make_fake_runner(events_lines=[_event_line("work.completed")])
+
+        async def _runner(args, cwd, timeout, *, on_output=None):
+            on_output("stdout", "hello\n")
+            return await inner(args, cwd, timeout)
+
+        engine = RalphExecutionEngine(
+            _store(tmp_path), subprocess_runner=_runner, clock=lambda: UTC_NOW,
+            output_observer=lambda stream, text: received.append((stream, text)),
+        )
+        asyncio.run(engine.execute(_request(tmp_path)))
+        assert received == [("stdout", "hello\n")]
+
+    def test_absent_observer_keeps_three_arg_runner_contract(self, tmp_path: Path) -> None:
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")])
+        engine = RalphExecutionEngine(_store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW)
+        asyncio.run(engine.execute(_request(tmp_path)))
+
+    def test_default_runner_streams_local_script_output(self, tmp_path: Path) -> None:
+        from orchestrator.ralph_execution_engine import _default_subprocess_runner
+
+        seen: list[tuple[str, str]] = []
+        code, out, err = asyncio.run(
+            _default_subprocess_runner(
+                ["sh", "-c", "echo a; echo b >&2; printf c"], tmp_path, 10,
+                on_output=lambda s, t: seen.append((s, t)),
+            )
+        )
+        assert (code, out, err) == (0, b"a\nc", b"b\n")
+        assert ("stdout", "a\n") in seen and ("stdout", "c") in seen and ("stderr", "b\n") in seen
