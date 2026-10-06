@@ -1051,3 +1051,73 @@ class TestExecutionOutputAndDiagnostics:
 
         with pytest.raises(RuntimeError, match="transition renderer bug"):
             engine.run(on_event=_on_event)
+
+
+class TestBoundedLiveOutput:
+    """P21-04: bounded public ``execution.output`` flow, single truncation signal."""
+
+    @staticmethod
+    def _steps(output: list, *, topic: str = "work.completed", **extra) -> list[dict]:
+        return [
+            {"topic": topic, "mutate": _commit_action("f.py", "x = 1\n", "DEV A"), "output": output, **extra},
+            {"topic": "work.completed"},
+        ]
+
+    def test_normal_flow_is_untouched(self, tmp_path: Path) -> None:
+        engine = _open_engine(tmp_path, self._steps([("stdout", f"l{i}\n") for i in range(50)]))
+        seen: list[EngineEvent] = []
+        engine.run(on_event=seen.append)
+        assert sum(e.kind == "execution.output" for e in seen) == 50
+        assert all(e.kind != "execution.output_truncated" for e in seen)
+
+    def test_event_burst_is_truncated_once(self, tmp_path: Path) -> None:
+        engine = _open_engine(tmp_path, self._steps([("stdout", "x\n")] * 300))
+        seen: list[EngineEvent] = []
+        result = engine.run(on_event=seen.append)
+        assert result.work_items[0].status == "completed"
+        assert sum(e.kind == "execution.output" for e in seen) == 100
+        (signal,) = [e for e in seen if e.kind == "execution.output_truncated"]
+        assert signal.payload == {"reason": "max_event_rate", "delivered_events": 100, "delivered_chars": 200}
+        assert signal.phase == "dev_a" and signal.execution_id is not None
+        kinds = [e.kind for e in seen]
+        assert kinds.index("execution.output_truncated") < kinds.index("dev_a.completed")
+
+    def test_volume_overflow_cuts_at_char_budget_with_single_signal(self, tmp_path: Path) -> None:
+        big = "y" * 30_000
+        engine = _open_engine(tmp_path, self._steps([("stdout", big)] * 4 + [("stderr", "tail\n")]))
+        seen: list[EngineEvent] = []
+        engine.run(on_event=seen.append)
+        outputs = [e.payload["text"] for e in seen if e.kind == "execution.output"]
+        assert sum(map(len, outputs)) == 64_000
+        signals = [e for e in seen if e.kind == "execution.output_truncated"]
+        assert len(signals) == 1 and signals[0].payload["reason"] == "max_chars"
+
+    def test_timeout_diagnostic_keeps_last_output_after_live_truncation(self, tmp_path: Path) -> None:
+        from orchestrator.ralph_execution_engine import RalphTimeoutError
+
+        class NoisyTimeoutRunner:
+            async def __call__(self, args, cwd, timeout, *, on_output=None):
+                for _ in range(300):
+                    on_output("stdout", "noise\n")
+                on_output("stderr", "final words\n")
+                raise RalphTimeoutError("timed out")
+
+        engine = OrchestratorEngine.open(
+            str(_write_config(tmp_path)), provider_adapters={"anthropic": _FakeAdapter(available=True)},
+            subprocess_runner=NoisyTimeoutRunner(),
+        )
+        seen: list[EngineEvent] = []
+        (diag,) = engine.run(on_event=seen.append).diagnostics
+        assert diag.execution_status == "interrupted"
+        assert diag.last_output == "final words" and diag.last_output_stream == "stderr"
+        assert sum(e.kind == "execution.output_truncated" for e in seen) == 1
+        assert all(e.payload.get("text") != "final words\n" for e in seen if e.kind == "execution.output")
+
+    def test_failing_callback_on_truncation_signal_is_not_fatal(self, tmp_path: Path) -> None:
+        engine = _open_engine(tmp_path, self._steps([("stdout", "x\n")] * 150))
+
+        def _on_event(event: EngineEvent) -> None:
+            if event.kind == "execution.output_truncated":
+                raise RuntimeError("renderer bug")
+
+        assert engine.run(on_event=_on_event).work_items[0].status == "completed"
