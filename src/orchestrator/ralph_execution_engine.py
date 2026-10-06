@@ -76,6 +76,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -94,6 +95,7 @@ from orchestrator.qa_protection import hash_file
 from orchestrator.worker_selector import Worker
 
 Clock = Callable[[], datetime]
+logger = logging.getLogger(__name__)
 
 DEFAULT_RALPH_BINARY = "ralph"
 DEFAULT_MAX_ITERATIONS = 5
@@ -1014,7 +1016,16 @@ class RalphExecutionEngine:
     ) -> None:
         # Optional progressive observation (P21-01): `(stream, text)`
         # per output line while the worker runs. Absent = old behavior.
-        self._output_observer = output_observer
+        if output_observer is None:
+            self._output_observer = None
+        else:
+            def observe_safely(stream: str, chunk: str) -> None:
+                try:
+                    output_observer(stream, chunk)
+                except Exception:
+                    logger.warning("output observer failed for %s; ignored", stream, exc_info=True)
+
+            self._output_observer = observe_safely
         self._execution_store = execution_store
         self._ralph_binary = ralph_binary
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -1075,8 +1086,8 @@ class RalphExecutionEngine:
                     if is_real_runner:
                         # Only the real implementation actually spawns a
                         # process and can honor `env=` — a custom/fake
-                        # `subprocess_runner` (every test in this codebase)
-                        # stays a plain 3-arg SubprocessRunner, unaffected.
+                        # `subprocess_runner` stays a plain 3-arg runner
+                        # unless an output observer is explicitly set.
                         exit_code, stdout, stderr = await _default_subprocess_runner(
                             args, request.workspace, request.timeout_seconds,
                             env=_worker_git_identity_env(request.worker),

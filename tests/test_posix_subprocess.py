@@ -140,6 +140,17 @@ class TestProgressiveOutput:
         assert all(len(t) <= MAX_OBSERVED_CHUNK_CHARS for _, t, _ in seen)
         assert sum(len(t) for _, t, _ in seen) == 20000
 
+    def test_both_busy_streams_are_drained_concurrently(self, tmp_path: Path) -> None:
+        script = (
+            "head -c 131072 /dev/zero | tr '\\0' o & "
+            "head -c 131072 /dev/zero | tr '\\0' e >&2 & wait"
+        )
+        (code, out, err), seen = self._run(script, tmp_path)
+        assert code == 0
+        assert out == b"o" * 131072 and err == b"e" * 131072
+        assert "".join(text for stream, text, _ in seen if stream == "stdout") == out.decode()
+        assert "".join(text for stream, text, _ in seen if stream == "stderr") == err.decode()
+
     def test_absent_callback_preserves_behavior(self, tmp_path: Path) -> None:
         code, out, err = asyncio.run(
             run_in_new_process_group(["sh", "-c", "echo a; echo b >&2"], tmp_path, 10)
