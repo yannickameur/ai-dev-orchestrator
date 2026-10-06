@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import os
@@ -82,7 +83,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -100,6 +101,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_RALPH_BINARY = "ralph"
 DEFAULT_MAX_ITERATIONS = 5
 _MAX_CAPTURED_OUTPUT_CHARS = 4000
+_MAX_LAST_OUTPUT_CHARS = 600
 
 _RESERVED_EVENT_TOPICS = frozenset({"task.start", "task.resume"})
 
@@ -383,8 +385,13 @@ class ExecutionRequest:
     model: str
     reasoning_effort: str | None = None
     initial_event_payload: str | None = None
+    #: Optional per-execution progressive output observer ``(stream, text)``
+    #: (P21-02); combined with the engine-wide one, always failure-isolated.
+    output_observer: OutputObserver | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
+        if self.output_observer is not None and not callable(self.output_observer):
+            raise TypeError("ExecutionRequest.output_observer must be callable")
         for name in ("execution_id", "task_id", "role", "instructions", "initial_event_topic", "model"):
             _require_non_empty_str(getattr(self, name), field_name=f"ExecutionRequest.{name}")
         if not isinstance(self.worker, Worker):
@@ -473,6 +480,10 @@ class ExecutionResult:
     #: itself is never written to a store), never restored automatically,
     #: never a reason to fail this execution by itself.
     untracked_changes: tuple[UntrackedFileChange, ...] = ()
+    #: P21-02 — bounded tail of the real final output (stderr when it has
+    #: any text, else stdout), ``""`` when the process printed nothing.
+    last_output: str = ""
+    last_output_stream: str | None = None
 
 
 _FRACTIONAL_SECONDS_RE = re.compile(r"\.(\d+)")
@@ -632,6 +643,21 @@ def _read_ralph_events(workspace: Path) -> list[RalphEvent]:
     except OSError:
         return []
     return parse_ralph_events(lines)
+
+
+def _tail(data: bytes) -> str:
+    text = data.decode("utf-8", errors="replace").strip()
+    if len(text) <= _MAX_LAST_OUTPUT_CHARS:
+        return text
+    return "..." + text[-_MAX_LAST_OUTPUT_CHARS:]
+
+
+def _accepts_on_output(runner: object) -> bool:
+    try:
+        parameters = inspect.signature(runner).parameters.values()  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == "on_output" or p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
 
 
 def _bounded(data: bytes) -> str:
@@ -971,6 +997,19 @@ def _audit_worker_commit_identity(
         )
 
 
+def _guard_observer(observer: OutputObserver | None) -> OutputObserver | None:
+    if observer is None:
+        return None
+
+    def observe_safely(stream: str, chunk: str) -> None:
+        try:
+            observer(stream, chunk)
+        except Exception:
+            logger.warning("output observer failed for %s; ignored", stream, exc_info=True)
+
+    return observe_safely
+
+
 async def _default_subprocess_runner(
     args: Sequence[str], cwd: Path, timeout: float, *, env: Mapping[str, str] | None = None,
     on_output: OutputObserver | None = None,
@@ -1016,16 +1055,7 @@ class RalphExecutionEngine:
     ) -> None:
         # Optional progressive observation (P21-01): `(stream, text)`
         # per output line while the worker runs. Absent = old behavior.
-        if output_observer is None:
-            self._output_observer = None
-        else:
-            def observe_safely(stream: str, chunk: str) -> None:
-                try:
-                    output_observer(stream, chunk)
-                except Exception:
-                    logger.warning("output observer failed for %s; ignored", stream, exc_info=True)
-
-            self._output_observer = observe_safely
+        self._output_observer = _guard_observer(output_observer)
         self._execution_store = execution_store
         self._ralph_binary = ralph_binary
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -1056,6 +1086,12 @@ class RalphExecutionEngine:
         ``TestWorkerCommitIdentityEnforcement`` for the dedicated, fully
         offline tests of both mechanisms via the real ``git`` binary."""
         is_real_runner = self._run_subprocess is _default_subprocess_runner
+        observers = [o for o in (self._output_observer, _guard_observer(request.output_observer)) if o]
+        observer: OutputObserver | None = None
+        if observers:
+            def observer(stream: str, chunk: str) -> None:
+                for each in observers:
+                    each(stream, chunk)
         git_sha_before = _git_head_sha(request.workspace)
         untracked_before = _list_untracked_files_with_hashes(request.workspace)
 
@@ -1091,12 +1127,12 @@ class RalphExecutionEngine:
                         exit_code, stdout, stderr = await _default_subprocess_runner(
                             args, request.workspace, request.timeout_seconds,
                             env=_worker_git_identity_env(request.worker),
-                            on_output=self._output_observer,
+                            on_output=observer,
                         )
-                    elif self._output_observer is not None:
+                    elif observer is not None and _accepts_on_output(self._run_subprocess):
                         exit_code, stdout, stderr = await self._run_subprocess(
                             args, request.workspace, request.timeout_seconds,
-                            on_output=self._output_observer,  # type: ignore[call-arg]
+                            on_output=observer,  # type: ignore[call-arg]
                         )
                     else:
                         exit_code, stdout, stderr = await self._run_subprocess(
@@ -1195,6 +1231,8 @@ class RalphExecutionEngine:
             stdout=_bounded(stdout),
             stderr=_bounded(stderr),
             untracked_changes=untracked_changes,
+            last_output=_tail(stderr) or _tail(stdout),
+            last_output_stream="stderr" if stderr.strip() else ("stdout" if stdout.strip() else None),
         )
 
     def _build_ralph_args(self, runtime_dir: Path, request: ExecutionRequest) -> list[str]:

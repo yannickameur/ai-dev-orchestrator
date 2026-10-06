@@ -72,3 +72,45 @@ class EngineEvent:
     quality_tier: str | None = None
     reasoning_effort: str | None = None
     commit_sha: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FailureDiagnostic:
+    """Typed, public facts explaining one failed development execution
+    (P21-02), delivered via ``RunResult.diagnostics`` so a non-live caller
+    (``aido run`` without a live renderer) learns what happened through
+    the engine API alone, never by reading stores, stdout or Git.
+
+    Every field is a fact the engine actually observed, ``None`` when
+    unknown — never deduced. ``business_verdict`` is only ever read from
+    the worker's own terminal business events (``"absent"`` when neither
+    completed nor failed was emitted); ``exit_code`` never influences it.
+    ``ralph_termination_reason``/``ralph_iterations`` come only from a
+    readable ``loop.terminate`` event. Nothing here ever asserts that a
+    provider/backend itself failed: only what Ralph and the process
+    reported.
+    """
+
+    work_item_id: str
+    phase: str
+    execution_id: str
+    worker_id: str
+    worker_display_name: str | None
+    provider: str
+    backend: str
+    profile_id: str | None
+    model: str | None
+    execution_status: str
+    exit_code: int | None
+    business_verdict: str  # "absent" | "completed" | "failed"
+    ralph_termination_reason: str | None
+    ralph_iterations: int | None
+    last_output: str | None
+    last_output_stream: str | None
+    summary: str
+    next_action: str
+    #: Observational ``execution.output`` deliveries that raised in the
+    #: caller's callback (bounded count/message) — display problems only,
+    #: never a worker/QA/Git verdict.
+    output_delivery_failures: int = 0
+    last_output_delivery_error: str | None = None
