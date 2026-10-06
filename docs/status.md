@@ -1,6 +1,6 @@
 # Status
 
-Snapshot factuel court — mis à jour le 2026-09-28 (P19). Pas un journal ;
+Snapshot factuel court — mis à jour le 2026-10-06 (préparation P21). Pas un journal ;
 l'historique détaillé daté (Slices, incidents, diagnostics) vit dans
 l'historique Git (`git log`) et dans les rapports sous `docs/reports/`.
 Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
@@ -22,7 +22,7 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   du probe read-only `agy -p "/usage" --output-format json`. Voir
   `ROADMAP.md` §13, P19/P20.
 - **Tests offline** : 1374 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
-  2026-09-28 après P20), 1 avertissement de collecte préexistant
+  2026-10-06 avant P21), 1 avertissement de collecte préexistant
   (`TestChangeAuthorization`). Snapshot, pas un contrat ; le compte
   courant fait foi dans la sortie de `pytest -q`.
 - **Roman Numerals** (pilote externe) : `PASS`.
@@ -47,7 +47,15 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   conservé, aucun provider/runtime lancé. Test manuel réel : bootstrap,
   commit, working tree propre et `aido validate` OK. Voir `ROADMAP.md` §13
   et `docs/PROJECT_CONFIG.md`.
-- **Développement actif** : aucun.
+- **Développement actif** : aucun code P21 commencé. P21 est préparé
+  documentairement pour un prochain WorkItem Flow moteur.
+- **P21 (Live worker execution observability)** : `PRÉPARÉ` (2026-10-06),
+  WorkItems P21-01/02/03 proposés dans `ROADMAP.md` ; sortie worker
+  progressive, `EngineEvent` public, diagnostic FAILED sans verdict et
+  heartbeat à réaliser dans le moteur. La suite moteur avant ce travail :
+  1374 tests PASS, 1 avertissement de collecte préexistant. AIDO Code
+  M3-03 est livré ; M3-01 a échoué en DEV A sans événement métier ni
+  commit ; M3-02/M3-04 sont bloqués. Aucun de ces états n'a été rouvert.
 - **4 providers, tous `VALIDATED`** : Anthropic/OpenAI/Mistral/Gravity.
 - **P3 (DeepSeek + Kimi)** : `RETIRÉ` (P20, 2026-09-28), faute de preuve
   d'exécution réelle. Voir `ROADMAP.md` §13. **P4 (étude build-vs-reuse Mammouth AI)** :

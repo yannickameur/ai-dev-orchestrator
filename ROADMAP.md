@@ -94,9 +94,12 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   les fenêtres observées pour départager les providers disponibles après
   les filtres qualité et gouvernance de review. Indépendant de P14.
 - **P18 (live execution events and graceful interruption) :
-  `IN PROGRESS`** (GO humain 2026-09-26), voir §13. Prérequis pour AIDO
-  Code M3 ; P18-01 `DONE` (transport `on_event`) ; P18-02 `DONE`
-  (métadonnées fines DEV A/B/FIX/QA/Git) ; P18-03 pas commencé.
+  `DONE`** (GO humain 2026-09-26), voir §13. Transport `on_event`,
+  métadonnées DEV A/B/FIX/QA/Git et interruption/recovery P18-03 livrés.
+- **P21 (Live worker execution observability) : `PRÉPARÉ`, code non
+  commencé** (2026-10-06), voir §13. Prochain WorkItem Flow moteur :
+  sorties worker progressives, événements publics, diagnostic d'échec
+  et heartbeat sans refaire le streaming dans AIDO Code.
 
 ## 3. Ce qui existe aujourd'hui
 
@@ -2789,6 +2792,116 @@ un dépôt Git jetable hors des deux projets :
   inattendu => échec propre ; aucun quota inventé ;
 - aucun changement de `WorkerSelector` ni de `QuotaManager`.
 
+### P21 — Live worker execution observability — `PRÉPARÉ` (2026-10-06)
+
+**Décision produit** : après l'échec terminal de WI-M3-01 dans AIDO Code
+(DEV A, Ralph `max_iterations` après 5 itérations, code 2, aucun événement
+`work.completed`/`work.failed`, aucun commit), fournir les faits qui ont
+manqué au diagnostic et le flux opérationnel nécessaire à une interface
+`aido run` réellement live. Cet incident ne prouve pas une panne Gravity.
+AIDO Code M3 reste partiel ; ses WorkItems terminaux ne sont pas rouverts.
+P21 est préparé ici **sans code fonctionnel ni run gouverné**. Après P21,
+un nouveau jalon AIDO Code M3.1 pourra réutiliser le routeur M3-03 déjà
+livré et rendre le flux public ; aucun code M3.1 dans P21.
+
+**Frontière et réutilisation** : `provider CLI → Ralph →
+RalphExecutionEngine → MVPManager → OrchestratorEngine.run(on_event=...) →
+frontend`. Le moteur reste seul propriétaire des observations. Le
+frontend ne lit ni stdout Ralph, ni Git, ni SQLite pour reconstruire une
+timeline ; il applique son sanitizer terminal existant aux textes reçus.
+Il n'affiche aucun bloc de raisonnement privé : si un backend mélange
+raisonnement et sortie opérationnelle sans séparation fiable, afficher
+seulement les événements sûrs (transitions/heartbeat/diagnostic), et
+signaler la limite d'observabilité de ce backend.
+Le contrat est identique pour tous les providers/backends : une sortie
+n'autorise aucune inférence sur les outils, commandes, tests ou commits
+si leur CLI ne les expose pas réellement. Aucun raisonnement interne
+(chain-of-thought) n'est demandé ou présenté comme un fait.
+
+**Contrat de capture** : étendre le mécanisme POSIX partagé
+`run_in_new_process_group` pour drainer stdout et stderr simultanément,
+progressivement, par lignes ou chunks bornés, y compris le fragment
+final sans newline. Préserver l'ordre **dans chaque stream**, sans
+fabriquer un ordre global entre streams ; éviter les deadlocks et un
+événement par caractère. La capture finale `ExecutionResult.stdout`/
+`stderr` garde la borne et la sémantique existantes ; le flux live doit
+également avoir une politique de taille/fréquence bornée, avec
+troncature signalée, sans stockage de transcript ni dump d'environnement.
+Timeout, `CancelledError`, arrêt et reap du groupe POSIX restent ceux de
+P18-03 ; un descendant détaché dans une autre session demeure la limite
+documentée, hors scope. `on_event=None` garde le comportement historique.
+
+**Événements publics** : réutiliser l'unique DTO `EngineEvent` et le
+callback P18. `execution.output` porte l'horodatage, les IDs projet/MVP/
+WorkItem/exécution, la phase (`dev_a`, `dev_b`, `dev_fix`), le worker et
+son provider/backend, ainsi que `stream` (`stdout`/`stderr`) et `text`
+réels. `profile_id`/`model` restent les valeurs sélectionnées par le
+moteur, jamais déduites du texte. Aucun parser par provider ni nom d'outil
+fabriqué. Un éventuel `execution.heartbeat` signifie seulement « encore
+en cours » et porte une durée écoulée réelle ; cadence raisonnable et
+bornée, sans activité inventée. Les événements P18 DEV/QA/Git existants
+continuent à décrire sélection, transition, verdict et SHA réels.
+
+**Callback et gouvernance** : une erreur de présentation lors de la
+livraison d'un chunk ou heartbeat ne tue jamais le worker ; le moteur
+isole ce callback d'observation et garde une indication bornée de l'échec
+de livraison. Le contrat P18 pour les callbacks de transition reste
+explicite : leur exception se propage ; le futur frontend doit protéger
+son propre renderer. Tester les deux cas et ne jamais convertir une
+erreur d'affichage en verdict worker, QA ou Git. Aucun changement de
+sélection/priorité des workers, de policy, de QA ou de workflow Git.
+
+**Diagnostic final** : lorsqu'aucun événement métier terminal n'existe,
+le verdict reste `FAILED`, jamais déduit du code de sortie. Exposer via
+une surface publique typée (résultat final et, pour les seuls faits
+durables disponibles, snapshot de statut) la phase, l'identité de la
+dernière exécution, modèle, code de sortie, verdict métier
+`absent|completed|failed`, raison Ralph seulement si effectivement
+lisible dans `loop.terminate`, dernier extrait utile borné disponible
+pendant le run, et prochaine action déterministe. Ne pas reconstituer
+après redémarrage une sortie non persistée. Si le payload Ralph est
+inconnu, afficher « raison inconnue », jamais attribuer la faute au
+provider. Exemple fidèle à WI-M3-01 : « Ralph terminated with
+max_iterations after 5 iterations; no work.completed/work.failed event;
+exit_code=2. » La prochaine action proposée dans ce cas est d'inspecter
+la sortie observée et de décider d'un nouveau WorkItem gouverné, jamais
+de relancer automatiquement le WorkItem terminal. Le résultat `aido run`
+sans affichage live doit recevoir ces faits par l'API moteur, jamais en
+lisant ses stores internes.
+
+**WorkItems proposés pour le WorkItem Flow P21** :
+
+1. **WI-P21-01 — Progressive subprocess output** : callback optionnel
+   dans la primitive POSIX partagée et `RalphExecutionEngine`, capture
+   stdout/stderr concurrente et bornée, fragment final, ordre par stream,
+   sortie finale préservée, timeout/cancellation/process group identiques.
+   Tests offline avec scripts locaux seulement, y compris callback absent
+   et callback d'observation qui lève.
+2. **WI-P21-02 — Public output events and failure diagnostics** (dépend
+   de 01) : filage générique vers `EngineEvent` via MVPManager/Engine,
+   identité/phase réelles, résultat final typé pour FAILED, verdict
+   absent et `loop.terminate` avec code de sortie. Tests de propagation
+   bout en bout, callback de présentation défaillant, sortie inconnue,
+   et non-régression du verdict métier.
+3. **WI-P21-03 — Heartbeat and acceptance** (dépend de 01 et 02) :
+   heartbeat purement temporel si silence, tests offline du silence et
+   de la reprise de sortie, suite moteur complète. Après streaming,
+   spike manuel **jetable** Ralph+Gravity pour voir la sortie réellement
+   exposée par Arthur ; aucune conclusion anticipée ni action sur le
+   `WorkerSelector`. Si le heartbeat complexifie 01/02, le garder dans
+   ce WorkItem séparé.
+
+**Gates P21** : tests offline stdout/stderr séparés et simultanés,
+progression avant fin de processus, ordre intra-stream, dernière ligne,
+captures et flux bornés, timeout, annulation et nettoyage du groupe,
+callback absent/défaillant, absence de verdict métier, raison
+`max_iterations` quand réellement présente, et `execution.output` livré
+jusqu'à `OrchestratorEngine` ; régression QA/P18 vérifiée, puisque la
+primitive POSIX est partagée. Zéro appel réel provider dans pytest. Spike
+Gravity réel uniquement après livraison du streaming, en dépôt jetable.
+**Next** : validation de cette préparation, commit documentaire, puis
+run gouverné des nouveaux WorkItems moteur ; aucun `aido run` M3 ici.
+
 ### Ordre approuvé
 
 1. P12 (`DONE`) puis P1 (`DONE`) : cycle productisation/onboarding,
@@ -2833,6 +2946,9 @@ un dépôt Git jetable hors des deux projets :
     sous-section P19 ci-dessus.
 14. P20 (`DONE`) : ne garder que les providers validés et normaliser
     les workers Gravity (Arthur/Nora). Voir sous-section P20 ci-dessus.
+15. P21 (`PRÉPARÉ`, 2026-10-06) : observabilité live des sorties worker,
+    diagnostic final et heartbeat via les événements publics moteur ;
+    implémentation exclusivement par un prochain WorkItem Flow moteur.
 
 ### Table des propositions
 
@@ -2862,6 +2978,7 @@ un dépôt Git jetable hors des deux projets :
 | P17 | Quota-aware worker routing | Le `WorkerSelector` doit-il exploiter les `utilization` déjà sondées pour préférer un provider disponible nettement moins consommé ? | **`DONE`** — pression=max(utilization connue), bande de 10 points, inconnu neutre, gouvernance avant quota, aucun second probe ; indépendant de P14 |
 | P18 | Live execution events and graceful interruption | `OrchestratorEngine` doit-il exposer des événements publics fins (DEV A/DEV B/DEV FIX/QA/Git) en temps réel, avec les métadonnées réellement décidées, et traiter explicitement une interruption pendant `run()` ? | **`DONE`** (GO humain 2026-09-26) — callback `on_event` optionnel ; **P18-01/P18-02/P18-03 `DONE`** (transport live + métadonnées fines DEV A/B/FIX/QA/Git, `EngineEvent` dans `orchestrator.engine_events`, `RunResult.events` inchangé, interruption/recovery DEV+QA) ; Adaptive Execution non branché ; recovery étendu (jamais dupliqué) ; voir sous-section P18 ci-dessus |
 | P19 | Gravity worker/backend | Un worker Gravity (`agy`), exécutable via Ralph en réutilisant le mécanisme custom backend déjà employé par Vibe, mérite-t-il d'être intégré ? | **`APPROUVÉ`** (GO humain 2026-09-28) — Phase A (spike réel) `DONE` ; implémentation en cours (branche `feature/p19-gravity-worker-backend`) ; pas une dépendance de M3 ; voir sous-section P19 ci-dessus |
+| P21 | Live worker execution observability | Comment rendre visibles les sorties réelles du worker et les échecs sans verdict métier dans `aido run`, sans scraping frontend ni retry ? | **`PRÉPARÉ` (2026-10-06), aucun code fonctionnel** — WorkItems P21-01/02/03 proposés pour le WorkItem Flow moteur ; voir sous-section P21 ci-dessus |
 | P13.5 | Frontière moteur/librairie : injection du `WorkerRegistry`, `workers:` optionnel | `aido.yaml` doit-il rester la source de configuration complète du pool de workers, ou le moteur doit-il accepter un `WorkerRegistry` construit/injecté par l'application appelante (AIDO Code) ? | **`DONE`** (2026-09-24) — `workers:` optionnel dans `ProjectConfig` ; `OrchestratorEngine`/`ProjectRuntime` acceptent `worker_registry=` ; `WorkerSelector` reste seul propriétaire de la sélection ; chemin legacy fichier intégralement conservé et testé ; voir sous-section P13.5 ci-dessus |
 | P13.6 | Retrait de la commande produit `aido` (cutover AIDO Code) | AIDO Code ayant atteint son propre cutover produit, `ai-dev-orchestrator` doit-il cesser d'installer la commande `aido` ? | **`DONE`** (2026-09-24) — `[project.scripts]` retiré de `pyproject.toml` ; `orchestrator.cli`/`default_workers.yaml` conservés, legacy/internes, toujours réellement testés ; aucun binaire de compatibilité ajouté (YAGNI) ; voir sous-section P13.6 ci-dessus |
 | P13.7 | Pre-execution state safety | Le cutover M8 d'AIDO Code a révélé un défaut réel (`WI-M8-01` resté `RUNNING` durablement, sans `ExecutionRecord`) — un WorkItem/son MVP doivent-ils n'être marqués `RUNNING` qu'une fois tous les prérequis pré-exécution (préparation Git notamment) réellement satisfaits ? | **`DONE`** (2026-09-25) — `mark_mvp_running`/`mark_work_item_running` déplacés après les prérequis dans `_execute_work_item` et `_resume_dev_b_wait` (deux sites réels) ; invariant de recovery existant inchangé ; 4 nouveaux tests, chacun vérifié rouge sans le correctif ; `WI-M8-01` non modifié rétroactivement (YAGNI) ; voir sous-section P13.7 ci-dessus |
