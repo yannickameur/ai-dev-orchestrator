@@ -1,6 +1,6 @@
 # Status
 
-Snapshot factuel court — mis à jour le 2026-10-06 (clôture P21). Pas un journal ;
+Snapshot factuel court — mis à jour le 2026-10-06 (audit P21.1). Pas un journal ;
 l'historique détaillé daté (Slices, incidents, diagnostics) vit dans
 l'historique Git (`git log`) et dans les rapports sous `docs/reports/`.
 Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
@@ -47,8 +47,11 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   conservé, aucun provider/runtime lancé. Test manuel réel : bootstrap,
   commit, working tree propre et `aido validate` OK. Voir `ROADMAP.md` §13
   et `docs/PROJECT_CONFIG.md`.
-- **Développement actif** : P21 moteur terminé ; prochain jalon prévu :
-  AIDO Code M3.1, pas commencé ici.
+- **Développement actif** : P21 transport moteur terminé. AIDO Code
+  M3.1 a livré ses trois WorkItems, mais l'acceptance live reste
+  `PARTIAL` : une ligne JSON Claude contenant un bloc `thinking` a été
+  affichée. P21.1 est préparé documentairement, architecture C proposée,
+  sans approbation d'implémentation ni code fonctionnel. Voir `ROADMAP.md`.
 - **P21 (Live worker execution observability)** : `DONE` (2026-10-06),
   WorkItems P21-01/02/03/04 livrés via le WorkItem Flow moteur et PR #36.
   Le moteur émet `execution.output`, `execution.output_truncated` et
