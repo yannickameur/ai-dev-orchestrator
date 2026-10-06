@@ -157,11 +157,14 @@ async def _drain(
 
 
 async def _heartbeat(
-    on_heartbeat: HeartbeatObserver, interval: float, started: float, activity: list[float],
+    process: "asyncio.subprocess.Process", on_heartbeat: HeartbeatObserver,
+    interval: float, started: float, activity: list[float],
 ) -> None:
-    """Emits one heartbeat per full ``interval`` of output silence."""
+    """Emits only while the direct process is running and output is silent."""
     while True:
         await asyncio.sleep(max(activity[0] + interval - time.monotonic(), 0.0))
+        if process.returncode is not None:
+            return
         now = time.monotonic()
         if now - activity[0] < interval:
             continue  # output arrived meanwhile — silence restarted
@@ -186,7 +189,7 @@ async def _communicate_observed(
     ]
     beat = None
     if on_heartbeat is not None:
-        beat = asyncio.ensure_future(_heartbeat(on_heartbeat, max(heartbeat_interval, 0.01), started, activity))
+        beat = asyncio.ensure_future(_heartbeat(process, on_heartbeat, max(heartbeat_interval, 0.01), started, activity))
         tasks.append(beat)
     try:
         stdout, stderr = await asyncio.gather(*tasks[:2])

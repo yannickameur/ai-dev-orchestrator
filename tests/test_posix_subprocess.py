@@ -230,6 +230,13 @@ class TestHeartbeat:
         _, events = self._run("for i in 1 2 3 4 5; do echo $i; sleep 0.1; done", tmp_path, interval=0.4)
         assert all(k != "beat" for k, _ in events)
 
+    def test_no_heartbeat_after_process_exits_with_pipe_held_open(self, tmp_path: Path) -> None:
+        # The background child inherits stdout/stderr; draining waits for it,
+        # but the direct process whose execution we report has exited.
+        (code, out, err), events = self._run("sleep 0.7 & exit 0", tmp_path, interval=0.1)
+        assert (code, out, err) == (0, b"", b"")
+        assert all(kind != "beat" for kind, _ in events)
+
     def test_failing_heartbeat_callback_is_isolated(self, tmp_path: Path) -> None:
         def boom(_: float) -> None:
             raise RuntimeError("renderer bug")
