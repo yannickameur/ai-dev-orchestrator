@@ -31,10 +31,24 @@ code path, never two:
 from __future__ import annotations
 
 import asyncio
+import codecs
+import logging
 import os
 import signal
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
+
+logger = logging.getLogger(__name__)
+
+#: Progressive observation callback: ``(stream, text)`` where ``stream``
+#: is ``"stdout"`` or ``"stderr"``. Purely observational (see
+#: ``run_in_new_process_group``).
+OutputObserver = Callable[[str, str], None]
+
+#: Upper bound, in characters, of any single chunk handed to an
+#: ``OutputObserver`` — a line longer than this is split.
+MAX_OBSERVED_CHUNK_CHARS = 4096
+_READ_SIZE = 4096
 
 #: How long to wait for a clean SIGTERM exit before escalating to
 #: SIGKILL — short and fixed: this is cleanup after an already-decided
@@ -44,6 +58,7 @@ GRACE_PERIOD_SECONDS = 5.0
 
 async def run_in_new_process_group(
     argv: Sequence[str], cwd: Path, timeout: float, *, env: Mapping[str, str] | None = None,
+    on_output: OutputObserver | None = None,
 ) -> tuple[int, bytes, bytes]:
     """Runs ``argv`` in its own POSIX session/process group
     (``start_new_session=True``) so the whole group — not just the
@@ -54,6 +69,17 @@ async def run_in_new_process_group(
     terminating the group) if the awaiting task is cancelled — a caller
     translates the former into its own domain-specific timeout error;
     neither is ever swallowed.
+
+    ``on_output`` (optional, ``None`` = exactly the previous behavior):
+    stdout and stderr are drained concurrently and each decoded line
+    (or, for the final output without a trailing newline, the remaining
+    fragment) is passed to it as ``(stream, text)`` *while the process
+    is still running*. Order is preserved per stream (not across
+    streams); no chunk exceeds ``MAX_OBSERVED_CHUNK_CHARS``. The
+    callback is observational only: an exception it raises is logged
+    and ignored, never terminating the worker. The returned
+    ``stdout``/``stderr`` are the complete captures, identical to the
+    no-callback path.
 
     Known limitation, not hidden: this terminates every process that
     stayed in the launched group. A descendant that itself detaches
@@ -68,11 +94,65 @@ async def run_in_new_process_group(
         start_new_session=True,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        if on_output is None:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        else:
+            stdout, stderr = await asyncio.wait_for(_communicate_observed(process, on_output), timeout=timeout)
     except (asyncio.TimeoutError, asyncio.CancelledError):
         await _terminate_process_group(process)
         raise
     return process.returncode, stdout, stderr
+
+
+def _notify(on_output: OutputObserver, stream: str, text: str) -> None:
+    for start in range(0, len(text), MAX_OBSERVED_CHUNK_CHARS):
+        try:
+            on_output(stream, text[start:start + MAX_OBSERVED_CHUNK_CHARS])
+        except Exception:  # observational only — never kills the worker
+            logger.warning("output observer failed for %s; ignored", stream, exc_info=True)
+
+
+async def _drain(reader: asyncio.StreamReader, stream: str, on_output: OutputObserver) -> bytes:
+    """Reads ``reader`` to EOF, returning every byte read and notifying
+    ``on_output`` line by line (plus the final unterminated fragment)."""
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    captured = bytearray()
+    pending = ""
+    while True:
+        data = await reader.read(_READ_SIZE)
+        if not data:
+            break
+        captured += data
+        pending += decoder.decode(data)
+        *lines, pending = pending.split("\n")
+        for line in lines:
+            _notify(on_output, stream, line + "\n")
+        if len(pending) >= MAX_OBSERVED_CHUNK_CHARS:  # bound memory on newline-free output
+            _notify(on_output, stream, pending)
+            pending = ""
+    pending += decoder.decode(b"", final=True)
+    if pending:
+        _notify(on_output, stream, pending)
+    return bytes(captured)
+
+
+async def _communicate_observed(
+    process: "asyncio.subprocess.Process", on_output: OutputObserver,
+) -> tuple[bytes, bytes]:
+    assert process.stdout is not None and process.stderr is not None
+    tasks = [
+        asyncio.ensure_future(_drain(process.stdout, "stdout", on_output)),
+        asyncio.ensure_future(_drain(process.stderr, "stderr", on_output)),
+    ]
+    try:
+        stdout, stderr = await asyncio.gather(*tasks)
+        await process.wait()
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+    return stdout, stderr
 
 
 async def _terminate_process_group(process: "asyncio.subprocess.Process") -> None:
