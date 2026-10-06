@@ -40,11 +40,11 @@ Design notes:
   fields for no consumer.
 
 Reuse beyond real Anthropic (``provider_name``/``extra_env``, added when
-DeepSeek/Kimi were integrated; see ``orchestrator.providers.deepseek_adapter``/
-``kimi_adapter``): DeepSeek's and Kimi's own documentation both describe
-their "coding" offering as this exact same ``claude`` binary redirected, via
-``ANTHROPIC_BASE_URL``/``ANTHROPIC_API_KEY``, at an Anthropic-compatible
-endpoint they operate, not a distinct CLI or wire protocol. A second,
+an Anthropic-compatible provider was first integrated; no such provider is
+active today, the seam is kept as a generic, tested mechanism): an
+Anthropic-compatible provider is reached through this exact same ``claude``
+binary redirected, via ``ANTHROPIC_BASE_URL``/``ANTHROPIC_API_KEY``, at an
+endpoint it operates, not a distinct CLI or wire protocol. A second,
 independent HTTP adapter would duplicate this module's subprocess/
 stream-json machinery for no reason; instead, ``provider_name`` lets a
 caller label the resulting ``ProviderState`` correctly, and ``extra_env``
@@ -52,8 +52,7 @@ lets a caller overlay the redirect variables onto the subprocess environment
 without touching the default (real Anthropic, no overlay) code path at all.
 A probe against one of these compatible endpoints has no
 ``rate_limit_event`` in its stream, since that telemetry is an
-Anthropic-specific extension neither DeepSeek nor Kimi's compatible
-endpoint is known to emit, and falls back to
+Anthropic-specific extension a compatible endpoint is not known to emit, and falls back to
 ``_availability_from_result_fallback`` below: an existing code path, not a
 new one.
 """
@@ -192,8 +191,7 @@ def parse_claude_stream(
     Pure function, no subprocess/network involved — used both by
     :meth:`ClaudeCodeAdapter.probe` and directly by offline tests.
     ``provider`` defaults to real Anthropic (``PROVIDER_NAME``); a caller
-    reusing this parser for an Anthropic-compatible provider (DeepSeek,
-    Kimi) passes its own provider name so the resulting ``ProviderState``
+    reusing this parser for an Anthropic-compatible provider passes its own provider name so the resulting ``ProviderState``
     is labeled correctly.
     """
     events = _parse_json_lines(lines)

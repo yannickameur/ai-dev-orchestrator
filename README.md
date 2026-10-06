@@ -144,17 +144,14 @@ boundary », et `ROADMAP.md` §13.
 | Anthropic | Claude Code | ✅ VALIDATED |
 | OpenAI | Codex CLI | ✅ VALIDATED |
 | Mistral | Vibe | ✅ VALIDATED — voir [`docs/VIBE_SPIKE.md`](docs/VIBE_SPIKE.md). Son signal de disponibilité reste `EXECUTION_PROBE_ONLY` (pas de fenêtre de quota observable), jamais fabriqué en pourcentage |
-| Gravity | agy | ✅ VALIDATED — voir `ROADMAP.md` §13, section P19 (spike réel + run réel Ralph+Gravity). Même signal `EXECUTION_PROBE_ONLY` que Vibe (pas de fenêtre de quota observable) ; un seul worker déclaré (exception volontaire, pas encore de second besoin démontré) |
-| DeepSeek | Claude Code, redirigé (`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`) | `IMPLEMENTED` — validation réelle `PENDING`, désactivé par défaut (`config/workers.yaml`, worker `dana`). Nécessite une vraie `DEEPSEEK_API_KEY` (facturé à la consommation, jamais requis pour les autres providers) |
-| Kimi | Claude Code, redirigé (`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`) | `IMPLEMENTED` — validation réelle `PENDING`, désactivé par défaut (`config/workers.yaml`, worker `kai`). Nécessite une vraie `KIMI_API_KEY` (abonnement Kimi Code, jamais requis pour les autres providers) |
+| Gravity | agy | ✅ VALIDATED — voir `ROADMAP.md` §13, sections P19/P20. Son état de quota provient du probe read-only `agy -p "/usage" --output-format json` (aucun tour modèle consommé). Workers : Arthur et Nora |
 
-DeepSeek et Kimi réutilisent l'adaptateur Claude Code existant (même
-binaire `claude`, redirigé vers leur point de terminaison compatible
-Anthropic) plutôt qu'un second client HTTP indépendant : voir
-`orchestrator.providers.deepseek_adapter`/`kimi_adapter` et `ROADMAP.md`
-§7/§13. Les providers locaux, dont Ollama, font partie des propositions à
-voter dans `ROADMAP.md` (section « Propositions à voter »), et ne sont ni
-un travail approuvé, ni un travail en cours.
+Workers actifs (8, 4 providers) : Alice, Lydie (Anthropic) ; Victor, Yannick
+(OpenAI) ; Nathaniel, Juno (Mistral) ; Arthur, Nora (Gravity). DeepSeek et
+Kimi ont été retirés (P20) : aucune preuve d'exécution réelle, voir
+`ROADMAP.md` (P3 — RETIRÉ). Les providers locaux, dont Ollama, font partie
+des propositions à voter dans `ROADMAP.md` (section « Propositions à
+voter »), et ne sont ni un travail approuvé, ni un travail en cours.
 
 ## Démarrage rapide
 
@@ -164,10 +161,6 @@ Prérequis :
 - Claude Code CLI et/ou Codex CLI et/ou Mistral Vibe CLI et/ou Gravity
   (`agy`), authentifiés pour les providers que vous comptez utiliser
   réellement ;
-- Pour DeepSeek/Kimi (optionnels, désactivés par défaut) : Claude Code CLI
-  installé (même binaire, réutilisé) et une vraie clé (`DEEPSEEK_API_KEY`
-  et/ou `KIMI_API_KEY`) exportée dans votre environnement, jamais dans un
-  fichier du dépôt ;
 - `git`.
 
 Installation :

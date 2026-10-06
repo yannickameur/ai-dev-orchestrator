@@ -50,8 +50,7 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   voir §10). Cycle productisation/onboarding terminé.
   **P1.1 (guided project bootstrap / onboarding) : `DONE`** (2026-09-24),
   extension locale de `aido init`, voir §13.
-- **P3 (DeepSeek + Kimi comme providers de premier niveau) :
-  `IMPLEMENTED` (2026-09-19), validation réelle `PENDING`**, voir §7 et
+- **P3 (DeepSeek + Kimi) : `RETIRÉ`** (décision produit 2026-09-28, P20), voir
   §13. **P4 (étude Mammouth) : `RETIRÉ`** : étude menée, agrégateur jugé
   d'intérêt économique/architectural insuffisant, intégration directe
   préférée (décision utilisateur, 2026-09-19).
@@ -114,13 +113,10 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
 - Adaptateur Codex CLI (OpenAI).
 - Adaptateur Mistral/Vibe — honnêtement limité à `EXECUTION_PROBE_ONLY`
   (aucune fenêtre de quota observable pour ce provider ; jamais fabriquée).
-- Adaptateurs DeepSeek et Kimi — jamais un second client HTTP indépendant :
-  les deux réutilisent l'adaptateur Claude Code existant (même binaire
-  `claude`, redirigé via `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` vers leur
-  point de terminaison compatible Anthropic ; voir
-  `orchestrator.providers.deepseek_adapter`/`kimi_adapter`). Désactivés par
-  défaut dans `config/workers.yaml` (`dana`/`kai`) : clé API requise, aucune
-  preuve d'exécution réelle encore obtenue. Voir §7.
+- Adaptateur Gravity (`agy`) — quota réel via le probe read-only
+  `agy -p "/usage" --output-format json` (P20, voir §13).
+- DeepSeek et Kimi : retirés (P20, §13), jamais validés par une exécution
+  réelle.
 - `RalphExecutionEngine` — chaque exécution passe par le vrai CLI `ralph`,
   jamais un appel direct à un provider.
 - État durable Execution/Handoff/Wait/Recovery — reprise après
@@ -314,21 +310,20 @@ tableau, jamais supposé).
 | Worker | Provider | Backend | Priorité | Capacités | Statut |
 |---|---|---|---|---|---|
 | `alice` | anthropic | claude_code | 100 | development, release_planning, roadmap_synthesis, complexity_estimation, qa_testing | ✅ VALIDATED |
-| `bob` | anthropic | claude_code | 90 | (identiques à alice) | ✅ VALIDATED |
+| `bob` (Lydie) | anthropic | claude_code | 90 | (identiques à alice) | ✅ VALIDATED |
 | `victor` | openai | codex | 100 | development, release_planning, roadmap_synthesis, complexity_estimation, qa_testing | ✅ VALIDATED |
-| `oscar` | openai | codex | 90 | (identiques à victor) | ✅ VALIDATED |
-| `milo` | mistral | vibe | 60 | development uniquement | ✅ VALIDATED |
+| `oscar` (Yannick) | openai | codex | 90 | (identiques à victor) | ✅ VALIDATED |
+| `milo` (Nathaniel) | mistral | vibe | 60 | development uniquement | ✅ VALIDATED |
 | `juno` | mistral | vibe | 60 | development uniquement | ✅ VALIDATED |
-| `dana` | deepseek | claude_code | 60 | development uniquement | `IMPLEMENTED — REAL VALIDATION PENDING` (`enabled: false`) |
-| `kai` | kimi | claude_code | 60 | development uniquement | `IMPLEMENTED — REAL VALIDATION PENDING` (`enabled: false`) |
+| `gravity_primary` (Arthur) | gravity | gravity | 101 | development uniquement | ✅ VALIDATED |
+| `gravity_secondary` (Nora) | gravity | gravity | 91 | development uniquement | ✅ VALIDATED |
 
-8 workers déclarés, **5 providers de premier niveau** (anthropic, openai,
-mistral, deepseek, kimi), tous résolus par la même table explicite,
-`orchestrator.project_runtime._PROVIDER_ADAPTER_FACTORIES`, jamais une
-hiérarchie métier codée en dur entre eux). 6 workers **activés** par
-défaut, 3 providers activés par défaut ; chaque provider activé a au moins
-2 workers indépendants (`DEV_B.worker_id != DEV_A.worker_id` reste toujours
-satisfiable sans dépendre de l'autre provider).
+8 workers déclarés et activés, **4 providers de premier niveau**
+(anthropic, openai, mistral, gravity), tous résolus par la même table
+explicite, `orchestrator.project_runtime._PROVIDER_ADAPTER_FACTORIES`,
+jamais une hiérarchie métier codée en dur entre eux. Chaque provider a 2
+workers indépendants (`DEV_B.worker_id != DEV_A.worker_id` reste toujours
+satisfiable sans dépendre d'un autre provider).
 
 Mistral/Vibe : capacité volontairement limitée à `development` (le spike
 n'a produit de preuve d'exécution réelle que pour ce type de travail —
@@ -336,29 +331,7 @@ voir `docs/VIBE_SPIKE.md`) ; son signal de disponibilité est
 `EXECUTION_PROBE_ONLY` (pas de fenêtre de quota observable), toujours
 rapporté honnêtement comme `unknown`, jamais fabriqué en pourcentage.
 
-**DeepSeek et Kimi (2026-09-19)** : `IMPLEMENTED — REAL VALIDATION
-PENDING`. Intégrés à la même profondeur architecturale que les trois
-providers existants (même contrat `ProviderAdapter`/`ProviderState`, même
-table de résolution), mais `dana`/`kai` restent `enabled: false` dans le
-fichier livré, pour deux raisons distinctes :
-- Les deux nécessitent une vraie clé API (`DEEPSEEK_API_KEY`/`KIMI_API_KEY`,
-  jamais committée, sans valeur par défaut), contrairement à Claude
-  Code/Codex/Vibe dont l'authentification reste entièrement au CLI, déjà
-  connecté en dehors de ce projet. Une clé absente ne doit pas empêcher les
-  trois autres providers de fonctionner : voir
-  `orchestrator.providers.deepseek_adapter`/`kimi_adapter` et
-  `ProjectRuntime.ProviderConfigurationError` (erreur contrôlée, pas de
-  traceback brute).
-- Aucun pilote réel n'a encore prouvé leur fonctionnement (pas de spike
-  équivalent à `docs/VIBE_SPIKE.md`). `enabled: true` est un pas distinct,
-  après configuration d'une vraie clé et une exécution réelle validée
-  (critères listés en §13), jamais une bascule automatique.
-
-DeepSeek est facturé à la consommation (PAYG), ce qui s'écarte à la lettre
-du cadre d'origine « coût marginal nul » de la proposition P3 (§13) ;
-Kimi passe par **Kimi Code** (abonnement/quota) plutôt que par un accès
-PAYG générique. Les deux ont été retenus sur décision utilisateur
-explicite malgré cet écart de cadrage.
+**DeepSeek et Kimi — `RETIRÉ` (2026-09-28, P20)** : voir §13, P3.
 
 Ollama n'est **pas** un provider actuel — voir §13, proposition P2.
 
@@ -483,12 +456,8 @@ explicitement par un appelant :
   tests unitaires existants) ; correction finale gouvernée mergée. SHA
   cible final : `593c615e66e6a2cb585fb465ded0185da46a3319`. Récit complet
   public : `examples/morpion-web-3d/README.md`.
-- **DeepSeek / Kimi** — `IMPLEMENTED — REAL VALIDATION PENDING`.
-  Architecture/tests offline complets (§7, §13) ; aucune exécution réelle
-  n'a eu lieu, ni clé API (`DEEPSEEK_API_KEY`/`KIMI_API_KEY`) configurée
-  sur une machine de ce projet, ni spike équivalent à
-  `docs/VIBE_SPIKE.md`. `dana`/`kai` restent `enabled: false` jusqu'à
-  cette validation.
+- **DeepSeek / Kimi** — `RETIRÉ` (P20, 2026-09-28) : aucune exécution réelle
+  n'avait jamais eu lieu ; voir §13, P3.
 - **AIDO Code** (deuxième projet de référence prévu, après Morpion Web
   3D) — `PREPARED`, `DEVELOPMENT NOT STARTED`. Dépôt Git local créé
   (`~/projects/aido-code`), roadmap/`MVP_SPEC.yaml`/WorkItems M1
@@ -526,11 +495,8 @@ Jalons majeurs seulement — pas de journal Slice par Slice :
 - P4 (étude Mammouth) menée puis close `RETIRÉ` : agrégateur jugé d'intérêt
   économique/architectural insuffisant face à l'intégration directe de
   providers (décision utilisateur, 2026-09-19).
-- P3 — DeepSeek + Kimi intégrés comme providers de premier niveau, sur
-  cette base, en réutilisant l'adaptateur Claude Code existant
-  (redirection `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`) ; `dana`/`kai`
-  désactivés par défaut faute de clé/preuve d'exécution réelle
-  (implémentation `DONE`, validation réelle `PENDING`, 2026-09-19).
+- P3 — DeepSeek + Kimi intégrés (2026-09-19) puis `RETIRÉ` (P20,
+  2026-09-28), faute de preuve d'exécution réelle.
 - P13 — Découplage moteur / externalisation AIDO Code (priorité 1) :
   façade publique `orchestrator.engine.OrchestratorEngine` exposée,
   projet `aido-code` créé (`~/projects/aido-code`, roadmap/`MVP_SPEC.yaml`/
@@ -614,7 +580,15 @@ et garde contre la construction du runtime/résolution provider. Bootstrap
 manuel via le binaire `aido` : branche `main`, commit initial exact, working
 tree propre, `aido validate` OK. Compte courant dans `docs/status.md`.
 
-### P3 — DeepSeek + Kimi — implémentation `DONE`, validation réelle `PENDING` (2026-09-19)
+### P3 — DeepSeek + Kimi — `RETIRÉ`
+
+Une première intégration avait été implémentée mais n'a jamais obtenu de
+preuve d'exécution réelle. Décision produit du 2026-09-28 : les providers
+non validés ne font pas partie du produit actif. Les adapters et workers
+DeepSeek/Kimi ont donc été retirés. Toute réintégration future nécessitera
+un nouveau spike réel et un GO humain explicite.
+
+**Historique (2026-09-19, conservé tel quel ci-dessous)** : implémentation `DONE`, validation réelle `PENDING`.
 
 **Résultat** : DeepSeek et Kimi sont désormais des providers de premier
 niveau au même sens architectural que Claude/Codex/Mistral, avec le même
@@ -740,9 +714,7 @@ client HTTP direct introduit par cette tâche ; aucun second moteur
 d'exécution ; `ClaudeCodeAdapter` inchangé pour Anthropic ; aucun
 branchement spécifique à un provider dans `MVPManager` ou
 `WorkerSelector` (vérifié par recherche exhaustive, zéro occurrence) ;
-`.probe_workers()` ne mute jamais `os.environ` globalement ; les
-credentials DeepSeek/Kimi ne sont lus que si le provider est réellement
-requis (inchangé, §7) ; aucun secret n'entre dans `aido.yaml`/
+`.probe_workers()` ne mute jamais `os.environ` globalement ; aucun credential provider n'est lu par le runtime (DeepSeek/Kimi, seuls providers à clé API, retirés en P20) ; aucun secret n'entre dans `aido.yaml`/
 `config/workers.yaml`/`ExecutionRecord`/SQLite/logs/rapports ; la
 résolution des factories providers reste centralisée dans
 `project_runtime.py` ; `WorkerSelector` reste seul propriétaire du choix
@@ -1018,7 +990,7 @@ devient jamais 100%, `probe=disabled` pour un worker désactivé,
 `TestStandaloneWorkerRegistry` : création/non-écrasement du registry
 utilisateur, priorité conservée au `config/workers.yaml` du cwd) et
 `tests/test_default_worker_registry.py` (identité byte-à-byte avec
-`config/workers.yaml`, parsing réel, DeepSeek/Kimi désactivés, mapping
+`config/workers.yaml`, parsing réel, mapping
 GPT-6, aucune valeur secrète, présence réelle dans le wheel construit).
 
 ### P13.4 — Remédiation post-audit (Mistral) — `DONE` (2026-09-23)
@@ -1933,10 +1905,9 @@ Conforme à l'attendu, sans écart :
 | Alice / Lydie | anthropic / claude_code | haiku, `SIMPLE` | sonnet, `STANDARD` | sonnet, `COMPLEX` |
 | Victor / Yannick(oscar) | openai / codex | gpt-6-luna, `SIMPLE`, `reasoning_effort=low` | gpt-6-sol, `STANDARD`, `reasoning_effort=medium` | gpt-6-astra, `COMPLEX`, `reasoning_effort=high` |
 | Nathaniel (milo) / Juno | mistral / vibe | — | vibe-default, `STANDARD` (pas de `reasoning_effort`) | — |
-| Dana / Kai | deepseek / kimi, claude_code | — | deepseek-flash / kimi-for-coding, `STANDARD` | — |
+| Arthur / Nora | gravity / gravity | — | claude-sonnet-4-6, `STANDARD` (pas de `reasoning_effort`) | — |
 
-Dana/Kai restent `enabled: false` (pas de clé API réelle, pas de preuve
-d'exécution). `quality_tier` (capacité minimale requise) et
+(Dana/Kai, DeepSeek/Kimi, retirés en P20.) `quality_tier` (capacité minimale requise) et
 `reasoning_effort` (effort du provider, quand il en expose un) restent
 deux notions distinctes, jamais confondues dans le DTO ni dans son
 mapping.
@@ -2797,6 +2768,27 @@ un dépôt Git jetable hors des deux projets :
   ci-dessus concerne une limite pré-existante et déjà acceptée de
   l'annulation, pas le fonctionnement de Gravity lui-même.
 
+### P20 — Keep only validated providers and normalize Gravity workers — `IN PROGRESS`
+
+**Statut** : `IN PROGRESS` (GO humain déjà donné) ; sera marqué `DONE`
+uniquement après tests complets verts et PR mergée.
+
+**Résultat attendu** :
+- DeepSeek/Kimi retirés (adapters, tests, workers `dana`/`kai`, factories
+  runtime) ;
+- 8 workers, 4 providers validés (anthropic, openai, mistral, gravity) ;
+- Gravity : `gravity_primary` (Arthur, priorité 101) et `gravity_secondary`
+  (Nora, priorité 91) — `gravity` est un provider/backend, jamais un
+  `display_name` ; mêmes capacités (`development`), profil `standard`
+  (`claude-sonnet-4-6`, `STANDARD`, `cost_rank: 20`, sans
+  `reasoning_effort`) ; les deux partagent un seul `ProviderState` ;
+- quota Gravity réel via `agy -p "/usage" --output-format json`
+  (`num_turns: 0`, aucun tour modèle) : `remaining_fraction` ->
+  `utilization = 1 - remaining_fraction`, `reset_time` -> `reset_at`,
+  `id`/`window` -> `window_type` ; champ absent => `None`, JSON
+  inattendu => échec propre ; aucun quota inventé ;
+- aucun changement de `WorkerSelector` ni de `QuotaManager`.
+
 ### Ordre approuvé
 
 1. P12 (`DONE`) puis P1 (`DONE`) : cycle productisation/onboarding,
@@ -2805,9 +2797,8 @@ un dépôt Git jetable hors des deux projets :
    été jugé d'intérêt économique/architectural insuffisant face à
    l'intégration directe de providers supplémentaires (décision
    utilisateur, 2026-09-19).
-3. P3 (implémentation `DONE`, validation réelle `PENDING`, 2026-09-19) :
-   DeepSeek + Kimi intégrés comme providers de premier niveau, sur la base
-   de la conclusion P4 (voir sous-section P3 ci-dessus et §7).
+3. P3 (`RETIRÉ`, 2026-09-28, P20) : DeepSeek + Kimi, intégrés puis retirés
+   faute de preuve d'exécution réelle (voir sous-section P3 ci-dessus).
 4. P13 (`DONE`, priorité 1, 2026-09-19) : découplage moteur, façade
    publique `OrchestratorEngine`, création préparatoire du projet
    `aido-code`. Voir sous-section P13 ci-dessus.
@@ -2840,6 +2831,8 @@ un dépôt Git jetable hors des deux projets :
     (`agy`), réutilisant le mécanisme custom backend déjà employé par
     Vibe ; Phase A (spike réel) `DONE` — pas une dépendance de M3. Voir
     sous-section P19 ci-dessus.
+14. P20 (`IN PROGRESS`) : ne garder que les providers validés et normaliser
+    les workers Gravity (Arthur/Nora). Voir sous-section P20 ci-dessus.
 
 ### Table des propositions
 
@@ -2848,7 +2841,7 @@ un dépôt Git jetable hors des deux projets :
 | P1 | CLI / productisation | Le projet doit-il exposer une CLI publique pour qu'un utilisateur n'ait plus besoin d'un harnais Python ? | **`DONE` — voir §3/§10, `README.md`** |
 | P1.1 | Guided project bootstrap / onboarding | Créer un projet local complet et guider son premier usage avec le `aido init` existant | **`DONE` (2026-09-24), extension de P1 — voir §13 et `docs/PROJECT_CONFIG.md`** |
 | P2 | Ollama / provider local | Un provider gratuit/local est-il assez utile pour justifier un adaptateur ? | À VOTER |
-| P3 | Providers supplémentaires | Quels autres providers devraient rejoindre le pool ? Étendu par décision utilisateur explicite (2026-09-19) au-delà du cadre d'origine « coût marginal nul » : DeepSeek (facturé à la consommation) et Kimi (abonnement Kimi Code) | **Implémentation `DONE`, validation réelle `PENDING` (2026-09-19) : DeepSeek + Kimi, voir §7 et la sous-section P3 ci-dessus** |
+| P3 | Providers supplémentaires | Quels autres providers devraient rejoindre le pool ? Étendu par décision utilisateur explicite (2026-09-19) au-delà du cadre d'origine « coût marginal nul » : DeepSeek (facturé à la consommation) et Kimi (abonnement Kimi Code) | **`RETIRÉ` (2026-09-28, P20) : DeepSeek + Kimi, voir la sous-section P3 ci-dessus** |
 | P4 | Étude build-vs-reuse Mammouth AI | Offre-t-il des capacités multi-provider utiles à réutiliser plutôt qu'à construire ? | **`RETIRÉ` (2026-09-19)** : étude menée, agrégateur jugé d'intérêt économique/architectural insuffisant face à l'intégration directe ; décision terminée, pas un report ; DeepSeek/Kimi (P3) intégrés directement sur cette base ; aucune dépendance gateway/agrégateur multi-modèles |
 | P5 | Projets de validation externes progressifs | Continuer à valider sur des projets réels plus complexes ? | À VOTER |
 | P6 | Workflow GitHub distant complet | Étendre la gouvernance Git locale actuelle à un vrai push/PR/statut CI distant ? | À VOTER |
@@ -2877,8 +2870,7 @@ Les propositions encore `À VOTER` restent non planifiées ; aucun ordre entre
 elles n'est impliqué. La prochaine étape pour celles-ci, si l'utilisateur le
 décide, est un vote explicite proposition par proposition, pas une
 sélection automatique par cette session ni une future session. P12, P1,
-P1.1, P13, P13.4, P13.5, P13.6 et P13.7 sont `DONE`. P3 est `IMPLEMENTED`, validation
-réelle `PENDING`. P14 est `APPROUVÉ — APRÈS P13`, sans WorkItem
+P1.1, P13, P13.4, P13.5, P13.6 et P13.7 sont `DONE`. P3 est `RETIRÉ` (P20). P14 est `APPROUVÉ — APRÈS P13`, sans WorkItem
 d'implémentation créé à ce jour. P15 est `APPROUVÉ POUR ÉTUDE`, P16
 `APPROUVÉ POUR REVUE` — ni l'un ni l'autre n'est implémenté, ni ne bloque
 M2. P4 est `RETIRÉ` : décision terminée, pas un report. Elle ne redevient

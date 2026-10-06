@@ -3,9 +3,9 @@
 # docs/ADAPTIVE_EXECUTION.md sections 4-5 for the design behind this file,
 # and src/orchestrator/worker_registry.py for the loader/validator.
 #
-# No secrets here: authentication stays with the Claude Code / Codex / Vibe
-# CLIs themselves (already logged in outside this project) — never an API
-# key, token, or credential in this file.
+# No secrets here: authentication stays with the Claude Code / Codex / Vibe /
+# Gravity (`agy`) CLIs themselves (already logged in outside this project)
+# — never an API key, token, or credential in this file.
 #
 # Model names below are the ones already confirmed in this project's own
 # tests/docs (docs/SPIKE_RALPH.md, ralph.yml/ralph-codex.yml in
@@ -222,90 +222,49 @@ workers:
         model: vibe-default
         cost_rank: 20
 
-  # DeepSeek — added alongside Kimi to bring the provider count to 5
-  # (see ROADMAP.md, "Providers et workers"). Reached through the same
-  # `claude` binary as the anthropic workers above, redirected at
-  # DeepSeek's Anthropic-compatible endpoint; see
-  # orchestrator.providers.deepseek_adapter. Status: IMPLEMENTED, real
-  # validation PENDING. `enabled: false`: DeepSeek is billed per token
-  # (unlike the subscription CLIs above) and reaching it requires a real
-  # DEEPSEEK_API_KEY this machine does not have; unlike Mistral/Vibe, no
-  # real spike evidence of a successful execution exists yet either. Flip
-  # to `true` only after both a real DEEPSEEK_API_KEY is configured and a
-  # real execution has been validated (mirrors how Mistral/Vibe was
-  # onboarded; see docs/VIBE_SPIKE.md). Only `development` is granted, for
-  # the same reason: no evidence yet for any other capability.
-  - worker_id: dana
-    display_name: Dana
-    enabled: false
-    provider: deepseek
-    backend: claude_code
-    priority: 60
-
-    capabilities:
-      - development
-
-    default_profile_id: standard
-    estimator_profile_id: standard
-
-    profiles:
-      standard:
-        quality_tier: STANDARD
-        model: deepseek-flash
-        cost_rank: 20
-
-  # Kimi (Kimi Code); see orchestrator.providers.kimi_adapter. Reached
-  # through the same `claude` binary, redirected at Kimi's
-  # Anthropic-compatible endpoint. Status: IMPLEMENTED, real validation
-  # PENDING. `enabled: false` for the same reason as `dana` above: requires
-  # a real KIMI_API_KEY (Kimi Code subscription) this machine does not
-  # have, and no real execution evidence exists yet. Flip to `true` only
-  # after both a real KIMI_API_KEY is configured and a real execution has
-  # been validated.
-  - worker_id: kai
-    display_name: Kai
-    enabled: false
-    provider: kimi
-    backend: claude_code
-    priority: 60
-
-    capabilities:
-      - development
-
-    default_profile_id: standard
-    estimator_profile_id: standard
-
-    profiles:
-      standard:
-        quality_tier: STANDARD
-        model: kimi-for-coding
-        cost_rank: 20
-
-  # Gravity (P19, ROADMAP.md §13) — `agy` CLI, reusing the exact custom-
-  # backend mechanism already proven by Vibe (`gravity_ralph_bridge.py`).
-  # Phase A (2026-09-28) verified `agy` 1.2.12 real/installed/authenticated
-  # on the maintainer's machine, `--mode=accept-edits` alone (no bypass)
-  # genuinely non-interactive, and `claude-sonnet-4-6` a real, selectable
-  # model id (`agy models`) — never a sentinel. No reasoning_effort:
-  # `--effort` exists but `agy` itself rejects it for this model.
-  # `priority: 101` (one above the default 100): a deliberate, minimal
-  # tie-break nudge so WorkerSelector's existing quota-pressure ->
-  # priority -> worker_id rule (P17, unchanged) actually prefers Gravity
-  # for DEV A when it is AVAILABLE and otherwise eligible, without
-  # touching WorkerSelector itself. `enabled: true` by human decision
-  # (ROADMAP.md, P19) — EXECUTION_PROBE_ONLY (GravityAdapter) means a
-  # machine without `agy` installed/authenticated simply observes Gravity
-  # as unavailable, same graceful degradation already relied on for
-  # Alice/Victor/Milo; this is a single-worker exception to the
-  # >=2-workers-per-provider rule below (see
-  # tests/test_worker_registry.py) until a real, demonstrated need for a
-  # second Gravity identity exists.
-  - worker_id: gravity
-    display_name: Gravity
+  # Gravity (P19/P20, ROADMAP.md §13) — `agy` CLI, reusing the exact
+  # custom-backend mechanism already proven by Vibe
+  # (`gravity_ralph_bridge.py`). Real, verified (P19 Phase A + P20): `agy`
+  # 1.2.12, `--mode=accept-edits` alone (no bypass) genuinely
+  # non-interactive, `claude-sonnet-4-6` a real, selectable model id
+  # (`agy models`) — never a sentinel. No reasoning_effort: `--effort`
+  # exists but `agy` itself rejects it for this model. Real quota
+  # telemetry via `agy -p "/usage" --output-format json`
+  # (`GravityAdapter`) — no longer EXECUTION_PROBE_ONLY (P20 upgraded
+  # this once `/usage` was verified real and free of any model turn).
+  # `gravity` is the provider/backend identifier, never a worker
+  # display_name (P20 product decision) — exactly two human worker
+  # identities below, same convention as every other provider
+  # (primary=101/secondary=91, mirroring the 100/90 split used
+  # elsewhere): Arthur (primary, DEV A-eligible) and Nora (secondary,
+  # independent reviewer/fallback). Both share the exact same
+  # `GravityAdapter`-probed `ProviderState` — one shared account quota,
+  # never a second, independent one per worker.
+  - worker_id: gravity_primary
+    display_name: Arthur
     enabled: true
     provider: gravity
     backend: gravity
     priority: 101
+
+    capabilities:
+      - development
+
+    default_profile_id: standard
+    estimator_profile_id: standard
+
+    profiles:
+      standard:
+        quality_tier: STANDARD
+        model: claude-sonnet-4-6
+        cost_rank: 20
+
+  - worker_id: gravity_secondary
+    display_name: Nora
+    enabled: true
+    provider: gravity
+    backend: gravity
+    priority: 91
 
     capabilities:
       - development

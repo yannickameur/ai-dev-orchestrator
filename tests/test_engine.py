@@ -4,7 +4,7 @@ MVPManager/WorkerSelector/QuotaManager/ProviderAdapters/
 GitGovernanceService/InternalQAEngine/Store directly.
 
 Offline only: real Git repos/worker registries under pytest's ``tmp_path``,
-fake provider adapters (never real Claude/Codex/Vibe/DeepSeek/Kimi probes),
+fake provider adapters (never real Claude/Codex/Vibe/Gravity probes),
 a scripted fake Ralph subprocess runner (never real Ralph); same fixtures
 and conventions as ``tests/test_cli.py``.
 """

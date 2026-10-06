@@ -1203,14 +1203,14 @@ class TestStatusProbe:
             dedent(
                 """
                 workers:
-                  - worker_id: dana
-                    display_name: Dana
-                    provider: deepseek
+                  - worker_id: pat
+                    display_name: Pat
+                    provider: unconfigured-provider
                     backend: claude_code
                     enabled: false
                     capabilities: [development]
                     profiles:
-                      standard: {quality_tier: STANDARD, model: deepseek-flash}
+                      standard: {quality_tier: STANDARD, model: placeholder}
                   - worker_id: alice
                     display_name: Alice
                     provider: anthropic
@@ -1255,8 +1255,8 @@ class TestStatusProbe:
         out = capsys.readouterr().out
         assert exit_code == 0
         assert "probe=disabled" in out
-        # deepseek was never probed at all (dana is disabled).
-        assert "deepseek:" not in out
+        # unconfigured-provider was never probed at all (pat is disabled).
+        assert "unconfigured-provider:" not in out
 
 
 class TestStandaloneWorkerRegistry:

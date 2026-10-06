@@ -86,7 +86,7 @@ class EngineError(Exception):
 class EngineConfigError(EngineError):
     """The ``aido.yaml`` or its referenced worker registry is invalid, or a
     configured provider could not be resolved/configured (e.g. a missing
-    API key for an enabled DeepSeek/Kimi worker)."""
+    API key for an enabled worker whose provider factory requires one)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,7 +274,7 @@ class OrchestratorEngine:
         # ``ProjectRuntime.open()``'s own ``provider_adapters``/
         # ``subprocess_runner``: production callers never set these. A
         # test passes fakes here instead of a real Claude/Codex/Vibe/
-        # DeepSeek/Kimi probe or a real ``ralph`` subprocess.
+        # Gravity probe or a real ``ralph`` subprocess.
         self._provider_adapters = provider_adapters
         self._subprocess_runner = subprocess_runner
 

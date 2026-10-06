@@ -14,17 +14,15 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
 - **Workflow** : WorkItem Flow — le seul workflow d'exécution de WorkItem
   implémenté (`GOVERNED_FULL` retiré avant la première release publique,
   2026-09-18 ; `WorkflowMode` lui-même supprimé, un seul mode restant).
-- **Providers/workers** (`config/workers.yaml`, source de vérité) : 9
-  workers déclarés (7 activés), **6 providers de premier niveau** :
-  `alice`/`bob` (anthropic/claude_code), `victor`/`oscar` (openai/codex),
-  `milo`/`juno` (mistral/vibe, `development` uniquement), `gravity`
-  (gravity/agy, `development` uniquement, `enabled: true`, exception
-  volontaire à un seul worker — voir `ROADMAP.md` §13, P19), `dana`/`kai`
-  (deepseek/kimi via `claude_code` redirigé, `development` uniquement,
-  **`enabled: false`**, clé API requise, pas encore de preuve
-  d'exécution réelle ; voir `ROADMAP.md` §7/§13).
-- **Tests offline** : 1387 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
-  2026-09-28 après P19), 1 avertissement de collecte préexistant
+- **Providers/workers** (`config/workers.yaml`, source de vérité) : **8
+  workers actifs, 4 providers de premier niveau**, tous `VALIDATED` :
+  Alice/Lydie (anthropic/claude_code), Victor/Yannick (openai/codex),
+  Nathaniel/Juno (mistral/vibe, `development` uniquement), Arthur/Nora
+  (gravity/agy, `development` uniquement). L'état de quota Gravity provient
+  du probe read-only `agy -p "/usage" --output-format json`. Voir
+  `ROADMAP.md` §13, P19/P20.
+- **Tests offline** : 1374 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
+  2026-09-28 après P20), 1 avertissement de collecte préexistant
   (`TestChangeAuthorization`). Snapshot, pas un contrat ; le compte
   courant fait foi dans la sortie de `pytest -q`.
 - **Roman Numerals** (pilote externe) : `PASS`.
@@ -50,12 +48,9 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   commit, working tree propre et `aido validate` OK. Voir `ROADMAP.md` §13
   et `docs/PROJECT_CONFIG.md`.
 - **Développement actif** : aucun.
-- **6 providers implémentés, 4 validés, 2 en attente de validation réelle** :
-  Anthropic/OpenAI/Mistral/Gravity `VALIDATED` ; DeepSeek/Kimi `IMPLEMENTED — REAL
-  VALIDATION PENDING`.
-- **P3 (DeepSeek + Kimi comme providers de premier niveau)** :
-  implémentation `DONE`, validation réelle `PENDING` (2026-09-19). Voir
-  `ROADMAP.md` §7/§13. **P4 (étude build-vs-reuse Mammouth AI)** :
+- **4 providers, tous `VALIDATED`** : Anthropic/OpenAI/Mistral/Gravity.
+- **P3 (DeepSeek + Kimi)** : `RETIRÉ` (P20, 2026-09-28), faute de preuve
+  d'exécution réelle. Voir `ROADMAP.md` §13. **P4 (étude build-vs-reuse Mammouth AI)** :
   `RETIRÉ`. Étude menée, agrégateur jugé d'intérêt économique/
   architectural insuffisant face à l'intégration directe de providers
   (décision utilisateur, 2026-09-19), aucune dépendance gateway/agrégateur
@@ -200,12 +195,8 @@ Chronologie détaillée entièrement récupérable via `git log` et
 - P4 (étude Mammouth) menée puis close `RETIRÉ` : agrégateur jugé d'intérêt
   économique/architectural insuffisant face à l'intégration directe de
   providers (décision utilisateur, 2026-09-19).
-- P3 : DeepSeek et Kimi intégrés comme providers de premier niveau, sur
-  cette base, en réutilisant `ClaudeCodeAdapter` (redirection
-  `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` documentée officiellement par
-  les deux providers) plutôt qu'un second client HTTP ; workers `dana`/`kai`
-  ajoutés à `config/workers.yaml`, désactivés par défaut (clé API requise,
-  pas encore de preuve d'exécution réelle). Voir `ROADMAP.md` §7/§13.
+- P3 : DeepSeek et Kimi intégrés (2026-09-19) puis retirés (P20,
+  2026-09-28) faute de preuve d'exécution réelle.
 - P13 (priorité 1) : découplage moteur / externalisation AIDO Code.
   Façade publique `orchestrator.engine.OrchestratorEngine` exposée,
   masquant `ProjectRuntime`/`MVPManager`/`WorkerSelector`/`QuotaManager`/
