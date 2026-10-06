@@ -91,7 +91,7 @@ from typing import Awaitable, Callable, Iterator, Mapping, Sequence
 
 from orchestrator.execution_policy import ExecutionPermissionMode
 from orchestrator.execution_store import ExecutionRecord, ExecutionStore
-from orchestrator.posix_subprocess import OutputObserver, run_in_new_process_group
+from orchestrator.posix_subprocess import HeartbeatObserver, OutputObserver, run_in_new_process_group
 from orchestrator.qa_protection import hash_file
 from orchestrator.worker_selector import Worker
 
@@ -388,8 +388,13 @@ class ExecutionRequest:
     #: Optional per-execution progressive output observer ``(stream, text)``
     #: (P21-02); combined with the engine-wide one, always failure-isolated.
     output_observer: OutputObserver | None = field(default=None, compare=False, repr=False)
+    #: Optional temporal heartbeat ``(elapsed_seconds)`` (P21-03): only
+    #: "still running"; failure-isolated like the output observer.
+    heartbeat_observer: HeartbeatObserver | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
+        if self.heartbeat_observer is not None and not callable(self.heartbeat_observer):
+            raise TypeError("ExecutionRequest.heartbeat_observer must be callable")
         if self.output_observer is not None and not callable(self.output_observer):
             raise TypeError("ExecutionRequest.output_observer must be callable")
         for name in ("execution_id", "task_id", "role", "instructions", "initial_event_topic", "model"):
@@ -652,12 +657,16 @@ def _tail(data: bytes) -> str:
     return "..." + text[-_MAX_LAST_OUTPUT_CHARS:]
 
 
-def _accepts_on_output(runner: object) -> bool:
+def _accepts_kwarg(runner: object, name: str) -> bool:
     try:
         parameters = inspect.signature(runner).parameters.values()  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return False
-    return any(p.name == "on_output" or p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
+    return any(p.name == name or p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
+
+
+def _accepts_on_output(runner: object) -> bool:
+    return _accepts_kwarg(runner, "on_output")
 
 
 def _bounded(data: bytes) -> str:
@@ -1010,9 +1019,22 @@ def _guard_observer(observer: OutputObserver | None) -> OutputObserver | None:
     return observe_safely
 
 
+def _guard_heartbeat(observer: HeartbeatObserver | None) -> HeartbeatObserver | None:
+    if observer is None:
+        return None
+
+    def beat_safely(elapsed: float) -> None:
+        try:
+            observer(elapsed)
+        except Exception:
+            logger.warning("heartbeat observer failed; ignored", exc_info=True)
+
+    return beat_safely
+
+
 async def _default_subprocess_runner(
     args: Sequence[str], cwd: Path, timeout: float, *, env: Mapping[str, str] | None = None,
-    on_output: OutputObserver | None = None,
+    on_output: OutputObserver | None = None, on_heartbeat: HeartbeatObserver | None = None,
 ) -> tuple[int, bytes, bytes]:
     """``env`` is keyword-only with a ``None`` default so this remains a
     drop-in ``SubprocessRunner`` (3 positional args) for any caller
@@ -1035,7 +1057,8 @@ async def _default_subprocess_runner(
     unchanged to ``RalphExecutionEngine.execute``, which finalizes the
     ``ExecutionRecord`` as ``INTERRUPTED`` before re-raising it."""
     try:
-        return await run_in_new_process_group(args, cwd, timeout, env={**os.environ, **(env or {})}, on_output=on_output)
+        return await run_in_new_process_group(args, cwd, timeout, env={**os.environ, **(env or {})},
+                                           on_output=on_output, on_heartbeat=on_heartbeat)
     except asyncio.TimeoutError:
         raise RalphTimeoutError(f"ralph run timed out after {timeout}s")
 
@@ -1092,6 +1115,7 @@ class RalphExecutionEngine:
             def observer(stream: str, chunk: str) -> None:
                 for each in observers:
                     each(stream, chunk)
+        heartbeat = _guard_heartbeat(request.heartbeat_observer)
         git_sha_before = _git_head_sha(request.workspace)
         untracked_before = _list_untracked_files_with_hashes(request.workspace)
 
@@ -1127,12 +1151,18 @@ class RalphExecutionEngine:
                         exit_code, stdout, stderr = await _default_subprocess_runner(
                             args, request.workspace, request.timeout_seconds,
                             env=_worker_git_identity_env(request.worker),
-                            on_output=observer,
+                            on_output=observer, on_heartbeat=heartbeat,
                         )
-                    elif observer is not None and _accepts_on_output(self._run_subprocess):
+                    elif (observer is not None and _accepts_on_output(self._run_subprocess)) or (
+                        heartbeat is not None and _accepts_kwarg(self._run_subprocess, "on_heartbeat")
+                    ):
+                        extra: dict[str, object] = {}
+                        if observer is not None and _accepts_on_output(self._run_subprocess):
+                            extra["on_output"] = observer
+                        if heartbeat is not None and _accepts_kwarg(self._run_subprocess, "on_heartbeat"):
+                            extra["on_heartbeat"] = heartbeat
                         exit_code, stdout, stderr = await self._run_subprocess(
-                            args, request.workspace, request.timeout_seconds,
-                            on_output=observer,  # type: ignore[call-arg]
+                            args, request.workspace, request.timeout_seconds, **extra,  # type: ignore[arg-type]
                         )
                     else:
                         exit_code, stdout, stderr = await self._run_subprocess(

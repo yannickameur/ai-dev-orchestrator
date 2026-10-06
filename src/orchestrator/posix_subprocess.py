@@ -35,6 +35,7 @@ import codecs
 import logging
 import os
 import signal
+import time
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
@@ -44,6 +45,14 @@ logger = logging.getLogger(__name__)
 #: is ``"stdout"`` or ``"stderr"``. Purely observational (see
 #: ``run_in_new_process_group``).
 OutputObserver = Callable[[str, str], None]
+
+#: Heartbeat callback: ``(elapsed_seconds)`` — real wall-clock time since
+#: the process was launched. Carries no output, no progress claim.
+HeartbeatObserver = Callable[[float], None]
+
+#: Default silence (no stdout/stderr byte) after which one heartbeat is
+#: emitted, then one per further silent interval. Bounded: never a busy loop.
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 15.0
 
 #: Upper bound, in characters, of any single chunk handed to an
 #: ``OutputObserver`` — a line longer than this is split.
@@ -59,6 +68,8 @@ GRACE_PERIOD_SECONDS = 5.0
 async def run_in_new_process_group(
     argv: Sequence[str], cwd: Path, timeout: float, *, env: Mapping[str, str] | None = None,
     on_output: OutputObserver | None = None,
+    on_heartbeat: HeartbeatObserver | None = None,
+    heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
 ) -> tuple[int, bytes, bytes]:
     """Runs ``argv`` in its own POSIX session/process group
     (``start_new_session=True``) so the whole group — not just the
@@ -94,17 +105,21 @@ async def run_in_new_process_group(
         start_new_session=True,
     )
     try:
-        if on_output is None:
+        if on_output is None and on_heartbeat is None:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
         else:
-            stdout, stderr = await asyncio.wait_for(_communicate_observed(process, on_output), timeout=timeout)
+            stdout, stderr = await asyncio.wait_for(
+                _communicate_observed(process, on_output, on_heartbeat, heartbeat_interval), timeout=timeout,
+            )
     except (asyncio.TimeoutError, asyncio.CancelledError):
         await _terminate_process_group(process)
         raise
     return process.returncode, stdout, stderr
 
 
-def _notify(on_output: OutputObserver, stream: str, text: str) -> None:
+def _notify(on_output: OutputObserver | None, stream: str, text: str) -> None:
+    if on_output is None:
+        return
     for start in range(0, len(text), MAX_OBSERVED_CHUNK_CHARS):
         try:
             on_output(stream, text[start:start + MAX_OBSERVED_CHUNK_CHARS])
@@ -112,7 +127,10 @@ def _notify(on_output: OutputObserver, stream: str, text: str) -> None:
             logger.warning("output observer failed for %s; ignored", stream, exc_info=True)
 
 
-async def _drain(reader: asyncio.StreamReader, stream: str, on_output: OutputObserver) -> bytes:
+async def _drain(
+    reader: asyncio.StreamReader, stream: str, on_output: OutputObserver | None,
+    activity: list[float] | None = None,
+) -> bytes:
     """Reads ``reader`` to EOF, returning every byte read and notifying
     ``on_output`` line by line (plus the final unterminated fragment)."""
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -123,6 +141,8 @@ async def _drain(reader: asyncio.StreamReader, stream: str, on_output: OutputObs
         if not data:
             break
         captured += data
+        if activity is not None:
+            activity[0] = time.monotonic()
         pending += decoder.decode(data)
         *lines, pending = pending.split("\n")
         for line in lines:
@@ -136,17 +156,44 @@ async def _drain(reader: asyncio.StreamReader, stream: str, on_output: OutputObs
     return bytes(captured)
 
 
+async def _heartbeat(
+    on_heartbeat: HeartbeatObserver, interval: float, started: float, activity: list[float],
+) -> None:
+    """Emits one heartbeat per full ``interval`` of output silence."""
+    while True:
+        await asyncio.sleep(max(activity[0] + interval - time.monotonic(), 0.0))
+        now = time.monotonic()
+        if now - activity[0] < interval:
+            continue  # output arrived meanwhile — silence restarted
+        activity[0] = now
+        try:
+            on_heartbeat(now - started)
+        except Exception:  # observational only
+            logger.warning("heartbeat observer failed; ignored", exc_info=True)
+
+
 async def _communicate_observed(
-    process: "asyncio.subprocess.Process", on_output: OutputObserver,
+    process: "asyncio.subprocess.Process", on_output: OutputObserver | None,
+    on_heartbeat: HeartbeatObserver | None = None,
+    heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
 ) -> tuple[bytes, bytes]:
     assert process.stdout is not None and process.stderr is not None
+    started = time.monotonic()
+    activity = [started]
     tasks = [
-        asyncio.ensure_future(_drain(process.stdout, "stdout", on_output)),
-        asyncio.ensure_future(_drain(process.stderr, "stderr", on_output)),
+        asyncio.ensure_future(_drain(process.stdout, "stdout", on_output, activity)),
+        asyncio.ensure_future(_drain(process.stderr, "stderr", on_output, activity)),
     ]
+    beat = None
+    if on_heartbeat is not None:
+        beat = asyncio.ensure_future(_heartbeat(on_heartbeat, max(heartbeat_interval, 0.01), started, activity))
+        tasks.append(beat)
     try:
-        stdout, stderr = await asyncio.gather(*tasks)
+        stdout, stderr = await asyncio.gather(*tasks[:2])
         await process.wait()
+        if beat is not None:
+            beat.cancel()
+            await asyncio.gather(beat, return_exceptions=True)
     except BaseException:
         for task in tasks:
             task.cancel()

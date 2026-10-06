@@ -192,3 +192,65 @@ class TestProgressiveOutput:
             asyncio.run(_drive())
         time.sleep(0.3)
         assert not _pid_alive(_read_child_pid(tmp_path))
+
+
+class TestHeartbeat:
+    @staticmethod
+    def _run(script: str, tmp_path: Path, interval: float = 0.2, heartbeat=None):
+        events: list[tuple[str, object]] = []
+
+        def _beat(elapsed: float) -> None:
+            events.append(("beat", elapsed))
+            if heartbeat:
+                heartbeat(elapsed)
+
+        result = asyncio.run(run_in_new_process_group(
+            ["sh", "-c", script], tmp_path, 10,
+            on_output=lambda s, t: events.append(("out", t)),
+            on_heartbeat=_beat, heartbeat_interval=interval,
+        ))
+        return result, events
+
+    def test_silence_emits_bounded_heartbeats_with_real_elapsed(self, tmp_path: Path) -> None:
+        (code, out, _), events = self._run("sleep 1", tmp_path)
+        beats = [e for k, e in events if k == "beat"]
+        assert code == 0 and out == b""
+        assert 2 <= len(beats) <= 5  # ~1s / 0.2s, never a busy loop
+        assert beats == sorted(beats) and 0.15 <= beats[0] < 0.6 and beats[-1] <= 1.5
+
+    def test_output_resumes_after_heartbeat_and_resets_silence(self, tmp_path: Path) -> None:
+        _, events = self._run("sleep 0.5; echo back; sleep 0.1; echo again", tmp_path)
+        kinds = [k for k, _ in events]
+        assert "beat" in kinds
+        assert kinds.index("beat") < kinds.index("out")
+        assert [t for k, t in events if k == "out"] == ["back\n", "again\n"]
+        assert kinds.count("beat") <= 3  # chatty phase emits none
+
+    def test_no_heartbeat_while_output_keeps_flowing(self, tmp_path: Path) -> None:
+        _, events = self._run("for i in 1 2 3 4 5; do echo $i; sleep 0.1; done", tmp_path, interval=0.4)
+        assert all(k != "beat" for k, _ in events)
+
+    def test_failing_heartbeat_callback_is_isolated(self, tmp_path: Path) -> None:
+        def boom(_: float) -> None:
+            raise RuntimeError("renderer bug")
+
+        (code, out, _), events = self._run("sleep 0.5; echo ok", tmp_path, heartbeat=boom)
+        assert code == 0 and out == b"ok\n"
+        assert any(k == "beat" for k, _ in events)
+
+    def test_heartbeat_without_output_observer_keeps_captures(self, tmp_path: Path) -> None:
+        beats: list[float] = []
+        code, out, err = asyncio.run(run_in_new_process_group(
+            ["sh", "-c", "sleep 0.5; echo ok; echo e >&2"], tmp_path, 10,
+            on_heartbeat=beats.append, heartbeat_interval=0.2,
+        ))
+        assert (code, out, err) == (0, b"ok\n", b"e\n") and beats
+
+    def test_timeout_stops_heartbeats_and_still_raises(self, tmp_path: Path) -> None:
+        beats: list[float] = []
+        with pytest.raises(asyncio.TimeoutError):
+            asyncio.run(run_in_new_process_group(
+                ["sh", "-c", "sleep 30"], tmp_path, 0.6,
+                on_heartbeat=beats.append, heartbeat_interval=0.2,
+            ))
+        assert beats
