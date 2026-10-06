@@ -214,6 +214,12 @@ logger = logging.getLogger(__name__)
 
 _MAX_DELIVERY_ERROR_CHARS = 200
 _MAX_DIAGNOSTIC_OUTPUT_CHARS = 600
+#: P21-04: per-execution bound on the *public* ``execution.output`` flow
+#: (events, characters, events per one-second window). Display-only: the
+#: subprocess is always fully drained and final captures are untouched.
+_MAX_LIVE_OUTPUT_EVENTS = 500
+_MAX_LIVE_OUTPUT_CHARS = 64_000
+_MAX_LIVE_OUTPUT_EVENTS_PER_SECOND = 100
 _RALPH_REASON_RE = re.compile(r"^## Reason\s*\n\s*(\S+)", re.MULTILINE)
 _RALPH_ITERATIONS_RE = re.compile(r"^- Iterations:\s*(\d+)", re.MULTILINE)
 _NEXT_ACTION_AFTER_FAILURE = (
@@ -630,6 +636,7 @@ class MVPManager:
             ))
         delivery = {"failures": 0, "last_error": None}
         observed = {"text": "", "stream": None}
+        live = {"events": 0, "chars": 0, "window_start": None, "window_events": 0, "truncated": False}
 
         def observe_output(stream: str, text: str) -> None:
             # A timeout returns no final stdout/stderr. Retain a bounded
@@ -639,7 +646,36 @@ class MVPManager:
             observed["stream"] = stream
             if on_event is None:
                 return
-            deliver("execution.output", {"stream": stream, "text": text})
+            if live["truncated"]:
+                return
+            now = self._clock()
+            if live["window_start"] is None or (now - live["window_start"]).total_seconds() >= 1.0:
+                live["window_start"], live["window_events"] = now, 0
+            reason = None
+            if live["events"] >= _MAX_LIVE_OUTPUT_EVENTS:
+                reason = "max_events"
+            elif live["window_events"] >= _MAX_LIVE_OUTPUT_EVENTS_PER_SECOND:
+                reason = "max_event_rate"
+            elif live["chars"] >= _MAX_LIVE_OUTPUT_CHARS:
+                reason = "max_chars"
+            elif live["chars"] + len(text) > _MAX_LIVE_OUTPUT_CHARS:  # deliver the prefix that still fits
+                text = text[:_MAX_LIVE_OUTPUT_CHARS - live["chars"]]
+                reason = "max_chars"
+            if live["chars"] >= _MAX_LIVE_OUTPUT_CHARS or reason in ("max_events", "max_event_rate"):
+                text = ""
+            if text:
+                live["events"] += 1
+                live["window_events"] += 1
+                live["chars"] += len(text)
+                deliver("execution.output", {"stream": stream, "text": text})
+            if reason is not None:
+                # Single explicit signal; later chunks are dropped from the
+                # live flow only (the worker keeps being drained).
+                live["truncated"] = True
+                deliver("execution.output_truncated", {
+                    "reason": reason, "delivered_events": live["events"],
+                    "delivered_chars": live["chars"],
+                })
 
         def observe_heartbeat(elapsed_seconds: float) -> None:
             # P21-03: purely temporal "still running" signal — real elapsed
