@@ -101,9 +101,10 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   diagnostic d'échec typé et heartbeat livrés dans le moteur. Le rendu
   terminal a été livré dans AIDO Code M3.1. Son acceptance réelle a révélé
   un défaut de sûreté du contenu public ; voir P21.1 proposé ci-dessous.
-- **P21.1 (Safe public execution output) : `PROPOSÉ`, non implémenté**
-  (2026-10-06), voir §13. Séparer l'observation publiquement affichable
-  des captures brutes à la frontière d'exécution moteur.
+- **P21.1 (Safe public execution output) : `APPROUVÉ`, implémentation
+  autorisée** (GO humain 2026-10-06), voir §13. Séparer l'observation
+  publiquement affichable des captures brutes à la frontière d'exécution
+  moteur.
 
 ## 3. Ce qui existe aujourd'hui
 
@@ -2948,7 +2949,7 @@ dans une autre session ne relève pas du nettoyage du groupe POSIX.
 WorkItems, mais son acceptance live reste partielle : une sortie brute
 Claude a exposé un bloc structuré de raisonnement privé. Voir P21.1.
 
-### P21.1 — Safe public execution output — `PROPOSÉ` (2026-10-06)
+### P21.1 — Safe public execution output — `APPROUVÉ` (GO humain 2026-10-06)
 
 **Défaut observé** : pendant le run gouverné AIDO Code M3.1, un bloc
 Claude `thinking` présent dans une ligne JSON structurée a été affiché
@@ -2969,10 +2970,9 @@ Code ne classe pas le contenu. Sur échec, `RalphExecutionEngine` remplit
 `_build_failure_diagnostic()` choisit cet extrait avant le dernier texte
 observé : la fuite peut donc réapparaître dans `FailureDiagnostic`.
 
-**Décision d'architecture proposée : C, filtre structuré minimal à la
-frontière moteur/backend.** Aucune modification fonctionnelle n'est
-autorisée par ce seul document ; approbation explicite du contrat puis
-WorkItem Flow requis. Ordre de réutilisation audité :
+**Décision d'architecture : C, filtre structuré minimal à la frontière
+moteur/backend.** Le contrat est approuvé ; l'implémentation doit passer
+par le WorkItem Flow. Ordre de réutilisation audité :
 
 - **A indisponible dans le mode courant** : `-q` est déjà actif et la
   fuite est réelle. `claude --help` 2.1.291 n'offre pas de garantie
@@ -3108,7 +3108,7 @@ exécuter WI-P21.1-01/02 par le WorkItem Flow. Ne pas commencer M4.
 | P18 | Live execution events and graceful interruption | `OrchestratorEngine` doit-il exposer des événements publics fins (DEV A/DEV B/DEV FIX/QA/Git) en temps réel, avec les métadonnées réellement décidées, et traiter explicitement une interruption pendant `run()` ? | **`DONE`** (GO humain 2026-09-26) — callback `on_event` optionnel ; **P18-01/P18-02/P18-03 `DONE`** (transport live + métadonnées fines DEV A/B/FIX/QA/Git, `EngineEvent` dans `orchestrator.engine_events`, `RunResult.events` inchangé, interruption/recovery DEV+QA) ; Adaptive Execution non branché ; recovery étendu (jamais dupliqué) ; voir sous-section P18 ci-dessus |
 | P19 | Gravity worker/backend | Un worker Gravity (`agy`), exécutable via Ralph en réutilisant le mécanisme custom backend déjà employé par Vibe, mérite-t-il d'être intégré ? | **`APPROUVÉ`** (GO humain 2026-09-28) — Phase A (spike réel) `DONE` ; implémentation en cours (branche `feature/p19-gravity-worker-backend`) ; pas une dépendance de M3 ; voir sous-section P19 ci-dessus |
 | P21 | Live worker execution observability | Comment rendre visibles les sorties réelles du worker et les échecs sans verdict métier dans `aido run`, sans scraping frontend ni retry ? | **`DONE` (2026-10-06)** — WorkItems P21-01/02/03/04 livrés, PR #36, CI Python 3.10/3.12 et acceptance Gravity jetable ; voir sous-section P21 ci-dessus |
-| P21.1 | Safe public execution output | Comment garantir que sorties et diagnostics publics n'exposent aucun bloc de raisonnement privé ? | **`PROPOSÉ` (2026-10-06)** — architecture C retenue après audit de Ralph/Claude installés ; deux WorkItems documentés, aucune implémentation ni approbation d'exécution ; voir sous-section P21.1 ci-dessus |
+| P21.1 | Safe public execution output | Comment garantir que sorties et diagnostics publics n'exposent aucun bloc de raisonnement privé ? | **`APPROUVÉ` (GO humain 2026-10-06)** — architecture C retenue après audit de Ralph/Claude installés ; deux WorkItems autorisés via le WorkItem Flow ; voir sous-section P21.1 ci-dessus |
 | P13.5 | Frontière moteur/librairie : injection du `WorkerRegistry`, `workers:` optionnel | `aido.yaml` doit-il rester la source de configuration complète du pool de workers, ou le moteur doit-il accepter un `WorkerRegistry` construit/injecté par l'application appelante (AIDO Code) ? | **`DONE`** (2026-09-24) — `workers:` optionnel dans `ProjectConfig` ; `OrchestratorEngine`/`ProjectRuntime` acceptent `worker_registry=` ; `WorkerSelector` reste seul propriétaire de la sélection ; chemin legacy fichier intégralement conservé et testé ; voir sous-section P13.5 ci-dessus |
 | P13.6 | Retrait de la commande produit `aido` (cutover AIDO Code) | AIDO Code ayant atteint son propre cutover produit, `ai-dev-orchestrator` doit-il cesser d'installer la commande `aido` ? | **`DONE`** (2026-09-24) — `[project.scripts]` retiré de `pyproject.toml` ; `orchestrator.cli`/`default_workers.yaml` conservés, legacy/internes, toujours réellement testés ; aucun binaire de compatibilité ajouté (YAGNI) ; voir sous-section P13.6 ci-dessus |
 | P13.7 | Pre-execution state safety | Le cutover M8 d'AIDO Code a révélé un défaut réel (`WI-M8-01` resté `RUNNING` durablement, sans `ExecutionRecord`) — un WorkItem/son MVP doivent-ils n'être marqués `RUNNING` qu'une fois tous les prérequis pré-exécution (préparation Git notamment) réellement satisfaits ? | **`DONE`** (2026-09-25) — `mark_mvp_running`/`mark_work_item_running` déplacés après les prérequis dans `_execute_work_item` et `_resume_dev_b_wait` (deux sites réels) ; invariant de recovery existant inchangé ; 4 nouveaux tests, chacun vérifié rouge sans le correctif ; `WI-M8-01` non modifié rétroactivement (YAGNI) ; voir sous-section P13.7 ci-dessus |

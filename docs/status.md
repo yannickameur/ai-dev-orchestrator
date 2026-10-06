@@ -50,8 +50,9 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
 - **Développement actif** : P21 transport moteur terminé. AIDO Code
   M3.1 a livré ses trois WorkItems, mais l'acceptance live reste
   `PARTIAL` : une ligne JSON Claude contenant un bloc `thinking` a été
-  affichée. P21.1 est préparé documentairement, architecture C proposée,
-  sans approbation d'implémentation ni code fonctionnel. Voir `ROADMAP.md`.
+  affichée. P21.1 est approuvé pour implémentation via le WorkItem Flow,
+  avec architecture C (filtre structuré à la frontière moteur/backend).
+  Aucun code fonctionnel P21.1 n'est encore livré. Voir `ROADMAP.md`.
 - **P21 (Live worker execution observability)** : `DONE` (2026-10-06),
   WorkItems P21-01/02/03/04 livrés via le WorkItem Flow moteur et PR #36.
   Le moteur émet `execution.output`, `execution.output_truncated` et
