@@ -59,7 +59,7 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   métier, aucun DEV FIX, QA non atteinte. WI-P21.1-02 est `BLOCKED`.
   Aucun de ces deux WorkItems ne sera rouvert ; `88dd945` n'est pas
   livré. La reprise documentaire définit WI-P21.1-03/04 sous le nouvel
-  MVP `p21-1-recovery`, sans lancer celui-ci. L'audit en lecture seule du
+  MVP `p21-1-recovery`. L'audit en lecture seule du
   2026-10-09 n'a retrouvé ni l'état SQLite historique déclaré sous
   `/tmp/ai-dev-orchestrator-p21-1-state`, ni sauvegarde exploitable : les
   statuts et `ExecutionRecord` historiques ne peuvent pas être revérifiés
@@ -70,13 +70,21 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   Le worktree propre `~/projects/ai-dev-orchestrator-p21-1-recovery` est
   sur `main` ; la configuration externe
   `~/.local/state/ai-dev-orchestrator/recovery-configs/p21-1/aido.yaml`
-  y pointe, avec une nouvelle racine persistante prévue sous
+  y pointe, avec une nouvelle racine persistante sous
   `~/.local/state/ai-dev-orchestrator/projects/ai-dev-orchestrator-p21-1-recovery/`.
-  La sauvegarde locale prévue est séparée sous
-  `~/.local/state/ai-dev-orchestrator/backups/ai-dev-orchestrator-p21-1-recovery/`,
-  sur le même disque. Ni l'état de reprise ni cette sauvegarde ne sont
-  créés ; aucun bootstrap ou WorkItem de reprise n'a commencé. Un GO
-  humain distinct reste requis pour le bootstrap, puis pour l'exécution ;
+  Après un GO humain distinct, le bootstrap a réussi le 2026-10-09 avec
+  `umask 077` : sept bases SQLite privées (`0600`) ont été créées dans
+  la nouvelle racine indépendante (`0700`), appartenant à `jarvis`.
+  Le projet `ai-dev-orchestrator-p21-1` a pour `current_mvp_id`
+  `p21-1-recovery` ; WI-P21.1-03 est `ready`, WI-P21.1-04 est `planned`
+  et dépend de 03. Aucun WorkItem n'est `running` ; il y a zéro
+  `ExecutionRecord`. La sauvegarde initiale cohérente se trouve sous
+  `~/.local/state/ai-dev-orchestrator/backups/ai-dev-orchestrator-p21-1-recovery/20261009T163740088865Z-bootstrap/` :
+  les sept copies SQLite ont passé `integrity_check`, avec permissions
+  privées (`0700`/`0600`). Elle est sur le même disque que l'état actif et
+  ne protège pas d'une panne physique. L'ancien état historique n'a pas
+  été restauré ; aucun WorkItem de reprise ni provider n'a été lancé.
+  Un GO humain distinct reste requis avant l'exécution gouvernée ;
   aucune approbation automatique après 20 minutes ne s'applique. P21.1
   reste `PARTIAL / RECOVERY REQUIRED`, M3.1 reste `PARTIAL`, et aucun
   code fonctionnel P21.1 n'a atterri sur `main`. Voir `ROADMAP.md`.
