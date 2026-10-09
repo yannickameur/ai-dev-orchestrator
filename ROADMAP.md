@@ -101,8 +101,8 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   diagnostic d'échec typé et heartbeat livrés dans le moteur. Le rendu
   terminal a été livré dans AIDO Code M3.1. Son acceptance réelle a révélé
   un défaut de sûreté du contenu public ; voir P21.1 proposé ci-dessous.
-- **P21.1 (Safe public execution output) : `APPROUVÉ`, implémentation
-  autorisée** (GO humain 2026-10-06), voir §13. Séparer l'observation
+- **P21.1 (Safe public execution output) : `PARTIAL / RECOVERY REQUIRED`**
+  (GO humain 2026-10-06), voir §13. Séparer l'observation
   publiquement affichable des captures brutes à la frontière d'exécution
   moteur.
 
@@ -2949,7 +2949,7 @@ dans une autre session ne relève pas du nettoyage du groupe POSIX.
 WorkItems, mais son acceptance live reste partielle : une sortie brute
 Claude a exposé un bloc structuré de raisonnement privé. Voir P21.1.
 
-### P21.1 — Safe public execution output — `APPROUVÉ` (GO humain 2026-10-06)
+### P21.1 — Safe public execution output — `PARTIAL / RECOVERY REQUIRED` (GO humain 2026-10-06)
 
 **Défaut observé** : pendant le run gouverné AIDO Code M3.1, un bloc
 Claude `thinking` présent dans une ligne JSON structurée a été affiché
@@ -3028,8 +3028,82 @@ Ne reproduire aucun contenu privé dans les preuves. Après livraison,
 rejouer AIDO Code M3.1 depuis un runner neuf avant de le clore ; aucun
 filtre provider dans son frontend.
 
-**Next** : faire approuver ce contrat documentaire, puis seulement
-exécuter WI-P21.1-01/02 par le WorkItem Flow. Ne pas commencer M4.
+**Première tentative gouvernée (2026-10-06)** : WI-P21.1-01 est `FAILED`
+terminal pendant DEV B ; WI-P21.1-02 est `BLOCKED` en conséquence.
+DEV A Alice/Anthropic/Claude Code (`sonnet`, exécution `39a8e57a…`) a
+réussi (`exit_code=0`) et produit le commit `88dd945`. DEV B
+Arthur/Gravity (`claude-sonnet-4-6`, exécution `70be0ada…`) a terminé
+sur Ralph `max_iterations` après cinq itérations (`exit_code=2`), sans
+verdict métier terminal ni DEV FIX. QA n'a pas été atteinte. La branche
+de travail `work/wi-p21.1-01` porte ensuite `077cd26`, commit automatique
+qui ajoute un `aido.yaml` local ; ce fichier ne doit pas être livré.
+La suite de cette branche a donné 177 PASS ciblés et 1420 PASS globaux
+(un avertissement préexistant), mais aucun de ces résultats ne remplace
+la revue DEV B et la QA déterministe. `88dd945` n'est pas une
+fonctionnalité livrée. Ni l'un ni l'autre des WorkItems historiques ne
+sera rouvert, réaffecté ou modifié dans SQLite.
+
+**Audit technique en lecture seule de `88dd945`** : l'approche couvre
+le point de filtrage Claude dans le moteur, la reconstruction NDJSON
+entre chunks, les blocs `thinking`/`redacted_thinking`/`tool_use`, les
+types inconnus, la sortie textuelle explicitement sélectionnée et la
+projection de stdout dans `last_output`. Des écarts au contrat demeurent :
+une ligne surdimensionnée complète dans un seul chunk échappe à la borne ;
+un JSON valide sans fin de ligne est publié par `finish()` ; `stderr`
+brut reste public via l'observer et prioritaire dans `last_output` ; le
+texte des exceptions du callback peut entrer dans
+`last_output_delivery_error`. La sûreté de tous les champs publics,
+notamment sur timeout/annulation, n'est donc pas établie. Aucun
+cherry-pick ou merge manuel de ce commit n'est autorisé ; un nouveau
+DEV A peut le consulter comme preuve technique en lecture seule.
+
+**WI-P21.1-03 — Recover safe observable-output boundary**. Dépendances :
+aucune. Capacité : `development`. Livrer le contrat de WI-P21.1-01 dans
+un nouveau WorkItem gouverné. DEV A possède le code qu'il commite ; il
+peut lire `git show 88dd945` et `git diff 1400ad3..88dd945`, sans copie
+aveugle, cherry-pick ni réemploi du runtime échoué. Invariant public
+P21.1 inchangé : `execution.output` est une observation affichable ;
+reconstruire le NDJSON Claude entre chunks avec tampon et taille de
+ligne bornés ; ne publier que les champs structurés opérationnels
+explicitement autorisés. Aucun bloc privé/de raisonnement/d'outil,
+type inconnu, donnée malformée, incomplète ou surdimensionnée ne doit
+atteindre événements, `FailureDiagnostic.last_output`, `summary` ou
+autres champs publics, y compris stderr et erreurs de callback. Conserver
+les sorties sûres, heartbeat, troncature calculée sur le texte publiable,
+timeout, annulation, nettoyage du groupe de processus et régressions
+Codex/Vibe/Gravity. Tests synthétiques `PRIVATE_REASONING_SENTINEL`,
+suite offline complète, zéro appel réel à un provider depuis pytest.
+Le diff livré doit exclure `aido.yaml` et toute autre configuration
+d'exécution locale ; aucune modification fonctionnelle du frontend.
+
+**WI-P21.1-04 — Real acceptance and regression after recovery**. Dépend
+de WI-P21.1-03. Capacité : `development`. Exiger la suite pytest moteur
+complète, CI Python 3.10 et 3.12 `PASS`, puis acceptance jetable réelle
+Claude/Ralph dans un processus neuf : exposition de raisonnement privé
+dans les événements publics = `NO`, dans `FailureDiagnostic` = `NO` ;
+sortie opérationnelle sûre conservée si disponible, heartbeat, faits
+terminaux exacts et aucun processus résiduel. Rejouer ensuite l'acceptance
+AIDO Code M3.1 depuis un runner neuf avec le moteur corrigé ; aucun filtre
+spécifique au provider dans le frontend. M3.1 ne peut être clos que si
+cette acceptance réelle passe.
+
+**Préparation du nouveau runtime** : MVP `p21-1-recovery`, WorkItems
+runtime `wi-p21.1-03` et `wi-p21.1-04`, même identité de projet et même
+racine d'état que la première tentative seulement après vérification
+en lecture seule de l'historique. `ProjectRuntime.bootstrap()` accepte
+des MVP successifs sous un même projet et conserve les anciens WorkItems,
+mais écrit aussi le pointeur `current_mvp_id` : ne pas l'appeler pendant
+cette préparation. Le répertoire d'état déclaré par la configuration
+historique (`/tmp/ai-dev-orchestrator-p21-1-state`) était absent lors de
+l'audit du 2026-10-09 ; retrouver/restaurer l'état original et vérifier
+ses deux statuts terminaux avant tout bootstrap, sinon échouer fermé.
+La configuration locale de reprise doit vivre hors du dépôt ; contrôler
+`git status --short` et le diff du commit fonctionnel avant la future
+exécution. Le commit accidentel reste dans la branche échouée comme
+preuve forensique. Cette préparation documentaire ne lance aucun WorkItem.
+
+**Next** : vérifier l'état historique et faire gouverner WI-P21.1-03/04
+dans le nouveau MVP. Ne pas commencer M4.
 
 ### Ordre approuvé
 
@@ -3108,7 +3182,7 @@ exécuter WI-P21.1-01/02 par le WorkItem Flow. Ne pas commencer M4.
 | P18 | Live execution events and graceful interruption | `OrchestratorEngine` doit-il exposer des événements publics fins (DEV A/DEV B/DEV FIX/QA/Git) en temps réel, avec les métadonnées réellement décidées, et traiter explicitement une interruption pendant `run()` ? | **`DONE`** (GO humain 2026-09-26) — callback `on_event` optionnel ; **P18-01/P18-02/P18-03 `DONE`** (transport live + métadonnées fines DEV A/B/FIX/QA/Git, `EngineEvent` dans `orchestrator.engine_events`, `RunResult.events` inchangé, interruption/recovery DEV+QA) ; Adaptive Execution non branché ; recovery étendu (jamais dupliqué) ; voir sous-section P18 ci-dessus |
 | P19 | Gravity worker/backend | Un worker Gravity (`agy`), exécutable via Ralph en réutilisant le mécanisme custom backend déjà employé par Vibe, mérite-t-il d'être intégré ? | **`APPROUVÉ`** (GO humain 2026-09-28) — Phase A (spike réel) `DONE` ; implémentation en cours (branche `feature/p19-gravity-worker-backend`) ; pas une dépendance de M3 ; voir sous-section P19 ci-dessus |
 | P21 | Live worker execution observability | Comment rendre visibles les sorties réelles du worker et les échecs sans verdict métier dans `aido run`, sans scraping frontend ni retry ? | **`DONE` (2026-10-06)** — WorkItems P21-01/02/03/04 livrés, PR #36, CI Python 3.10/3.12 et acceptance Gravity jetable ; voir sous-section P21 ci-dessus |
-| P21.1 | Safe public execution output | Comment garantir que sorties et diagnostics publics n'exposent aucun bloc de raisonnement privé ? | **`APPROUVÉ` (GO humain 2026-10-06)** — architecture C retenue après audit de Ralph/Claude installés ; deux WorkItems autorisés via le WorkItem Flow ; voir sous-section P21.1 ci-dessus |
+| P21.1 | Safe public execution output | Comment garantir que sorties et diagnostics publics n'exposent aucun bloc de raisonnement privé ? | **`PARTIAL / RECOVERY REQUIRED`** — première tentative : WI-P21.1-01 `FAILED` en DEV B, WI-P21.1-02 `BLOCKED`, QA non atteinte ; reprise documentaire WI-P21.1-03/04 sous le nouveau MVP `p21-1-recovery` ; voir sous-section P21.1 ci-dessus |
 | P13.5 | Frontière moteur/librairie : injection du `WorkerRegistry`, `workers:` optionnel | `aido.yaml` doit-il rester la source de configuration complète du pool de workers, ou le moteur doit-il accepter un `WorkerRegistry` construit/injecté par l'application appelante (AIDO Code) ? | **`DONE`** (2026-09-24) — `workers:` optionnel dans `ProjectConfig` ; `OrchestratorEngine`/`ProjectRuntime` acceptent `worker_registry=` ; `WorkerSelector` reste seul propriétaire de la sélection ; chemin legacy fichier intégralement conservé et testé ; voir sous-section P13.5 ci-dessus |
 | P13.6 | Retrait de la commande produit `aido` (cutover AIDO Code) | AIDO Code ayant atteint son propre cutover produit, `ai-dev-orchestrator` doit-il cesser d'installer la commande `aido` ? | **`DONE`** (2026-09-24) — `[project.scripts]` retiré de `pyproject.toml` ; `orchestrator.cli`/`default_workers.yaml` conservés, legacy/internes, toujours réellement testés ; aucun binaire de compatibilité ajouté (YAGNI) ; voir sous-section P13.6 ci-dessus |
 | P13.7 | Pre-execution state safety | Le cutover M8 d'AIDO Code a révélé un défaut réel (`WI-M8-01` resté `RUNNING` durablement, sans `ExecutionRecord`) — un WorkItem/son MVP doivent-ils n'être marqués `RUNNING` qu'une fois tous les prérequis pré-exécution (préparation Git notamment) réellement satisfaits ? | **`DONE`** (2026-09-25) — `mark_mvp_running`/`mark_work_item_running` déplacés après les prérequis dans `_execute_work_item` et `_resume_dev_b_wait` (deux sites réels) ; invariant de recovery existant inchangé ; 4 nouveaux tests, chacun vérifié rouge sans le correctif ; `WI-M8-01` non modifié rétroactivement (YAGNI) ; voir sous-section P13.7 ci-dessus |
