@@ -122,8 +122,9 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   `~/projects/ai-dev-orchestrator-p21-1-acceptance-recovery` sur `main`.
   Aucun nouveau SQLite, bootstrap, provider ou WorkItem n'a été lancé.
   Les GO antérieurs et l'exception historique ne couvrent pas WI-05 ;
-  un GO humain explicite pour ce nouveau MVP, son bootstrap et son
-  exécution gouvernée est requis. L'approbation automatique de 20
+  une approbation humaine du nouveau MVP et de sa racine, puis un GO
+  distinct pour son bootstrap et un autre pour son exécution gouvernée
+  sont requis. L'approbation automatique de 20
   minutes ne concerne que les propositions roadmap. P21.1 reste
   `PARTIAL / RECOVERY REQUIRED`, AIDO Code M3.1 reste `PARTIAL`, M4
   n'est pas commencé. Voir `ROADMAP.md` §P21.1 pour le contrat WI-05.

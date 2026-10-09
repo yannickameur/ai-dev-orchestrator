@@ -3225,15 +3225,16 @@ l'exception `HISTORICAL_RUNTIME_STATE_UNAVAILABLE` et les GO antérieurs
 ne couvrent que `p21-1-recovery` et WI-03/04. La règle
 `ApprovalCoordinator` des 20 minutes ne s'applique qu'aux propositions
 roadmap/MVP, pas au traitement d'un échec terminal. Il faut une décision
-humaine explicite sur le nouveau MVP, sa racine, son bootstrap et le
-lancement gouverné de WI-05. Aucun ancien WorkItem, record ou store ne
+humaine explicite sur le nouveau MVP et sa racine, puis un GO distinct
+pour son bootstrap et un autre pour le lancement gouverné de WI-05.
+Aucun ancien WorkItem, record ou store ne
 sera muté. P21.1 reste `PARTIAL / RECOVERY REQUIRED` et M3.1 reste
 `PARTIAL` ; ne pas commencer M4.
 
 **Next** : faire valider explicitement cette nouvelle portée, puis
 contrôler `main` et la configuration candidate avant tout bootstrap.
-Après un GO distinct couvrant bootstrap et exécution, initialiser une
-seule fois le nouveau runtime, sauvegarder son état, puis lancer WI-05
+Après le GO de bootstrap, initialiser une seule fois le nouveau runtime
+et sauvegarder son état ; après un GO d'exécution séparé, lancer WI-05
 via le WorkItem Flow et n'acter la clôture qu'après toutes les preuves.
 
 ### Ordre approuvé
