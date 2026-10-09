@@ -222,6 +222,7 @@ _MAX_LIVE_OUTPUT_CHARS = 64_000
 _MAX_LIVE_OUTPUT_EVENTS_PER_SECOND = 100
 _RALPH_REASON_RE = re.compile(r"^## Reason\s*\n\s*(\S+)", re.MULTILINE)
 _RALPH_ITERATIONS_RE = re.compile(r"^- Iterations:\s*(\d+)", re.MULTILINE)
+_PUBLIC_RALPH_REASONS = frozenset({"max_iterations", "max_runtime_seconds"})
 _NEXT_ACTION_AFTER_FAILURE = (
     "Inspect the observed output and decide on a new governed WorkItem; "
     "the terminal WorkItem is never relaunched automatically."
@@ -238,7 +239,8 @@ def _ralph_termination(events: tuple[RalphEvent, ...]) -> tuple[str | None, int 
         reason = _RALPH_REASON_RE.search(payload)
         iterations = _RALPH_ITERATIONS_RE.search(payload)
         count = int(iterations.group(1)) if iterations else event.iteration
-        return (reason.group(1) if reason else None), count
+        public_reason = reason.group(1) if reason else None
+        return (public_reason if public_reason in _PUBLIC_RALPH_REASONS else None), count
     return None, None
 
 

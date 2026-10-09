@@ -984,6 +984,16 @@ class TestExecutionOutputAndDiagnostics:
         assert "provider" not in diag.summary.lower()
         assert (diag.model, diag.provider, diag.backend) == ("sonnet", "anthropic", "claude_code")
 
+    def test_untrusted_termination_reason_never_enters_public_diagnostic(self, tmp_path: Path) -> None:
+        sentinel = "PRIVATE_REASONING_SENTINEL"
+        engine = _open_engine(tmp_path, [{
+            "topic": "loop.terminate", "payload": f"## Reason\n{sentinel}\n\n- Iterations: 5",
+            "exit_code": 2, "stderr": sentinel.encode(),
+        }])
+        (diag,) = engine.run().diagnostics
+        assert diag.ralph_termination_reason is None
+        assert sentinel not in repr(diag)
+
     def test_unknown_termination_payload_is_reported_as_unknown(self, tmp_path: Path) -> None:
         engine = _open_engine(tmp_path, [
             {"topic": "loop.terminate", "payload": "garbled", "exit_code": 1},
