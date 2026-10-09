@@ -1,6 +1,6 @@
 # Status
 
-Snapshot factuel court — mis à jour le 2026-10-06 (audit P21.1). Pas un journal ;
+Snapshot factuel court — mis à jour le 2026-10-09 (préparation de reprise P21.1). Pas un journal ;
 l'historique détaillé daté (Slices, incidents, diagnostics) vit dans
 l'historique Git (`git log`) et dans les rapports sous `docs/reports/`.
 Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
@@ -21,8 +21,9 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   (gravity/agy, `development` uniquement). L'état de quota Gravity provient
   du probe read-only `agy -p "/usage" --output-format json`. Voir
   `ROADMAP.md` §13, P19/P20.
-- **Tests offline** : 1413 PASS, 0 FAIL, 0 SKIP (`pytest -q`,
-  2026-10-06 après P21), 1 avertissement de collecte préexistant
+- **Tests offline** : 1413 PASS sur `main` et 1420 PASS sur la branche
+  échouée P21.1 (`pytest -q`, 2026-10-09), 0 FAIL, 0 SKIP ; un
+  avertissement de collecte préexistant
   (`TestChangeAuthorization`). Snapshot, pas un contrat ; le compte
   courant fait foi dans la sortie de `pytest -q`.
 - **Roman Numerals** (pilote externe) : `PASS`.
@@ -50,9 +51,18 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
 - **Développement actif** : P21 transport moteur terminé. AIDO Code
   M3.1 a livré ses trois WorkItems, mais l'acceptance live reste
   `PARTIAL` : une ligne JSON Claude contenant un bloc `thinking` a été
-  affichée. P21.1 est approuvé pour implémentation via le WorkItem Flow,
-  avec architecture C (filtre structuré à la frontière moteur/backend).
-  Aucun code fonctionnel P21.1 n'est encore livré. Voir `ROADMAP.md`.
+  affichée. P21.1 est `PARTIAL / RECOVERY REQUIRED`. Sa première
+  tentative gouvernée a produit le commit DEV A `88dd945`, puis
+  WI-P21.1-01 a échoué terminalement pendant DEV B Gravity : Ralph
+  `max_iterations` après cinq itérations, `exit_code=2`, aucun verdict
+  métier, aucun DEV FIX, QA non atteinte. WI-P21.1-02 est `BLOCKED`.
+  Aucun de ces deux WorkItems ne sera rouvert ; `88dd945` n'est pas
+  livré. La reprise documentaire définit WI-P21.1-03/04 sous le nouvel
+  MVP `p21-1-recovery`, sans lancer celui-ci. L'état SQLite historique
+  déclaré sous `/tmp/ai-dev-orchestrator-p21-1-state` n'était pas
+  présent lors de l'audit du 2026-10-09 ; le retrouver et vérifier les
+  statuts avant tout bootstrap. Aucun code fonctionnel P21.1 n'a atterri
+  sur `main`. Voir `ROADMAP.md`.
 - **P21 (Live worker execution observability)** : `DONE` (2026-10-06),
   WorkItems P21-01/02/03/04 livrés via le WorkItem Flow moteur et PR #36.
   Le moteur émet `execution.output`, `execution.output_truncated` et
