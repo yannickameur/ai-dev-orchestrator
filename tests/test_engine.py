@@ -863,6 +863,12 @@ class TestEngineLibraryBoundaryIntegration:
         assert not (tmp_path / "aido.yaml").exists()
 
 
+def _claude_ndjson(text: str) -> str:
+    """One public assistant text record, as a Claude worker emits it."""
+    return json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": text.rstrip("\n")}]}}) + "\n"
+
+
 class _StreamingRalphRunner(_ScriptedRalphRunner):
     """Same as ``_ScriptedRalphRunner`` but opts into progressive
     observation (``on_output``) and replays scripted ``output`` chunks."""
@@ -871,6 +877,9 @@ class _StreamingRalphRunner(_ScriptedRalphRunner):
         for item in self._steps[0].get("output", ()):
             if item[0] == "heartbeat":
                 on_heartbeat(item[1])
+            elif item[0] == "stdout":
+                # Scripted plain text stands for one public Claude text block.
+                on_output("stdout", _claude_ndjson(item[1]))
             else:
                 on_output(*item)
         return await super().__call__(args, cwd, timeout)
@@ -902,9 +911,8 @@ class TestExecutionOutputAndDiagnostics:
         result = engine.run(on_event=seen.append)
 
         outputs = [e for e in seen if e.kind == "execution.output"]
-        assert [(e.payload["stream"], e.payload["text"]) for e in outputs] == [
-            ("stdout", "hello\n"), ("stderr", "warn\n"),
-        ]
+        # Claude stderr is never published (P21.1).
+        assert [(e.payload["stream"], e.payload["text"]) for e in outputs] == [("stdout", "hello\n")]
         first = outputs[0]
         assert first.phase == "dev_a"
         assert first.execution_id is not None
@@ -955,7 +963,7 @@ class TestExecutionOutputAndDiagnostics:
     def test_non_live_run_result_explains_max_iterations_failure(self, tmp_path: Path) -> None:
         engine = _open_engine(tmp_path, [
             {"topic": "loop.terminate", "payload": _MAX_ITERATIONS_TERMINATE, "exit_code": 2,
-             "stderr": b"line 1\nbackend said something\n"},
+             "stdout": _claude_ndjson("backend said something").encode(), "stderr": b"line 1\nraw stderr\n"},
         ])
         result = engine.run()
 
@@ -966,8 +974,8 @@ class TestExecutionOutputAndDiagnostics:
         assert diag.exit_code == 2
         assert diag.ralph_termination_reason == "max_iterations"
         assert diag.ralph_iterations == 5
-        assert diag.last_output_stream == "stderr"
-        assert diag.last_output.endswith("backend said something")
+        assert diag.last_output_stream == "stdout"
+        assert diag.last_output == "backend said something"
         assert diag.summary == (
             "Ralph terminated with max_iterations after 5 iterations; "
             "no work.completed/work.failed event; exit_code=2."
@@ -990,7 +998,7 @@ class TestExecutionOutputAndDiagnostics:
 
         class TimingOutRunner:
             async def __call__(self, args, cwd, timeout, *, on_output=None):
-                on_output("stderr", "worker progress before timeout\n")
+                on_output("stdout", _claude_ndjson("worker progress before timeout"))
                 raise RalphTimeoutError("timed out")
 
         engine = OrchestratorEngine.open(
@@ -1002,7 +1010,7 @@ class TestExecutionOutputAndDiagnostics:
         assert diag.execution_status == "interrupted"
         assert diag.business_verdict == "absent"
         assert diag.last_output == "worker progress before timeout"
-        assert diag.last_output_stream == "stderr"
+        assert diag.last_output_stream == "stdout"
 
     def test_explicit_work_failed_keeps_business_verdict_failed(self, tmp_path: Path) -> None:
         engine = _open_engine(tmp_path, [{"topic": "work.failed", "exit_code": 0}])
@@ -1039,7 +1047,8 @@ class TestExecutionOutputAndDiagnostics:
 
         (diag,) = engine.run(on_event=_on_event).diagnostics
         assert diag.output_delivery_failures == 1
-        assert "renderer bug" in (diag.last_output_delivery_error or "")
+        # Type name only: an exception message may echo output text.
+        assert diag.last_output_delivery_error == "RuntimeError"
         assert diag.business_verdict == "absent"
 
     def test_transition_callback_exception_still_propagates(self, tmp_path: Path) -> None:
@@ -1089,19 +1098,19 @@ class TestBoundedLiveOutput:
 
         # Keep the rate gate out of this case so the lifetime event gate is exercised.
         monkeypatch.setattr(mvp_manager, "_MAX_LIVE_OUTPUT_EVENTS_PER_SECOND", 1_000)
-        output = [("stdout" if i % 2 else "stderr", "x") for i in range(502)]
+        output = [("stdout", "x") for i in range(502)]
         engine = _open_engine(tmp_path, self._steps(output))
         seen: list[EngineEvent] = []
         assert engine.run(on_event=seen.append).work_items[0].status == "completed"
         delivered = [e for e in seen if e.kind == "execution.output"]
         assert len(delivered) == 500
-        assert {e.payload["stream"] for e in delivered} == {"stdout", "stderr"}
+        assert {e.payload["stream"] for e in delivered} == {"stdout"}
         (signal,) = [e for e in seen if e.kind == "execution.output_truncated"]
-        assert signal.payload == {"reason": "max_events", "delivered_events": 500, "delivered_chars": 500}
+        assert signal.payload == {"reason": "max_events", "delivered_events": 500, "delivered_chars": 1000}
 
     def test_volume_overflow_cuts_at_char_budget_with_single_signal(self, tmp_path: Path) -> None:
         big = "y" * 30_000
-        engine = _open_engine(tmp_path, self._steps([("stdout", big)] * 4 + [("stderr", "tail\n")]))
+        engine = _open_engine(tmp_path, self._steps([("stdout", big)] * 4 + [("stdout", "tail\n")]))
         seen: list[EngineEvent] = []
         engine.run(on_event=seen.append)
         outputs = [e.payload["text"] for e in seen if e.kind == "execution.output"]
@@ -1115,8 +1124,8 @@ class TestBoundedLiveOutput:
         class NoisyTimeoutRunner:
             async def __call__(self, args, cwd, timeout, *, on_output=None):
                 for _ in range(300):
-                    on_output("stdout", "noise\n")
-                on_output("stderr", "final words\n")
+                    on_output("stdout", _claude_ndjson("noise"))
+                on_output("stdout", _claude_ndjson("final words"))
                 raise RalphTimeoutError("timed out")
 
         engine = OrchestratorEngine.open(
@@ -1126,20 +1135,20 @@ class TestBoundedLiveOutput:
         seen: list[EngineEvent] = []
         (diag,) = engine.run(on_event=seen.append).diagnostics
         assert diag.execution_status == "interrupted"
-        assert diag.last_output == "final words" and diag.last_output_stream == "stderr"
+        assert diag.last_output.endswith("noise\nfinal words") and diag.last_output_stream == "stdout"
         assert sum(e.kind == "execution.output_truncated" for e in seen) == 1
-        assert all(e.payload.get("text") != "final words\n" for e in seen if e.kind == "execution.output")
+        assert all("final words" not in e.payload.get("text", "") for e in seen if e.kind == "execution.output")
 
     def test_final_capture_survives_live_truncation(self, tmp_path: Path) -> None:
         engine = _open_engine(tmp_path, [
             {"topic": "work.failed", "output": [("stdout", "noise\n")] * 101 +
-             [("stderr", "late diagnostic\n")], "stderr": b"late diagnostic\n"},
+             [("stdout", "late diagnostic\n")], "stdout": _claude_ndjson("late diagnostic").encode()},
         ])
         seen: list[EngineEvent] = []
         result = engine.run(on_event=seen.append)
         (diag,) = result.diagnostics
         assert diag.last_output == "late diagnostic"
-        assert diag.last_output_stream == "stderr"
+        assert diag.last_output_stream == "stdout"
         assert sum(e.kind == "execution.output_truncated" for e in seen) == 1
         assert all(e.payload.get("text") != "late diagnostic\n" for e in seen if e.kind == "execution.output")
 
