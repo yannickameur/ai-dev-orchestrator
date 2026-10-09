@@ -3087,8 +3087,10 @@ AIDO Code M3.1 depuis un runner neuf avec le moteur corrigé ; aucun filtre
 spécifique au provider dans le frontend. M3.1 ne peut être clos que si
 cette acceptance réelle passe.
 
-**Exception de gouvernance proposée — `HISTORICAL_RUNTIME_STATE_UNAVAILABLE`**
-(approbation humaine explicite requise). L'audit en lecture seule du
+**Exception de gouvernance approuvée — `HISTORICAL_RUNTIME_STATE_UNAVAILABLE`**
+(décision humaine explicite du 2026-10-09, PR #41 fusionnée par squash
+dans `main` au commit `ab4b01871a0c8a59e8e9b3bc53db9d7fb373ede3`).
+L'audit en lecture seule du
 2026-10-09 n'a retrouvé ni la racine SQLite historique déclarée sous
 `/tmp/ai-dev-orchestrator-p21-1-state`, ni une sauvegarde permettant de
 vérifier ses statuts et ses `ExecutionRecord`. Pour cette reprise, l'état
@@ -3102,14 +3104,23 @@ déclaré `COMPLETED`, rouvert ou recréé ; aucun `ExecutionRecord`
 historique n'est fabriqué. La branche `work/wi-p21.1-01` et ses commits
 `88dd945`/`077cd26` restent intacts comme preuves forensiques.
 
-Si cette exception est approuvée, le MVP `p21-1-recovery` et ses seuls
-WorkItems `wi-p21.1-03`/`wi-p21.1-04` utiliseront une **nouvelle racine
-d'état indépendante et persistante** proposée sous
+Cette exception autorise la préparation du MVP `p21-1-recovery` et de
+ses seuls WorkItems `wi-p21.1-03`/`wi-p21.1-04` dans une **nouvelle racine
+d'état indépendante et persistante** prévue sous
 `~/.local/state/ai-dev-orchestrator/projects/ai-dev-orchestrator-p21-1-recovery/`.
 Le même `project.id` désigne le produit, sans prétendre que ce nouveau
-store continue l'ancien historique. La racine doit être absente avant
-initialisation, appartenir à `jarvis`, être privée (`0700`, fichiers
-`0600` avec `umask 077`) et disposer d'une sauvegarde durable prévue.
+store continue l'ancien historique. La racine reste absente jusqu'au
+bootstrap autorisé ; celui-ci devra s'exécuter avec `umask 077` pour
+créer une racine appartenant à `jarvis` en `0700` et des fichiers en
+`0600`. La destination de sauvegarde locale prévue, séparée du store,
+est `~/.local/state/ai-dev-orchestrator/backups/ai-dev-orchestrator-p21-1-recovery/`
+(`0700`, fichiers `0600`). Après le bootstrap et avant tout WorkItem,
+réaliser à runtime arrêté une sauvegarde SQLite cohérente des sept
+stores et de la configuration externe, avec les SHA Git correspondants,
+puis vérifier qu'une copie est lisible. Cette destination partage le
+même disque que l'état actif : elle protège une perte locale accidentelle,
+pas une panne du disque ; aucun volume de sauvegarde distinct inscriptible
+n'a été confirmé lors de la préparation.
 `ProjectConfig.load()` valide statiquement les IDs et dépendances ;
 `ProjectRuntime.open()` créerait la racine et sept stores SQLite, puis
 `bootstrap()` créerait le projet, le nouveau MVP et ses deux WorkItems,
@@ -3118,26 +3129,29 @@ ancien état ou record ne serait importé, et `bootstrap()` ne vérifierait
 pas la première tentative. Le nouveau runtime est donc initialisé comme
 une tentative distincte, jamais comme une restauration.
 
-La configuration locale actuelle reste inchangée et hors dépôt : son
-`state_dir` pointe encore vers `/tmp` et son `workspace` vers le worktree
-de la branche échouée. Après approbation seulement, préparer un worktree
-propre sur `main` (seul détenteur de cette branche), puis faire pointer
-la configuration externe vers ce workspace, son registre de workers et
-la nouvelle racine d'état. Vérifier `main`/`origin/main`, l'absence de
-`aido.yaml` dans le diff et l'absence de conflit de branche : la
+La configuration locale hors dépôt est maintenant
+`~/.local/state/ai-dev-orchestrator/recovery-configs/p21-1/aido.yaml` :
+`workspace` et `workers.registry` pointent vers le worktree indépendant
+`~/projects/ai-dev-orchestrator-p21-1-recovery` sur `main`, et `state_dir`
+vers la nouvelle racine persistante ci-dessus. Le worktree est propre,
+privé (`0700`) et seul détenteur de `main` ; la configuration est en
+`0600`, `~/.local/state` en `0700`, et `.venv` local est ignoré par Git.
+La racine d'état et la destination de sauvegarde ne sont pas créées ;
+aucun `ProjectRuntime.open()`, `bootstrap()` ni WorkItem de reprise n'a
+été exécuté. Avant tout lancement, revérifier `main`/`origin/main`,
+l'absence de `aido.yaml` dans le diff et les branches gouvernées : la
 préparation Git peut changer de branche, et le WorkItem Flow peut
-fusionner localement après ses contrôles. La raison et l'approbation
-explicite de l'exception doivent rester auditables dans l'historique
-documentaire. Ni cette proposition ni sa PR ne valent autorisation de
-bootstrap ou d'exécution ; l'approbation automatique après 20 minutes
-ne s'applique pas. P21.1 reste `PARTIAL / RECOVERY REQUIRED`, M3.1 reste
-`PARTIAL`, et le contrat de WI-P21.1-03/04 reste inchangé.
+fusionner localement après ses contrôles. La branche échouée reste
+intacte. L'approbation de l'exception et sa fusion documentaire ne
+valent **pas** GO du bootstrap ni de l'exécution ; ces GO humains sont
+distincts, sans approbation automatique après 20 minutes. P21.1 reste
+`PARTIAL / RECOVERY REQUIRED`, M3.1 reste `PARTIAL`, et le contrat de
+WI-P21.1-03/04 reste inchangé.
 
-**Next** : obtenir une décision humaine explicite sur
-`HISTORICAL_RUNTIME_STATE_UNAVAILABLE` ; seulement ensuite préparer et
-valider la configuration/workspace indépendants, demander le GO du
-bootstrap puis celui de l'exécution gouvernée de WI-P21.1-03/04. Ne pas
-commencer M4.
+**Next** : contrôler de nouveau configuration, branches, permissions et
+sauvegarde prévue ; demander le GO humain distinct du bootstrap. Après bootstrap,
+vérifier et sauvegarder le nouvel état avant de demander le GO d'exécution
+gouvernée de WI-P21.1-03/04. Ne pas commencer M4.
 
 ### Ordre approuvé
 
