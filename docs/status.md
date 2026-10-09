@@ -53,16 +53,26 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   `PARTIAL` : une ligne JSON Claude contenant un bloc `thinking` a été
   affichée. P21.1 est `PARTIAL / RECOVERY REQUIRED`. Sa première
   tentative gouvernée a produit le commit DEV A `88dd945`, puis
-  WI-P21.1-01 a échoué terminalement pendant DEV B Gravity : Ralph
+  WI-P21.1-01 a échoué terminalement selon les preuves documentaires
+  pendant DEV B Gravity : Ralph
   `max_iterations` après cinq itérations, `exit_code=2`, aucun verdict
   métier, aucun DEV FIX, QA non atteinte. WI-P21.1-02 est `BLOCKED`.
   Aucun de ces deux WorkItems ne sera rouvert ; `88dd945` n'est pas
   livré. La reprise documentaire définit WI-P21.1-03/04 sous le nouvel
-  MVP `p21-1-recovery`, sans lancer celui-ci. L'état SQLite historique
-  déclaré sous `/tmp/ai-dev-orchestrator-p21-1-state` n'était pas
-  présent lors de l'audit du 2026-10-09 ; le retrouver et vérifier les
-  statuts avant tout bootstrap. Aucun code fonctionnel P21.1 n'a atterri
-  sur `main`. Voir `ROADMAP.md`.
+  MVP `p21-1-recovery`, sans lancer celui-ci. L'audit en lecture seule du
+  2026-10-09 n'a retrouvé ni l'état SQLite historique déclaré sous
+  `/tmp/ai-dev-orchestrator-p21-1-state`, ni sauvegarde exploitable : les
+  statuts et `ExecutionRecord` historiques ne peuvent pas être revérifiés
+  dans une base. La proposition documentaire
+  `HISTORICAL_RUNTIME_STATE_UNAVAILABLE` permettrait, après décision
+  humaine explicite, une racine persistante indépendante pour le seul
+  nouveau MVP, sans reconstituer l'ancien historique. Cette exception
+  n'est pas approuvée ; la nouvelle racine n'est pas créée, la
+  configuration locale reste inchangée, et aucun bootstrap ou WorkItem
+  de reprise n'a commencé. Aucune approbation automatique après 20
+  minutes ne s'applique. P21.1 reste `PARTIAL / RECOVERY REQUIRED`, M3.1
+  reste `PARTIAL`, et aucun code fonctionnel P21.1 n'a atterri sur `main`.
+  Voir `ROADMAP.md`.
 - **P21 (Live worker execution observability)** : `DONE` (2026-10-06),
   WorkItems P21-01/02/03/04 livrés via le WorkItem Flow moteur et PR #36.
   Le moteur émet `execution.output`, `execution.output_truncated` et
