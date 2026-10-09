@@ -21,8 +21,8 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   (gravity/agy, `development` uniquement). L'état de quota Gravity provient
   du probe read-only `agy -p "/usage" --output-format json`. Voir
   `ROADMAP.md` §13, P19/P20.
-- **Tests offline** : 1413 PASS sur `main` et 1420 PASS sur la branche
-  échouée P21.1 (`pytest -q`, 2026-10-09), 0 FAIL, 0 SKIP ; un
+- **Tests offline** : 1 426 PASS sur `main` et sur la branche WI-P21.1-04
+  à code fonctionnel identique (`pytest -q`, 2026-10-09), 0 FAIL ; un
   avertissement de collecte préexistant
   (`TestChangeAuthorization`). Snapshot, pas un contrat ; le compte
   courant fait foi dans la sortie de `pytest -q`.
@@ -48,7 +48,7 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   conservé, aucun provider/runtime lancé. Test manuel réel : bootstrap,
   commit, working tree propre et `aido validate` OK. Voir `ROADMAP.md` §13
   et `docs/PROJECT_CONFIG.md`.
-- **Développement actif** : P21 transport moteur terminé. AIDO Code
+- **Historique de la première reprise** : P21 transport moteur terminé. AIDO Code
   M3.1 a livré ses trois WorkItems, mais l'acceptance live reste
   `PARTIAL` : une ligne JSON Claude contenant un bloc `thinking` a été
   affichée. P21.1 est `PARTIAL / RECOVERY REQUIRED`. Sa première
@@ -67,8 +67,8 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   approuvée explicitement et intégrée par la PR #41 au commit
   `ab4b01871a0c8a59e8e9b3bc53db9d7fb373ede3` : elle autorise un
   nouveau runtime indépendant sans reconstituer l'ancien historique.
-  Le worktree propre `~/projects/ai-dev-orchestrator-p21-1-recovery` est
-  sur `main` ; la configuration externe
+  Le worktree `~/projects/ai-dev-orchestrator-p21-1-recovery` était alors
+  propre sur `main` ; la configuration externe
   `~/.local/state/ai-dev-orchestrator/recovery-configs/p21-1/aido.yaml`
   y pointe, avec une nouvelle racine persistante sous
   `~/.local/state/ai-dev-orchestrator/projects/ai-dev-orchestrator-p21-1-recovery/`.
@@ -84,10 +84,49 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   privées (`0700`/`0600`). Elle est sur le même disque que l'état actif et
   ne protège pas d'une panne physique. L'ancien état historique n'a pas
   été restauré ; aucun WorkItem de reprise ni provider n'a été lancé.
-  Un GO humain distinct reste requis avant l'exécution gouvernée ;
-  aucune approbation automatique après 20 minutes ne s'applique. P21.1
-  reste `PARTIAL / RECOVERY REQUIRED`, M3.1 reste `PARTIAL`, et aucun
-  code fonctionnel P21.1 n'a atterri sur `main`. Voir `ROADMAP.md`.
+  À cette étape, un GO humain distinct était requis avant l'exécution
+  gouvernée ; l'approbation automatique après 20 minutes ne s'appliquait
+  pas. P21.1 et M3.1 étaient `PARTIAL` et aucun code fonctionnel P21.1
+  n'avait encore atterri sur `main`. Voir `ROADMAP.md`.
+- **État courant P21.1 et reprise WI-05 proposée (2026-10-09)** : après
+  GO explicite, WI-P21.1-03 est `COMPLETED`, livré par PR #44 sur `main`
+  (`dae6e6ab0fd7928f3bc20b566adad988ddc270b3`, CI Python
+  3.10/3.12 `PASS`). WI-P21.1-04 est `BLOCKED` terminal,
+  `HUMAN_REVIEW_REQUIRED` après trois tentatives QA ; sa branche
+  `work/wi-p21.1-04` (`a7f24722`) n'a que des changements documentaires,
+  aucun correctif fonctionnel ou test à fusionner. QA 1 et 2 ont échoué
+  faute de `pytest` dans l'interpréteur configuré ; QA 3 faute de `pip`
+  pour les tests de packaging. Après correction locale, les 16 tests
+  ciblés et les 1 426 tests offline passent avec cet interpréteur exact.
+  Le nouvel environnement QA dédié hors dépôt (Python 3.12, `pip`,
+  `pytest`, package éditable) passe également les 1 426 tests. Ces
+  vérifications n'altèrent ni le statut ni les six `ExecutionRecord` de
+  la reprise 03/04. Leur statut `succeeded` indique le verdict métier
+  des phases DEV, même avec un `exit_code` non nul ; QA et WI-04 restent
+  en échec.
+  Les parcours jetables réels Claude/Ralph de WI-04 ont conservé les
+  sorties publiques sûres et les diagnostics, produit quatre heartbeats
+  et n'ont laissé aucun processus résiduel observé ; le texte des blocs
+  `thinking` était vide. Les tests synthétiques
+  `PRIVATE_REASONING_SENTINEL` démontrent la suppression déterministe ;
+  la suppression d'un texte privé non vide en condition réelle reste à
+  prouver. Un WorkItem frontend jetable ne couvre pas les trois contrats
+  d'acceptance AIDO Code M3.1. Le MVP **proposé, non initialisé**
+  `p21-1-acceptance-recovery` porte un nouveau `wi-p21.1-05` sans
+  dépendance runtime envers WI-04, dans une racine persistante
+  indépendante sous
+  `~/.local/state/ai-dev-orchestrator/projects/ai-dev-orchestrator-p21-1-acceptance-recovery/`.
+  Sa configuration candidate est externe, sous
+  `~/.local/state/ai-dev-orchestrator/recovery-configs/p21-1-acceptance/aido.yaml`,
+  et vise le worktree propre
+  `~/projects/ai-dev-orchestrator-p21-1-acceptance-recovery` sur `main`.
+  Aucun nouveau SQLite, bootstrap, provider ou WorkItem n'a été lancé.
+  Les GO antérieurs et l'exception historique ne couvrent pas WI-05 ;
+  un GO humain explicite pour ce nouveau MVP, son bootstrap et son
+  exécution gouvernée est requis. L'approbation automatique de 20
+  minutes ne concerne que les propositions roadmap. P21.1 reste
+  `PARTIAL / RECOVERY REQUIRED`, AIDO Code M3.1 reste `PARTIAL`, M4
+  n'est pas commencé. Voir `ROADMAP.md` §P21.1 pour le contrat WI-05.
 - **P21 (Live worker execution observability)** : `DONE` (2026-10-06),
   WorkItems P21-01/02/03/04 livrés via le WorkItem Flow moteur et PR #36.
   Le moteur émet `execution.output`, `execution.output_truncated` et
