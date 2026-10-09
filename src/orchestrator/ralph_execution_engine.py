@@ -91,6 +91,7 @@ from typing import Awaitable, Callable, Iterator, Mapping, Sequence
 
 from orchestrator.execution_policy import ExecutionPermissionMode
 from orchestrator.execution_store import ExecutionRecord, ExecutionStore
+from orchestrator.public_output import ClaudePublicOutputFilter, public_text_from_capture
 from orchestrator.posix_subprocess import HeartbeatObserver, OutputObserver, run_in_new_process_group
 from orchestrator.qa_protection import hash_file
 from orchestrator.worker_selector import Worker
@@ -1115,6 +1116,13 @@ class RalphExecutionEngine:
             def observer(stream: str, chunk: str) -> None:
                 for each in observers:
                     each(stream, chunk)
+        public_filter: ClaudePublicOutputFilter | None = None
+        is_claude = request.worker.backend == "claude_code"
+        if observer is not None and is_claude:
+            # P21.1: raw Claude stream-json may carry private reasoning;
+            # observers only ever receive its allowlisted projection.
+            public_filter = ClaudePublicOutputFilter(observer)
+            observer = public_filter.feed
         heartbeat = _guard_heartbeat(request.heartbeat_observer)
         git_sha_before = _git_head_sha(request.workspace)
         untracked_before = _list_untracked_files_with_hashes(request.workspace)
@@ -1169,6 +1177,8 @@ class RalphExecutionEngine:
                             args, request.workspace, request.timeout_seconds
                         )
                 except RalphTimeoutError:
+                    if public_filter is not None:
+                        public_filter.finish(flush=False)
                     loop_id = _read_ralph_loop_id(request.workspace)
                     updated = self._execution_store.mark_interrupted(
                         request.execution_id, ralph_loop_id=loop_id, finished_at=self._clock()
@@ -1207,6 +1217,8 @@ class RalphExecutionEngine:
         finally:
             shutil.rmtree(runtime_dir, ignore_errors=True)
 
+        if public_filter is not None:
+            public_filter.finish()
         git_sha_after = _git_head_sha(request.workspace)
         ralph_loop_id = _read_ralph_loop_id(request.workspace)
         untracked_changes = _diff_untracked_files(
@@ -1254,6 +1266,14 @@ class RalphExecutionEngine:
                 ralph_loop_id=ralph_loop_id, finished_at=self._clock(),
             )
 
+        if is_claude:
+            # P21.1: raw Claude stdout/stderr may hold private data; the
+            # public diagnostic excerpt is the allowlisted projection only.
+            public_stdout = public_text_from_capture(stdout).encode()
+            last_output, last_output_stream = _tail(public_stdout), "stdout" if public_stdout.strip() else None
+        else:
+            last_output = _tail(stderr) or _tail(stdout)
+            last_output_stream = "stderr" if stderr.strip() else ("stdout" if stdout.strip() else None)
         return ExecutionResult(
             record=updated,
             events=tuple(events),
@@ -1261,8 +1281,8 @@ class RalphExecutionEngine:
             stdout=_bounded(stdout),
             stderr=_bounded(stderr),
             untracked_changes=untracked_changes,
-            last_output=_tail(stderr) or _tail(stdout),
-            last_output_stream="stderr" if stderr.strip() else ("stdout" if stdout.strip() else None),
+            last_output=last_output,
+            last_output_stream=last_output_stream,
         )
 
     def _build_ralph_args(self, runtime_dir: Path, request: ExecutionRequest) -> list[str]:

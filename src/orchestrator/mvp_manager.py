@@ -701,7 +701,8 @@ class MVPManager:
                 ))
             except Exception as exc:
                 delivery["failures"] += 1
-                delivery["last_error"] = f"{type(exc).__name__}: {exc}"[:_MAX_DELIVERY_ERROR_CHARS]
+                # Exception type only: its message may echo output text.
+                delivery["last_error"] = type(exc).__name__[:_MAX_DELIVERY_ERROR_CHARS]
                 logger.warning("%s delivery failed; ignored", kind, exc_info=True)
 
         request = ExecutionRequest(

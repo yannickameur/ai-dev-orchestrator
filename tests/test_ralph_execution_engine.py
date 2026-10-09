@@ -1802,7 +1802,7 @@ class TestProgressiveOutputObserver:
             _store(tmp_path), subprocess_runner=_runner, clock=lambda: UTC_NOW,
             output_observer=lambda stream, text: received.append((stream, text)),
         )
-        asyncio.run(engine.execute(_request(tmp_path)))
+        asyncio.run(engine.execute(_request(tmp_path, worker=_victor())))
         assert received == [("stdout", "hello\n")]
 
     def test_request_observer_is_combined_and_failure_isolated(self, tmp_path: Path) -> None:
@@ -1822,7 +1822,7 @@ class TestProgressiveOutputObserver:
             _store(tmp_path), subprocess_runner=_runner, clock=lambda: UTC_NOW,
             output_observer=lambda stream, text: received.append((stream, text)),
         )
-        request = dataclasses.replace(_request(tmp_path), output_observer=_raise)
+        request = dataclasses.replace(_request(tmp_path, worker=_victor()), output_observer=_raise)
         result = asyncio.run(engine.execute(request))
         assert result.exit_code == 0
         assert received == [("stdout", "hi\n")]
@@ -1885,3 +1885,119 @@ class TestProgressiveOutputObserver:
         )
         assert (code, out, err) == (0, b"a\nc", b"b\n")
         assert ("stdout", "a\n") in seen and ("stdout", "c") in seen and ("stderr", "b\n") in seen
+
+
+SENTINEL = "PRIVATE_REASONING_SENTINEL"
+
+
+def _ndjson(*records: dict) -> str:
+    import json
+
+    return "".join(json.dumps(r) + "\n" for r in records)
+
+
+_THINKING = {"type": "assistant", "message": {"content": [
+    {"type": "thinking", "thinking": SENTINEL, "signature": SENTINEL},
+    {"type": "text", "text": "public note"},
+    {"type": "tool_use", "name": "Bash", "input": {"command": SENTINEL}},
+    {"type": "redacted_thinking", "data": SENTINEL},
+]}}
+
+
+class TestClaudePublicOutputBoundary:
+    """P21.1: only allowlisted Claude fields ever become observable."""
+
+    @staticmethod
+    def _run(tmp_path: Path, chunks, *, worker=None, exit_code=0, stderr=b"", timeout=False, observer=None):
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        received: list[tuple[str, str]] = []
+        inner = _make_fake_runner(events_lines=[_event_line("work.completed")], exit_code=exit_code)
+
+        from orchestrator.ralph_execution_engine import RalphTimeoutError
+
+        async def _runner(args, cwd, timeout_s, *, on_output=None):
+            for stream, text in chunks:
+                on_output(stream, text)
+            if timeout:
+                raise RalphTimeoutError("timed out")
+            code, _out, err = await inner(args, cwd, timeout_s)
+            raw = "".join(t for s_, t in chunks if s_ == "stdout").encode()
+            return code, raw, stderr or err
+
+        engine = RalphExecutionEngine(
+            _store(tmp_path), subprocess_runner=_runner, clock=lambda: UTC_NOW,
+            output_observer=observer or (lambda stream, text: received.append((stream, text))),
+        )
+        result = asyncio.run(engine.execute(_request(tmp_path, **({"worker": worker} if worker else {}))))
+        return received, result
+
+    def test_complete_record_keeps_only_text_block(self, tmp_path: Path) -> None:
+        received, result = self._run(tmp_path, [("stdout", _ndjson(_THINKING))])
+        assert received == [("stdout", "public note\n")]
+        assert SENTINEL not in repr(received) + result.last_output
+
+    def test_record_split_across_chunks_is_reassembled(self, tmp_path: Path) -> None:
+        raw = _ndjson(_THINKING)
+        received, result = self._run(tmp_path, [("stdout", raw[i:i + 7]) for i in range(0, len(raw), 7)])
+        assert received == [("stdout", "public note\n")]
+        assert SENTINEL not in result.last_output
+
+    def test_unknown_records_and_allowlisted_operational_fields(self, tmp_path: Path) -> None:
+        raw = _ndjson(
+            {"type": "system", "subtype": "init", "note": SENTINEL},
+            {"type": "mystery", "text": SENTINEL},
+            {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "note": SENTINEL}},
+            {"type": "rate_limit_event", "rate_limit_info": {"status": SENTINEL}},
+            _THINKING,
+            {"type": "result", "subtype": "success", "result": SENTINEL},
+            {"type": "result", "subtype": SENTINEL + " x"},
+        )
+        received, result = self._run(tmp_path, [("stdout", raw)])
+        assert received == [
+            ("stdout", "rate_limit: allowed\n"), ("stdout", "public note\n"), ("stdout", "result: success\n"),
+        ]
+        assert SENTINEL not in result.last_output
+
+    def test_malformed_incomplete_and_prose_are_dropped(self, tmp_path: Path) -> None:
+        raw = ('{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"%s"\n'
+               '%s plain prose\n'
+               '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"%s"') % ((SENTINEL,) * 3)
+        received, result = self._run(tmp_path, [("stdout", raw)])
+        assert received == [] and result.last_output == ""
+        assert result.record.status.value == "succeeded"
+
+    def test_unterminated_complete_record_is_flushed_on_success(self, tmp_path: Path) -> None:
+        raw = _ndjson(_THINKING).rstrip("\n")
+        received, _ = self._run(tmp_path, [("stdout", raw)])
+        assert received == [("stdout", "public note\n")]
+
+    def test_timeout_never_flushes_pending_record(self, tmp_path: Path) -> None:
+        raw = _ndjson(_THINKING).rstrip("\n")
+        received, result = self._run(tmp_path, [("stdout", raw)], timeout=True)
+        assert received == [] and result.record.status.value == "interrupted"
+
+    def test_stderr_is_suppressed_for_claude_observers_and_diagnostic(self, tmp_path: Path) -> None:
+        received, result = self._run(
+            tmp_path, [("stderr", SENTINEL + "\n"), ("stdout", _ndjson(_THINKING))],
+            exit_code=1, stderr=SENTINEL.encode(),
+        )
+        assert received == [("stdout", "public note\n")]
+        assert result.last_output == "public note" and result.last_output_stream == "stdout"
+        assert result.stdout.count(SENTINEL) > 0  # raw capture stays internal
+
+    def test_no_public_stdout_means_no_last_output(self, tmp_path: Path) -> None:
+        _, result = self._run(tmp_path, [("stdout", _ndjson({"type": "x", "t": SENTINEL}))], stderr=SENTINEL.encode())
+        assert result.last_output == "" and result.last_output_stream is None
+
+    def test_other_backends_are_unchanged(self, tmp_path: Path) -> None:
+        received, _ = self._run(tmp_path, [("stdout", "plain codex line\n"), ("stderr", "warn\n")], worker=_victor())
+        assert received == [("stdout", "plain codex line\n"), ("stderr", "warn\n")]
+
+    def test_oversized_record_is_dropped_and_stream_recovers(self, tmp_path: Path) -> None:
+        from orchestrator.public_output import MAX_RECORD_CHARS
+
+        big = SENTINEL * (MAX_RECORD_CHARS // 10)
+        chunks = [("stdout", big[:MAX_RECORD_CHARS // 2]), ("stdout", big[MAX_RECORD_CHARS // 2:]),
+                  ("stdout", "\n" + _ndjson(_THINKING))]
+        received, _ = self._run(tmp_path, chunks)
+        assert received == [("stdout", "public note\n")]
