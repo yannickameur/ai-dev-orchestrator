@@ -1,6 +1,6 @@
 # Status
 
-Snapshot factuel court — mis à jour le 2026-10-09 (préparation de reprise P21.1). Pas un journal ;
+Snapshot factuel court — mis à jour le 2026-10-09 (gouvernance de reprise P21.1). Pas un journal ;
 l'historique détaillé daté (Slices, incidents, diagnostics) vit dans
 l'historique Git (`git log`) et dans les rapports sous `docs/reports/`.
 Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
@@ -63,16 +63,23 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   2026-10-09 n'a retrouvé ni l'état SQLite historique déclaré sous
   `/tmp/ai-dev-orchestrator-p21-1-state`, ni sauvegarde exploitable : les
   statuts et `ExecutionRecord` historiques ne peuvent pas être revérifiés
-  dans une base. La proposition documentaire
-  `HISTORICAL_RUNTIME_STATE_UNAVAILABLE` permettrait, après décision
-  humaine explicite, une racine persistante indépendante pour le seul
-  nouveau MVP, sans reconstituer l'ancien historique. Cette exception
-  n'est pas approuvée ; la nouvelle racine n'est pas créée, la
-  configuration locale reste inchangée, et aucun bootstrap ou WorkItem
-  de reprise n'a commencé. Aucune approbation automatique après 20
-  minutes ne s'applique. P21.1 reste `PARTIAL / RECOVERY REQUIRED`, M3.1
-  reste `PARTIAL`, et aucun code fonctionnel P21.1 n'a atterri sur `main`.
-  Voir `ROADMAP.md`.
+  dans une base. L'exception `HISTORICAL_RUNTIME_STATE_UNAVAILABLE` a été
+  approuvée explicitement et intégrée par la PR #41 au commit
+  `ab4b01871a0c8a59e8e9b3bc53db9d7fb373ede3` : elle autorise un
+  nouveau runtime indépendant sans reconstituer l'ancien historique.
+  Le worktree propre `~/projects/ai-dev-orchestrator-p21-1-recovery` est
+  sur `main` ; la configuration externe
+  `~/.local/state/ai-dev-orchestrator/recovery-configs/p21-1/aido.yaml`
+  y pointe, avec une nouvelle racine persistante prévue sous
+  `~/.local/state/ai-dev-orchestrator/projects/ai-dev-orchestrator-p21-1-recovery/`.
+  La sauvegarde locale prévue est séparée sous
+  `~/.local/state/ai-dev-orchestrator/backups/ai-dev-orchestrator-p21-1-recovery/`,
+  sur le même disque. Ni l'état de reprise ni cette sauvegarde ne sont
+  créés ; aucun bootstrap ou WorkItem de reprise n'a commencé. Un GO
+  humain distinct reste requis pour le bootstrap, puis pour l'exécution ;
+  aucune approbation automatique après 20 minutes ne s'applique. P21.1
+  reste `PARTIAL / RECOVERY REQUIRED`, M3.1 reste `PARTIAL`, et aucun
+  code fonctionnel P21.1 n'a atterri sur `main`. Voir `ROADMAP.md`.
 - **P21 (Live worker execution observability)** : `DONE` (2026-10-06),
   WorkItems P21-01/02/03/04 livrés via le WorkItem Flow moteur et PR #36.
   Le moteur émet `execution.output`, `execution.output_truncated` et
