@@ -3087,23 +3087,57 @@ AIDO Code M3.1 depuis un runner neuf avec le moteur corrigé ; aucun filtre
 spécifique au provider dans le frontend. M3.1 ne peut être clos que si
 cette acceptance réelle passe.
 
-**Préparation du nouveau runtime** : MVP `p21-1-recovery`, WorkItems
-runtime `wi-p21.1-03` et `wi-p21.1-04`, même identité de projet et même
-racine d'état que la première tentative seulement après vérification
-en lecture seule de l'historique. `ProjectRuntime.bootstrap()` accepte
-des MVP successifs sous un même projet et conserve les anciens WorkItems,
-mais écrit aussi le pointeur `current_mvp_id` : ne pas l'appeler pendant
-cette préparation. Le répertoire d'état déclaré par la configuration
-historique (`/tmp/ai-dev-orchestrator-p21-1-state`) était absent lors de
-l'audit du 2026-10-09 ; retrouver/restaurer l'état original et vérifier
-ses deux statuts terminaux avant tout bootstrap, sinon échouer fermé.
-La configuration locale de reprise doit vivre hors du dépôt ; contrôler
-`git status --short` et le diff du commit fonctionnel avant la future
-exécution. Le commit accidentel reste dans la branche échouée comme
-preuve forensique. Cette préparation documentaire ne lance aucun WorkItem.
+**Exception de gouvernance proposée — `HISTORICAL_RUNTIME_STATE_UNAVAILABLE`**
+(approbation humaine explicite requise). L'audit en lecture seule du
+2026-10-09 n'a retrouvé ni la racine SQLite historique déclarée sous
+`/tmp/ai-dev-orchestrator-p21-1-state`, ni une sauvegarde permettant de
+vérifier ses statuts et ses `ExecutionRecord`. Pour cette reprise, l'état
+historique est traité comme indisponible : WI-P21.1-01 `FAILED` terminal
+et WI-P21.1-02 `BLOCKED` sont des statuts **rapportés par les documents**,
+pas des lignes SQLite revérifiées. Git confirme seulement la branche,
+les commits et l'absence de livraison de `88dd945` sur `main`.
+L'absence de base ne doit pas imposer une attente indéfinie, ni être
+masquée par une reconstitution fictive. Aucun WorkItem historique n'est
+déclaré `COMPLETED`, rouvert ou recréé ; aucun `ExecutionRecord`
+historique n'est fabriqué. La branche `work/wi-p21.1-01` et ses commits
+`88dd945`/`077cd26` restent intacts comme preuves forensiques.
 
-**Next** : vérifier l'état historique et faire gouverner WI-P21.1-03/04
-dans le nouveau MVP. Ne pas commencer M4.
+Si cette exception est approuvée, le MVP `p21-1-recovery` et ses seuls
+WorkItems `wi-p21.1-03`/`wi-p21.1-04` utiliseront une **nouvelle racine
+d'état indépendante et persistante** proposée sous
+`~/.local/state/ai-dev-orchestrator/projects/ai-dev-orchestrator-p21-1-recovery/`.
+Le même `project.id` désigne le produit, sans prétendre que ce nouveau
+store continue l'ancien historique. La racine doit être absente avant
+initialisation, appartenir à `jarvis`, être privée (`0700`, fichiers
+`0600` avec `umask 077`) et disposer d'une sauvegarde durable prévue.
+`ProjectConfig.load()` valide statiquement les IDs et dépendances ;
+`ProjectRuntime.open()` créerait la racine et sept stores SQLite, puis
+`bootstrap()` créerait le projet, le nouveau MVP et ses deux WorkItems,
+positionnerait `current_mvp_id` et calculerait leur disponibilité. Aucun
+ancien état ou record ne serait importé, et `bootstrap()` ne vérifierait
+pas la première tentative. Le nouveau runtime est donc initialisé comme
+une tentative distincte, jamais comme une restauration.
+
+La configuration locale actuelle reste inchangée et hors dépôt : son
+`state_dir` pointe encore vers `/tmp` et son `workspace` vers le worktree
+de la branche échouée. Après approbation seulement, préparer un worktree
+propre sur `main` (seul détenteur de cette branche), puis faire pointer
+la configuration externe vers ce workspace, son registre de workers et
+la nouvelle racine d'état. Vérifier `main`/`origin/main`, l'absence de
+`aido.yaml` dans le diff et l'absence de conflit de branche : la
+préparation Git peut changer de branche, et le WorkItem Flow peut
+fusionner localement après ses contrôles. La raison et l'approbation
+explicite de l'exception doivent rester auditables dans l'historique
+documentaire. Ni cette proposition ni sa PR ne valent autorisation de
+bootstrap ou d'exécution ; l'approbation automatique après 20 minutes
+ne s'applique pas. P21.1 reste `PARTIAL / RECOVERY REQUIRED`, M3.1 reste
+`PARTIAL`, et le contrat de WI-P21.1-03/04 reste inchangé.
+
+**Next** : obtenir une décision humaine explicite sur
+`HISTORICAL_RUNTIME_STATE_UNAVAILABLE` ; seulement ensuite préparer et
+valider la configuration/workspace indépendants, demander le GO du
+bootstrap puis celui de l'exécution gouvernée de WI-P21.1-03/04. Ne pas
+commencer M4.
 
 ### Ordre approuvé
 
