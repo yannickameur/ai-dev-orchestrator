@@ -20,6 +20,7 @@ from typing import Callable
 MAX_RECORD_CHARS = 262_144
 
 _RATE_LIMIT_STATUSES = frozenset({"allowed", "allowed_warning", "rejected"})
+_RESULT_SUBTYPES = frozenset({"success", "error_max_turns", "error_during_execution", "error_max_budget_usd"})
 
 
 def _public_lines(record: object) -> list[str]:
@@ -39,12 +40,12 @@ def _public_lines(record: object) -> list[str]:
         ]
     if kind == "result":
         subtype = record.get("subtype")
-        if isinstance(subtype, str) and len(subtype) <= 64 and subtype.replace("_", "").isalnum():
+        if isinstance(subtype, str) and subtype in _RESULT_SUBTYPES:
             return [f"result: {subtype}"]
     elif kind == "rate_limit_event":
         info = record.get("rate_limit_info")
         status = info.get("status") if isinstance(info, dict) else None
-        if status in _RATE_LIMIT_STATUSES:
+        if isinstance(status, str) and status in _RATE_LIMIT_STATUSES:
             return [f"rate_limit: {status}"]
     return []
 
@@ -70,26 +71,27 @@ class ClaudePublicOutputFilter:
     def feed(self, stream: str, text: str) -> None:
         if stream != "stdout":
             return
-        *lines, self._pending = (self._pending + text).split("\n")
-        for line in lines:
+        for line in text.splitlines(keepends=True):
+            if "\n" not in line:
+                if not self._skipping:
+                    if len(line) > MAX_RECORD_CHARS - len(self._pending):
+                        self._pending, self._skipping = "", True
+                    else:
+                        self._pending += line
+                continue
             if self._skipping:
                 self._skipping = False  # the oversized record ends here
-                continue
-            self._publish(line)
-        if self._skipping or len(self._pending) > MAX_RECORD_CHARS:
-            self._pending, self._skipping = "", True
+            else:
+                self._publish(self._pending + line[:-1])
+            self._pending = ""
 
-    def finish(self, *, flush: bool = True) -> None:
-        """Flush a final unterminated record if it is complete JSON; an
-        incomplete one is dropped. ``flush=False`` (timeout/cancellation)
-        drops the pending data unconditionally."""
-        pending, self._pending = self._pending, ""
-        if flush and pending and not self._skipping:
-            self._publish(pending)
+    def finish(self) -> None:
+        """Drop an unterminated NDJSON record, including on timeout."""
+        self._pending = ""
         self._skipping = False
 
     def _publish(self, line: str) -> None:
-        public = _render(line) if line.strip() else ""
+        public = _render(line) if len(line) <= MAX_RECORD_CHARS and line.strip() else ""
         if public:
             self._emit("stdout", public)
 

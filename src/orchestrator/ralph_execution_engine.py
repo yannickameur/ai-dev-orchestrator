@@ -1178,7 +1178,7 @@ class RalphExecutionEngine:
                         )
                 except RalphTimeoutError:
                     if public_filter is not None:
-                        public_filter.finish(flush=False)
+                        public_filter.finish()
                     loop_id = _read_ralph_loop_id(request.workspace)
                     updated = self._execution_store.mark_interrupted(
                         request.execution_id, ralph_loop_id=loop_id, finished_at=self._clock()

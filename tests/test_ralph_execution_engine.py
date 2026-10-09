@@ -1948,6 +1948,7 @@ class TestClaudePublicOutputBoundary:
             {"type": "mystery", "text": SENTINEL},
             {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "note": SENTINEL}},
             {"type": "rate_limit_event", "rate_limit_info": {"status": SENTINEL}},
+            {"type": "rate_limit_event", "rate_limit_info": {"status": [SENTINEL]}},
             _THINKING,
             {"type": "result", "subtype": "success", "result": SENTINEL},
             {"type": "result", "subtype": SENTINEL + " x"},
@@ -1966,10 +1967,10 @@ class TestClaudePublicOutputBoundary:
         assert received == [] and result.last_output == ""
         assert result.record.status.value == "succeeded"
 
-    def test_unterminated_complete_record_is_flushed_on_success(self, tmp_path: Path) -> None:
+    def test_unterminated_complete_record_is_suppressed_on_success(self, tmp_path: Path) -> None:
         raw = _ndjson(_THINKING).rstrip("\n")
-        received, _ = self._run(tmp_path, [("stdout", raw)])
-        assert received == [("stdout", "public note\n")]
+        received, result = self._run(tmp_path, [("stdout", raw)])
+        assert received == [] and result.last_output == ""
 
     def test_timeout_never_flushes_pending_record(self, tmp_path: Path) -> None:
         raw = _ndjson(_THINKING).rstrip("\n")
@@ -2001,3 +2002,20 @@ class TestClaudePublicOutputBoundary:
                   ("stdout", "\n" + _ndjson(_THINKING))]
         received, _ = self._run(tmp_path, chunks)
         assert received == [("stdout", "public note\n")]
+
+    def test_complete_oversized_record_in_one_chunk_is_suppressed(self, tmp_path: Path) -> None:
+        from orchestrator.public_output import MAX_RECORD_CHARS
+
+        oversized = _ndjson({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": SENTINEL + "x" * MAX_RECORD_CHARS}]}})
+        received, result = self._run(tmp_path, [("stdout", oversized + _ndjson(_THINKING))])
+        assert received == [("stdout", "public note\n")]
+        assert SENTINEL not in result.last_output
+
+    def test_unknown_result_subtype_is_suppressed(self, tmp_path: Path) -> None:
+        received, result = self._run(tmp_path, [("stdout", _ndjson(
+            {"type": "result", "subtype": SENTINEL},
+            {"type": "result", "subtype": "success"},
+        ))])
+        assert received == [("stdout", "result: success\n")]
+        assert SENTINEL not in result.last_output
