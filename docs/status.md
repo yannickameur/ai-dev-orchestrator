@@ -1,12 +1,19 @@
 # Status
 
-Snapshot factuel court — mis à jour le 2026-10-09 (gouvernance de reprise P21.1). Pas un journal ;
+Snapshot factuel court — mis à jour le 2026-10-10 (refactor productivité). Pas un journal ;
 l'historique détaillé daté (Slices, incidents, diagnostics) vit dans
 l'historique Git (`git log`) et dans les rapports sous `docs/reports/`.
 Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
 
 ## État actuel
 
+- **Productivité agents (2026-10-10)** : consignes Ralph dédupliquées,
+  progression brève, plan QA réutilisé et sondes explicites concurrentes.
+  Fixture d'identité Git isolée : 1 432 tests moteur passent aussi avec
+  les variables Git d'un worker ; 311 tests AIDO Code passent avec ce moteur.
+  Exemple DEV A+B : 4 472 → 2 504 caractères dans les consignes prompt+hat
+  générées (−44 %), sans mesure de tokens facturés. Revue Astra favorable ;
+  dry-run Ralph 2.10.1 réussi. Acceptance P21.1/M3.1 toujours partielle.
 - **Release** : v0.1.1 — **PUBLIÉE** (première release publique open
   source).
 - **MVP 0.1** : `DONE`. Contrat d'acceptation : `MVP_SPEC.yaml` v4.

@@ -663,7 +663,11 @@ def _accepts_kwarg(runner: object, name: str) -> bool:
         parameters = inspect.signature(runner).parameters.values()  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return False
-    return any(p.name == name or p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
+    return any(
+        p.kind is inspect.Parameter.VAR_KEYWORD
+        or (p.name == name and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY))
+        for p in parameters
+    )
 
 
 def _accepts_on_output(runner: object) -> bool:
@@ -684,12 +688,6 @@ def _yaml_str(value: str) -> str:
 
 def _yaml_list(values: Sequence[str]) -> str:
     return "[" + ", ".join(_yaml_str(v) for v in values) + "]"
-
-
-def _yaml_indented_block(text: str, *, indent: int) -> str:
-    pad = " " * indent
-    lines = text.rstrip("\n").splitlines() or [""]
-    return "\n".join(f"{pad}{line}" if line else pad.rstrip() for line in lines)
 
 
 def _render_ralph_config(
@@ -728,10 +726,12 @@ def _render_hats_config(
     publishes: Sequence[str],
     backend_type: str,
     backend_args: list[str],
-    instructions: str,
 ) -> str:
     publishes_yaml = "\n".join(f"      - {_yaml_str(topic)}" for topic in publishes)
-    instructions_block = _yaml_indented_block(instructions, indent=6)
+    # Ralph v2.10.1 HatlessRalph::build_prompt injects PROMPT.md as
+    # OBJECTIVE on every iteration. Keep the
+    # hat nonempty (avoids Ralph's generic workflow), without copying the
+    # whole task into the same model context a second time.
     return (
         "event_loop:\n"
         f"  starting_event: {_yaml_str(initial_topic)}\n"
@@ -748,7 +748,7 @@ def _render_hats_config(
         f"      type: {_yaml_str(backend_type)}\n"
         f"      args: {_yaml_list(backend_args)}\n"
         "    instructions: |\n"
-        f"{instructions_block}\n"
+        "      Follow the OBJECTIVE above, including its acceptance criteria and completion/failure protocol.\n"
     )
 
 
@@ -794,7 +794,6 @@ def _write_runtime_config(
             publishes=sorted(request.success_topics | request.failure_topics),
             backend_type=backend_type,
             backend_args=backend_args,
-            instructions=request.instructions,
         )
     )
     return config_path, hats_path, prompt_path

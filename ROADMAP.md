@@ -221,6 +221,13 @@ dupliquée ailleurs :
 
 ## 5. WorkItem Flow
 
+**Efficacité des agents** : les workers implémentent, testent et corrigent,
+avec une progression factuelle brève. AIDO collecte les preuves et gère
+les transitions ; les rapports/roadmaps ne sont une tâche worker que si
+explicitement requis. Consignes Ralph sans copie intégrale dans le hat,
+plan QA réutilisé et sondes explicites indépendantes concurrentes.
+Les règles de contribution détaillent cette répartition.
+
 C'est le **seul** cycle de vie de WorkItem supporté. Pas de "défaut". Pas
 de "Lean". Pas de workflow alternatif — `WorkflowMode` a été supprimé du
 code (un seul mode restant n'a pas besoin d'un sélecteur).

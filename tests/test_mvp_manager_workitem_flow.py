@@ -362,6 +362,27 @@ def _new_stack(
 
 
 class TestWorkItemNominalFlow:
+    def test_external_qa_plan_without_keyword_support_still_runs(self, tmp_path: Path) -> None:
+        class ExternalQA(DynamicQAEngine):
+            def build_plan(self, request, *, phase):
+                return object()
+
+            def build_manifest(self, plan):
+                return QAEvidenceManifest(required_invariant_ids=("workitem-qa-check",))
+
+            async def run_async(self, request, plan=None, /):
+                assert plan is None  # this external API cannot accept plan=...
+                return self.run(request)
+
+        stack = _new_stack(
+            tmp_path, workers=[_worker("alice"), _worker("victor", provider="openai", backend="codex")],
+            qa_engine=ExternalQA(),
+            dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A"), None],
+        )
+        result = asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert len(stack["qa_engine"].requests) == 1
+
     def test_multiple_ready_candidates_pick_ascending_work_item_id_first(self, tmp_path: Path) -> None:
         """``run_next_work_item`` picks among READY/NEEDS_REWORK candidates
         by ascending ``work_item_id`` (module docstring) — asserted

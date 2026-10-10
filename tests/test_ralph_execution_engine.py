@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import yaml
 
 from orchestrator.execution_policy import ExecutionPermissionMode
 from orchestrator.execution_store import ExecutionStatus, ExecutionStore
@@ -215,6 +216,40 @@ class TestExecutionRequestValidation:
     def test_non_positive_timeout_rejected(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="positive"):
             _request(tmp_path, timeout_seconds=0)
+
+
+@pytest.mark.parametrize("worker", [_alice(), _victor(), _milo(), _gravity()])
+def test_task_delivered_once_without_losing_protocol(tmp_path: Path, worker: Worker) -> None:
+    from orchestrator.mvp_manager import _build_dev_instructions
+    from orchestrator.project_state import WorkItem
+
+    instructions = _build_dev_instructions(
+        WorkItem("wi", "mvp", "Fix café output", acceptance_criteria=("Keep UTF-8 intact.",)),
+        resume_context="Previous QA: handle incomplete chunks.",
+    )
+    captured = {}
+
+    def capture(args, cwd, timeout):
+        captured["prompt"] = Path(args[args.index("-P") + 1]).read_text()
+        if "-H" in args:
+            captured["hats"] = yaml.safe_load(Path(args[args.index("-H") + 1]).read_text())
+
+    runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=capture)
+    engine = RalphExecutionEngine(_store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW)
+    result = asyncio.run(engine.execute(_request(tmp_path, worker=worker, instructions=instructions)))
+
+    assert result.record.status is ExecutionStatus.SUCCEEDED
+    assert captured["prompt"] == instructions
+    assert 'ralph emit "work.completed"' in captured["prompt"]
+    assert 'ralph emit "work.failed"' in captured["prompt"]
+    assert captured["prompt"].endswith("LOOP_COMPLETE\n")
+    if worker.backend in {"claude_code", "codex"}:
+        hat = captured["hats"]["hats"]["worker"]
+        assert "OBJECTIVE" in hat["instructions"]  # nonempty keeps Ralph's custom workflow
+        assert "Fix café output" not in hat["instructions"]
+        assert set(hat["publishes"]) == {"work.completed", "work.failed"}
+    else:
+        assert "hats" not in captured
 
 
 class TestRecordCreatedBeforeSubprocess:
@@ -1479,6 +1514,13 @@ class TestWorkerCommitIdentityAudit:
     (``WorkerCommitIdentityMismatchError``) on the first commit in
     ``sha_before..sha_after`` not attributed to the expected worker on
     both author and committer."""
+
+    @pytest.fixture(autouse=True)
+    def isolate_fixture_identity(self, monkeypatch):
+        # A worker legitimately inherits these variables. These tests
+        # create commits with their own identities via git -c/--author.
+        for key in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+            monkeypatch.delenv(key, raising=False)
 
     def _init_repo(self, path: Path) -> str:
         subprocess.run(["git", "init", "-q"], cwd=path, check=True)

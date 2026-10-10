@@ -368,15 +368,26 @@ class OrchestratorEngine:
                 raise EngineConfigError(str(exc)) from exc
 
         quota_manager = QuotaManager(adapters, QuotaPolicy(state_ttl=_PROBE_STATE_TTL))
+        provider_names = sorted(providers)
+
+        async def probe_all():
+            return await asyncio.gather(
+                *(quota_manager.refresh(provider) for provider in provider_names),
+                return_exceptions=True,
+            )
+
+        # Independent probes share one event loop, as in WorkerSelector.
+        # Preserve a snapshot per provider even when another probe fails.
+        states = asyncio.run(probe_all())
         snapshots = []
-        for provider in sorted(providers):
-            try:
-                state = asyncio.run(quota_manager.refresh(provider))
-            except ProviderProbeError as exc:
+        for provider, state in zip(provider_names, states):
+            if isinstance(state, ProviderProbeError):
                 snapshots.append(
-                    ProviderSnapshot(provider=provider, available=False, reason=f"probe_error: {exc}")
+                    ProviderSnapshot(provider=provider, available=False, reason=f"probe_error: {state}")
                 )
                 continue
+            if isinstance(state, BaseException):
+                raise state
             reason = (
                 "available"
                 if state.availability.available
