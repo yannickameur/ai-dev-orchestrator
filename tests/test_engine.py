@@ -563,6 +563,43 @@ class TestRun:
         assert result.all_terminal is True
         assert len(second_runner.calls) == 0
 
+    def test_refused_merge_is_readable_then_resumed_by_the_next_run(self, tmp_path: Path, monkeypatch) -> None:
+        from orchestrator.git_governance import DirtyWorkingTreeError, GitGovernanceService
+
+        real_merge = GitGovernanceService.merge
+
+        def refuse(self, *a, **k):
+            raise DirtyWorkingTreeError(["__pycache__/x.pyc"])
+
+        monkeypatch.setattr(GitGovernanceService, "merge", refuse)
+        config_path = _write_config(tmp_path)
+        runner = _ScriptedRalphRunner(
+            [
+                {"topic": "work.completed", "mutate": _commit_action("feature.py", "x = 1\n", "DEV A")},
+                {"topic": "work.completed"},
+            ]
+        )
+        engine = OrchestratorEngine.open(
+            str(config_path), provider_adapters={"anthropic": _FakeAdapter(available=True)},
+            subprocess_runner=runner,
+        )
+        with pytest.raises(EngineError, match=r"merge is pending.*__pycache__/x\.pyc.*run again") as excinfo:
+            engine.run()
+        assert isinstance(excinfo.value.__cause__.__cause__, DirtyWorkingTreeError)
+
+        monkeypatch.setattr(GitGovernanceService, "merge", real_merge)
+        second_runner = _ScriptedRalphRunner([])
+        seen: list[EngineEvent] = []
+        result = OrchestratorEngine.open(
+            str(config_path), provider_adapters={"anthropic": _FakeAdapter(available=True)},
+            subprocess_runner=second_runner,
+        ).run(on_event=seen.append)
+
+        assert [e.kind for e in seen] == ["git.merge_ready", "git.merge_completed", "work_item.completed"]
+        assert seen[1].payload == {"tag": "feature/wi-1/done"}
+        assert result.all_terminal is True
+        assert len(second_runner.calls) == 0
+
     def test_run_reports_waiting_when_no_provider_available(self, tmp_path: Path) -> None:
         config_path = _write_config(tmp_path)
         engine = OrchestratorEngine.open(

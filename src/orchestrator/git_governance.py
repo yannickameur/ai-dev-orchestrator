@@ -549,7 +549,7 @@ class DirtyWorkingTreeError(GitGovernanceError):
     files are modified — never auto-stashed, reset, or cleaned."""
 
     def __init__(self, dirty_files: Sequence[str]) -> None:
-        super().__init__(f"working tree has modified tracked files: {list(dirty_files)!r}")
+        super().__init__(f"working tree has uncommitted changes: {list(dirty_files)!r}")
         self.dirty_files = tuple(dirty_files)
 
 
@@ -613,6 +613,18 @@ class MergeRefusedError(GitGovernanceError):
     def __init__(self, work_branch: str, *, reason: str) -> None:
         super().__init__(f"merge refused for {work_branch!r}: {reason}")
         self.work_branch = work_branch
+        self.reason = reason
+
+
+class PendingMergeBlockedError(GitGovernanceError):
+    """A COMPLETED WorkItem's governed merge could not be performed (yet):
+    the WorkItem stays COMPLETED with its merge pending, and the next run
+    resumes it — never by replaying DEV/QA. ``__cause__`` keeps the
+    underlying technical error."""
+
+    def __init__(self, work_item_id: str, reason: str) -> None:
+        super().__init__(f"work item {work_item_id!r} is completed but its merge is pending: {reason}")
+        self.work_item_id = work_item_id
         self.reason = reason
 
 

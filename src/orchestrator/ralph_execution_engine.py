@@ -1055,10 +1055,16 @@ async def _default_subprocess_runner(
     ``RalphTimeoutError``; an external cancellation
     (``asyncio.CancelledError``) is never caught here — it propagates
     unchanged to ``RalphExecutionEngine.execute``, which finalizes the
-    ``ExecutionRecord`` as ``INTERRUPTED`` before re-raising it."""
+    ``ExecutionRecord`` as ``INTERRUPTED`` before re-raising it.
+
+    ``PYTHONDONTWRITEBYTECODE=1`` (same as the governed QA runner): a
+    worker running Python must not leave ``__pycache__/`` behind for
+    Ralph's auto-commit to version."""
     try:
-        return await run_in_new_process_group(args, cwd, timeout, env={**os.environ, **(env or {})},
-                                           on_output=on_output, on_heartbeat=on_heartbeat)
+        return await run_in_new_process_group(
+            args, cwd, timeout, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", **(env or {})},
+            on_output=on_output, on_heartbeat=on_heartbeat,
+        )
     except asyncio.TimeoutError:
         raise RalphTimeoutError(f"ralph run timed out after {timeout}s")
 

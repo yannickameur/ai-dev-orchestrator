@@ -62,8 +62,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from orchestrator.engine import EngineConfigError, OrchestratorEngine
+from orchestrator.engine import EngineConfigError, OrchestratorEngine, delivery_blocked_message
 from orchestrator.execution_policy import ExecutionPermissionMode
+from orchestrator.git_governance import GitGovernanceError
 from orchestrator.project_config import MissingGitWorkspaceError, ProjectConfig, ProjectConfigError
 from orchestrator.project_runtime import (
     ConfigRuntimeConflictError,
@@ -646,7 +647,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
         cycles_run = 0
         for cycle in range(1, args.max_cycles + 1):
             cycles_run = cycle
-            result = asyncio.run(runtime.manager.run_next_work_item(config.mvp.id))
+            try:
+                result = asyncio.run(runtime.manager.run_next_work_item(config.mvp.id))
+            except GitGovernanceError as exc:
+                print(f"aido run: FAIL — {delivery_blocked_message(exc)}", file=sys.stderr)
+                return 1
             if result is None:
                 print("aido run: nothing currently eligible/due.")
                 break

@@ -1010,6 +1010,18 @@ class TestWorkerGitIdentityRealCommit:
         assert before.stdout == after.stdout
 
 
+class TestDefaultSubprocessRunnerBytecode:
+    def test_worker_python_never_writes_bytecode_for_auto_commit(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+        (tmp_path / "greet.py").write_text("GREETING = 'hi'\n")
+        exit_code, _, _ = asyncio.run(
+            _default_subprocess_runner([sys.executable, "-c", "import greet"], tmp_path, 10.0)
+        )
+        assert exit_code == 0
+        assert not (tmp_path / "__pycache__").exists()
+        assert not list(tmp_path.rglob("*.pyc"))
+
+
 class TestDefaultSubprocessRunnerTimeout:
     """AUD-8: the real, production ``_default_subprocess_runner`` timeout/
     kill path — every other test in this file exercises ``RalphTimeoutError``
