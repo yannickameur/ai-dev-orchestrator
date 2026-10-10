@@ -93,9 +93,10 @@ async def run_in_new_process_group(
     no-callback path.
 
     Known limitation, not hidden: this terminates every process that
-    stayed in the launched group. A descendant that itself detaches
-    into a new session/group (a double fork) is outside this group and
-    outside this project's control — ``ralph``/a provider CLI are
+    stayed in the launched session, including descendants that moved
+    into their own process group (as ``ralph`` and provider CLIs do). A
+    descendant that detaches into a new session (``setsid``) is outside
+    it and outside this project's control — ``ralph``/a provider CLI are
     external binaries already treated as such elsewhere in this
     codebase.
     """
@@ -205,28 +206,82 @@ async def _communicate_observed(
     return stdout, stderr
 
 
+#: Poll interval while waiting for every member of the launched session
+#: to exit during termination.
+_TERMINATION_POLL_SECONDS = 0.05
+
+
+def _session_members(sid: int) -> list[int]:
+    """Live (non-zombie) processes whose session id is ``sid``.
+
+    ``ralph`` and the provider CLI it launches each move into their own
+    process group, but they stay in the session this module started, so
+    the session — not the direct child's group — is what must end."""
+    members: list[int] = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return _session_members_from_ps(sid)
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", "rb") as handle:
+                stat = handle.read().decode(errors="replace")
+        except OSError:
+            continue
+        fields = stat[stat.rfind(")") + 2:].split()
+        if len(fields) > 3 and fields[0] != "Z" and int(fields[3]) == sid:
+            members.append(int(entry))
+    return members
+
+
+def _session_members_from_ps(sid: int) -> list[int]:
+    import subprocess
+
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,sess=,stat="], capture_output=True, text=True).stdout
+    except OSError:
+        return []
+    members = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[1] == str(sid) and not parts[2].startswith("Z"):
+            members.append(int(parts[0]))
+    return members
+
+
+def _signal_session(sid: int, sig: int) -> None:
+    for pid in _session_members(sid):
+        try:
+            os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+async def _session_ended(process: "asyncio.subprocess.Process", sid: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        if process.returncode is not None and not _session_members(sid):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        try:
+            await asyncio.wait_for(asyncio.shield(process.wait()), timeout=_TERMINATION_POLL_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def _terminate_process_group(process: "asyncio.subprocess.Process") -> None:
-    """SIGTERM the whole group, escalate to SIGKILL if it does not exit
-    within ``GRACE_PERIOD_SECONDS``, then reap — never leaves a zombie,
-    never raises on a group that has already exited on its own."""
-    try:
-        pgid = os.getpgid(process.pid)
-    except ProcessLookupError:
-        return  # already gone — nothing to reap beyond process.wait() below
-
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except ProcessLookupError:
+    """SIGTERM every process of the launched session — the direct child's
+    group and any group a descendant created inside that session — then
+    SIGKILL whatever is still alive after ``GRACE_PERIOD_SECONDS``, and
+    return only once the direct child is reaped and no session member is
+    left. Never raises on a session that already exited on its own."""
+    sid = process.pid  # start_new_session=True: the child leads its own session
+    _signal_session(sid, signal.SIGTERM)
+    if await _session_ended(process, sid, GRACE_PERIOD_SECONDS):
         return
-
-    try:
-        await asyncio.wait_for(asyncio.shield(process.wait()), timeout=GRACE_PERIOD_SECONDS)
-        return
-    except asyncio.TimeoutError:
-        pass
-
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    _signal_session(sid, signal.SIGKILL)
+    await _session_ended(process, sid, GRACE_PERIOD_SECONDS)
     await asyncio.shield(process.wait())

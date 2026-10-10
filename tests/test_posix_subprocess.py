@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -92,6 +93,75 @@ class TestCancellation:
             return "NOT cancelled — bug"
 
         assert asyncio.run(_drive()) == "cancelled"
+
+
+# Like `ralph` and the provider CLI it launches: a descendant that moves
+# into its own process group inside the launched session and ignores
+# SIGTERM, while the direct child exits at once on SIGTERM.
+_OWN_GROUP_DESCENDANT = (
+    "import os, signal, time; os.setpgid(0, 0); "
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+    "open('child.pid.tmp', 'w').write(str(os.getpid())); os.rename('child.pid.tmp', 'child.pid'); "
+    "time.sleep(30)"
+)
+_OWN_GROUP_DESCENDANT_SCRIPT = (
+    f"trap 'exit 0' TERM; {sys.executable} -c \"{_OWN_GROUP_DESCENDANT}\" & wait"
+)
+
+
+class TestDescendantInItsOwnProcessGroup:
+    def _cancel_after_start(self, tmp_path: Path) -> None:
+        async def _drive() -> None:
+            task = asyncio.ensure_future(
+                run_in_new_process_group(["sh", "-c", _OWN_GROUP_DESCENDANT_SCRIPT], tmp_path, timeout=30)
+            )
+            for _ in range(100):
+                if (tmp_path / "child.pid").exists():
+                    break
+                await asyncio.sleep(0.02)
+            await asyncio.sleep(0.1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(_drive())
+
+    def test_descendant_is_in_another_group_of_the_same_session(self, tmp_path: Path) -> None:
+        async def _drive() -> None:
+            task = asyncio.ensure_future(
+                run_in_new_process_group(["sh", "-c", _OWN_GROUP_DESCENDANT_SCRIPT], tmp_path, timeout=30)
+            )
+            for _ in range(100):
+                if (tmp_path / "child.pid").exists():
+                    break
+                await asyncio.sleep(0.02)
+            child = _read_child_pid(tmp_path)
+            assert os.getpgid(child) == child  # its own group, like ralph/codex
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(_drive())
+
+    def test_cancellation_returns_only_after_the_whole_session_is_gone(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        import orchestrator.posix_subprocess as module
+
+        monkeypatch.setattr(module, "GRACE_PERIOD_SECONDS", 0.5)
+        self._cancel_after_start(tmp_path)
+        # No settling sleep: termination must be complete when the call returns.
+        assert not _pid_alive(_read_child_pid(tmp_path))
+
+    def test_timeout_also_terminates_a_descendant_in_its_own_group(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        import orchestrator.posix_subprocess as module
+
+        monkeypatch.setattr(module, "GRACE_PERIOD_SECONDS", 0.5)
+        with pytest.raises(asyncio.TimeoutError):
+            asyncio.run(run_in_new_process_group(["sh", "-c", _OWN_GROUP_DESCENDANT_SCRIPT], tmp_path, timeout=0.5))
+        assert not _pid_alive(_read_child_pid(tmp_path))
 
 
 class TestNormalCompletion:
