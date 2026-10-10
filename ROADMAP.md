@@ -101,8 +101,8 @@ PASS/FAIL — jamais l'auto-déclaration d'un worker.
   diagnostic d'échec typé et heartbeat livrés dans le moteur. Le rendu
   terminal a été livré dans AIDO Code M3.1. Son acceptance réelle a révélé
   un défaut de sûreté du contenu public ; voir P21.1 proposé ci-dessous.
-- **P21.1 (Safe public execution output) : `PARTIAL / RECOVERY REQUIRED`**
-  (GO humain 2026-10-06), voir §13. Séparer l'observation
+- **P21.1 (Safe public execution output) : `DONE`** (acceptance
+  gouvernée 2026-10-10), voir §13. Séparer l'observation
   publiquement affichable des captures brutes à la frontière d'exécution
   moteur.
 
@@ -2956,7 +2956,7 @@ dans une autre session ne relève pas du nettoyage du groupe POSIX.
 WorkItems, mais son acceptance live reste partielle : une sortie brute
 Claude a exposé un bloc structuré de raisonnement privé. Voir P21.1.
 
-### P21.1 — Safe public execution output — `PARTIAL / RECOVERY REQUIRED` (GO humain 2026-10-06)
+### P21.1 — Safe public execution output — `DONE` (acceptance gouvernée 2026-10-10)
 
 **Défaut observé** : pendant le run gouverné AIDO Code M3.1, un bloc
 Claude `thinking` présent dans une ligne JSON structurée a été affiché
@@ -3238,11 +3238,14 @@ Aucun ancien WorkItem, record ou store ne
 sera muté. P21.1 reste `PARTIAL / RECOVERY REQUIRED` et M3.1 reste
 `PARTIAL` ; ne pas commencer M4.
 
-**Next** : faire valider explicitement cette nouvelle portée, puis
-contrôler `main` et la configuration candidate avant tout bootstrap.
-Après le GO de bootstrap, initialiser une seule fois le nouveau runtime
-et sauvegarder son état ; après un GO d'exécution séparé, lancer WI-05
-via le WorkItem Flow et n'acter la clôture qu'après toutes les preuves.
+**Conclusion d'acceptance (2026-10-10)** : P21.1 est `DONE`.
+`wi-acc-01` `COMPLETED` ; QA gouvernée `PASS` sur `f1e28f8d` ; 1 441
+tests moteur et 311 tests AIDO Code `PASS` ; merge et tag gouvernés ;
+Ctrl+C et reprise réelle `PASS` sur `p211-live7` ; sécurité des sorties
+publiques validée (aucun texte `thinking` réel non vide observé). Les
+statuts historiques WI-P21.1-04 `BLOCKED` et WI-P21.1-05 `FAILED` sont
+conservés. AIDO Code M3.1 est `DONE` ; M3 original reste `PARTIAL`.
+M4 n'est pas commencé.
 
 ### Ordre approuvé
 
@@ -3321,7 +3324,7 @@ via le WorkItem Flow et n'acter la clôture qu'après toutes les preuves.
 | P18 | Live execution events and graceful interruption | `OrchestratorEngine` doit-il exposer des événements publics fins (DEV A/DEV B/DEV FIX/QA/Git) en temps réel, avec les métadonnées réellement décidées, et traiter explicitement une interruption pendant `run()` ? | **`DONE`** (GO humain 2026-09-26) — callback `on_event` optionnel ; **P18-01/P18-02/P18-03 `DONE`** (transport live + métadonnées fines DEV A/B/FIX/QA/Git, `EngineEvent` dans `orchestrator.engine_events`, `RunResult.events` inchangé, interruption/recovery DEV+QA) ; Adaptive Execution non branché ; recovery étendu (jamais dupliqué) ; voir sous-section P18 ci-dessus |
 | P19 | Gravity worker/backend | Un worker Gravity (`agy`), exécutable via Ralph en réutilisant le mécanisme custom backend déjà employé par Vibe, mérite-t-il d'être intégré ? | **`APPROUVÉ`** (GO humain 2026-09-28) — Phase A (spike réel) `DONE` ; implémentation en cours (branche `feature/p19-gravity-worker-backend`) ; pas une dépendance de M3 ; voir sous-section P19 ci-dessus |
 | P21 | Live worker execution observability | Comment rendre visibles les sorties réelles du worker et les échecs sans verdict métier dans `aido run`, sans scraping frontend ni retry ? | **`DONE` (2026-10-06)** — WorkItems P21-01/02/03/04 livrés, PR #36, CI Python 3.10/3.12 et acceptance Gravity jetable ; voir sous-section P21 ci-dessus |
-| P21.1 | Safe public execution output | Comment garantir que sorties et diagnostics publics n'exposent aucun bloc de raisonnement privé ? | **`PARTIAL / RECOVERY REQUIRED`** — WI-P21.1-01 `FAILED` et 02 `BLOCKED` historiques ; WI-03 `COMPLETED` sur `main`, WI-04 `BLOCKED` terminal après trois échecs QA environnementaux ; nouveau WI-05 sous MVP indépendant proposé, non initialisé et soumis à GO explicite ; voir sous-section P21.1 ci-dessus |
+| P21.1 | Safe public execution output | Comment garantir que sorties et diagnostics publics n'exposent aucun bloc de raisonnement privé ? | **`DONE` (acceptance gouvernée 2026-10-10)** — `wi-acc-01` `COMPLETED` ; WI-04 `BLOCKED` et WI-05 `FAILED` historiques conservés ; voir sous-section P21.1 ci-dessus |
 | P13.5 | Frontière moteur/librairie : injection du `WorkerRegistry`, `workers:` optionnel | `aido.yaml` doit-il rester la source de configuration complète du pool de workers, ou le moteur doit-il accepter un `WorkerRegistry` construit/injecté par l'application appelante (AIDO Code) ? | **`DONE`** (2026-09-24) — `workers:` optionnel dans `ProjectConfig` ; `OrchestratorEngine`/`ProjectRuntime` acceptent `worker_registry=` ; `WorkerSelector` reste seul propriétaire de la sélection ; chemin legacy fichier intégralement conservé et testé ; voir sous-section P13.5 ci-dessus |
 | P13.6 | Retrait de la commande produit `aido` (cutover AIDO Code) | AIDO Code ayant atteint son propre cutover produit, `ai-dev-orchestrator` doit-il cesser d'installer la commande `aido` ? | **`DONE`** (2026-09-24) — `[project.scripts]` retiré de `pyproject.toml` ; `orchestrator.cli`/`default_workers.yaml` conservés, legacy/internes, toujours réellement testés ; aucun binaire de compatibilité ajouté (YAGNI) ; voir sous-section P13.6 ci-dessus |
 | P13.7 | Pre-execution state safety | Le cutover M8 d'AIDO Code a révélé un défaut réel (`WI-M8-01` resté `RUNNING` durablement, sans `ExecutionRecord`) — un WorkItem/son MVP doivent-ils n'être marqués `RUNNING` qu'une fois tous les prérequis pré-exécution (préparation Git notamment) réellement satisfaits ? | **`DONE`** (2026-09-25) — `mark_mvp_running`/`mark_work_item_running` déplacés après les prérequis dans `_execute_work_item` et `_resume_dev_b_wait` (deux sites réels) ; invariant de recovery existant inchangé ; 4 nouveaux tests, chacun vérifié rouge sans le correctif ; `WI-M8-01` non modifié rétroactivement (YAGNI) ; voir sous-section P13.7 ci-dessus |

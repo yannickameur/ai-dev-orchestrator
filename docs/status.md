@@ -13,7 +13,10 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   les variables Git d'un worker ; 311 tests AIDO Code passent avec ce moteur.
   Exemple DEV A+B : 4 472 → 2 504 caractères dans les consignes prompt+hat
   générées (−44 %), sans mesure de tokens facturés. Revue Astra favorable ;
-  dry-run Ralph 2.10.1 réussi. Acceptance P21.1/M3.1 toujours partielle.
+  dry-run Ralph 2.10.1 réussi.
+- **P21.1 / AIDO Code M3.1 (2026-10-10)** : `DONE` après acceptance
+  gouvernée (`wi-acc-01` `COMPLETED`, QA `PASS` sur `f1e28f8d`, 1 441
+  tests moteur et 311 AIDO Code `PASS`). Voir `ROADMAP.md` §P21.1.
 - **Release** : v0.1.1 — **PUBLIÉE** (première release publique open
   source).
 - **MVP 0.1** : `DONE`. Contrat d'acceptation : `MVP_SPEC.yaml` v4.
@@ -95,7 +98,7 @@ Voir `ROADMAP.md` pour la source de vérité fonctionnelle complète.
   gouvernée ; l'approbation automatique après 20 minutes ne s'appliquait
   pas. P21.1 et M3.1 étaient `PARTIAL` et aucun code fonctionnel P21.1
   n'avait encore atterri sur `main`. Voir `ROADMAP.md`.
-- **État courant P21.1 et reprise WI-05 proposée (2026-10-09)** : après
+- **Historique P21.1 et reprise WI-05 (2026-10-09, dépassé)** : après
   GO explicite, WI-P21.1-03 est `COMPLETED`, livré par PR #44 sur `main`
   (`dae6e6ab0fd7928f3bc20b566adad988ddc270b3`, CI Python
   3.10/3.12 `PASS`). WI-P21.1-04 est `BLOCKED` terminal,
