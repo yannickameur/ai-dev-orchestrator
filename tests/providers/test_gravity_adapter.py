@@ -220,6 +220,34 @@ class TestUsageProbeToleratesMissingFields:
         assert state.quota_windows[0].utilization is None
 
 
+class TestUsageProbeExhaustedWindow:
+    @staticmethod
+    def _usage_with_3p_remaining(remaining: float) -> dict:
+        payload = json.loads(json.dumps(REAL_USAGE_RESPONSE))
+        payload["command"]["data"]["groups"][1]["buckets"][0]["remaining_fraction"] = remaining
+        return payload
+
+    def test_exhausted_bucket_makes_provider_unavailable_with_windows_kept(self) -> None:
+        adapter = GravityAdapter(
+            subprocess_runner=_runner_returning(self._usage_with_3p_remaining(0)), clock=lambda: UTC_NOW,
+        )
+
+        state = asyncio.run(adapter.probe())
+
+        assert state.availability.available is False
+        assert state.availability.reason is UnavailabilityReason.QUOTA_EXHAUSTED
+        windows = {w.window_type: w for w in state.quota_windows}
+        assert windows["3p-weekly"].utilization == 1.0
+        assert windows["3p-weekly"].reset_at == datetime(2026, 10, 5, 15, 13, 14, tzinfo=timezone.utc)
+
+    def test_nearly_exhausted_bucket_stays_available(self) -> None:
+        adapter = GravityAdapter(
+            subprocess_runner=_runner_returning(self._usage_with_3p_remaining(0.01)), clock=lambda: UTC_NOW,
+        )
+
+        assert asyncio.run(adapter.probe()).availability.available is True
+
+
 class TestUsageProbeFailure:
     def test_nonzero_exit_is_unavailable(self) -> None:
         adapter = GravityAdapter(subprocess_runner=_runner_returning({}, exit_code=1), clock=lambda: UTC_NOW)

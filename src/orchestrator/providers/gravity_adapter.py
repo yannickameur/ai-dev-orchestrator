@@ -242,9 +242,20 @@ class GravityAdapter(ProviderAdapter):
                 quota_windows=(),
             )
 
+        windows = _quota_windows_from_usage_payload(payload, observed_at=observed_at)
+        # A bucket with no remaining fraction makes every model of its group
+        # fail with HTTP 429 (observed with agy 1.3.3): like an exhausted
+        # Claude window, one exhausted observed window makes the shared
+        # account unavailable rather than letting Ralph loop on 429s.
+        if any(window.utilization is not None and window.utilization >= 1.0 for window in windows):
+            availability = ProviderAvailability(
+                available=False, observed_at=observed_at, reason=UnavailabilityReason.QUOTA_EXHAUSTED,
+            )
+        else:
+            availability = ProviderAvailability(available=True, observed_at=observed_at)
         return ProviderState(
             provider=PROVIDER_NAME,
-            availability=ProviderAvailability(available=True, observed_at=observed_at),
+            availability=availability,
             observed_at=observed_at,
-            quota_windows=_quota_windows_from_usage_payload(payload, observed_at=observed_at),
+            quota_windows=windows,
         )
