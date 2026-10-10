@@ -426,6 +426,8 @@ class TestExecutionTimes:
         end = UTC_T0 + timedelta(seconds=seconds)
         if fail == "interrupted":
             store.mark_interrupted(eid, finished_at=end)
+        elif fail == "recovered":
+            store.mark_recovery_required(eid, finished_at=end)
         elif fail:
             store.mark_failed(eid, finished_at=end)
         else:
@@ -467,13 +469,14 @@ class TestExecutionTimes:
         assert [p.provider for p in snap.providers] == ["anthropic", "mistral", "openai"]
         assert snap.total_seconds == 12
 
-    def test_failed_and_interrupted_are_counted(self, tmp_path: Path) -> None:
+    def test_failed_interrupted_and_recovered_are_counted(self, tmp_path: Path) -> None:
         engine, store = self._bootstrapped(tmp_path)
         self._add(store, "e1", "anthropic", 2, fail=True)
         self._add(store, "e2", "anthropic", 3, fail="interrupted")
+        self._add(store, "e3", "anthropic", 4, fail="recovered")
         store.close()
         snap = engine.execution_times()
-        assert snap.providers[0].executions == 2 and snap.providers[0].seconds == 5
+        assert snap.providers[0].executions == 3 and snap.providers[0].seconds == 9
 
     def test_running_execution_is_unknown_not_zero(self, tmp_path: Path) -> None:
         engine, store = self._bootstrapped(tmp_path)
@@ -505,9 +508,19 @@ class TestExecutionTimes:
         assert snap.total_seconds == 4
 
     def test_other_mvp_executions_excluded(self, tmp_path: Path) -> None:
+        from orchestrator.project_runtime import STORE_FILENAMES
+        from orchestrator.project_state import ProjectStateStore
+
         engine, store = self._bootstrapped(tmp_path)
+        config = ProjectConfig.load(tmp_path / "aido.yaml")
+        projects = ProjectStateStore(config.project.state_dir / STORE_FILENAMES["project"])
+        try:
+            projects.create_mvp(mvp_id="mvp-2", project_id=config.project.id, objective="Other MVP")
+            projects.create_work_item(work_item_id="wi-2", mvp_id="mvp-2", title="Other work")
+        finally:
+            projects.close()
         self._add(store, "e1", "anthropic", 4)
-        self._add(store, "e2", "openai", 50, task="wi-other-mvp")
+        self._add(store, "e2", "openai", 50, task="wi-2")
         store.close()
         snap = engine.execution_times()
         assert [p.provider for p in snap.providers] == ["anthropic"]
