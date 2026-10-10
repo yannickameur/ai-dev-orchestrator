@@ -192,6 +192,21 @@ These are load-bearing product decisions, not style preferences — see
   requires them for your own commits — this project's own history
   intentionally does not carry them.
 
+## Agent productivity
+
+DEV A implements, tests affected behavior, fixes failures and commits.
+DEV B reviews the diff against acceptance criteria, corrects real defects
+and gives a concise verdict. Workers report brief factual progress through
+existing output channels, without private reasoning. They do not recreate
+logs, manage statuses, or write reports/roadmaps unless the task requires it.
+AIDO owns transitions and execution evidence; configured deterministic QA
+owns PASS/FAIL. An authorized cycle covers its planned transitions; human
+decisions concern new scope or terminal blockers.
+
+The target is at least 90% useful technical work and at most 10%
+administration. This is a direction, not a measured token ratio. Reuse
+existing mechanisms; do not add a metrics or supervision framework.
+
 ## Documentation expectations
 
 If you change observable behavior, update the docs that describe it:

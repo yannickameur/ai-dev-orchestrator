@@ -187,6 +187,7 @@ from orchestrator.ralph_execution_engine import (
     RalphExecutionEngine,
     RalphExecutionEngineError,
     RalphEvent,
+    _accepts_kwarg,
     _determine_verdict,
 )
 from orchestrator.recovery import RecoveryCoordinator
@@ -299,12 +300,24 @@ def _default_id_factory() -> str:
 # backend-specific branch in code: the same instructions text for every
 # worker, regardless of provider/backend.
 _COMMIT_GOVERNANCE_REMINDER = (
-    "Before emitting completion, ensure any code/test changes are committed with "
-    "git — do not leave them uncommitted. Use this repository's already "
-    "configured git identity (git config user.name/user.email) as both author "
-    "and committer; never pass --author, never use a different identity. Do not "
-    "add any AI attribution, Co-Authored-By, Signed-off-by, or similar trailer "
-    "to the commit message. Leave the working tree clean after committing."
+    "Commit changes with the configured Git author and committer; no identity "
+    "overrides, --author, AI attribution, Co-Authored-By or Signed-off-by trailers. "
+    "Leave a clean working tree; no artificial empty commit."
+)
+
+_WORKER_EXECUTION_RULES = (
+    "Give brief factual progress through normal output: actions, tests, results, blockers; "
+    "never private reasoning. AIDO records execution evidence and controls transitions. "
+    "Do not reconstruct logs, manage statuses or write reports/roadmaps unless the task requires it. "
+    "Completion reports your phase; AIDO still enforces independent review, QA and Git gates."
+)
+
+_COMPLETION_INSTRUCTIONS = (
+    "When your assigned phase is complete, emit:\n"
+    f'ralph emit "{SUCCESS_TOPIC}" "done"\n'
+    "If you cannot complete it, emit:\n"
+    f'ralph emit "{FAILURE_TOPIC}" "<short reason>"\n'
+    "Then output:\nLOOP_COMPLETE\n"
 )
 
 
@@ -315,12 +328,11 @@ def _build_dev_instructions(work_item: WorkItem, *, resume_context: str | None) 
         f"{work_item.title}\n\n"
         f"Acceptance criteria:\n{criteria}\n\n"
         f"{rework_block}"
+        "Implement the criteria, run relevant tests and fix failures. Reuse existing components; "
+        "keep changes within this task.\n\n"
+        f"{_WORKER_EXECUTION_RULES}\n\n"
         f"{_COMMIT_GOVERNANCE_REMINDER}\n\n"
-        "When this work item is genuinely complete, emit exactly:\n\n"
-        f'ralph emit "{SUCCESS_TOPIC}" "done"\n\n'
-        "If you cannot complete it, emit exactly:\n\n"
-        f'ralph emit "{FAILURE_TOPIC}" "<short reason>"\n\n'
-        "Then output:\n\nLOOP_COMPLETE\n"
+        f"{_COMPLETION_INSTRUCTIONS}"
     )
 
 
@@ -333,18 +345,12 @@ def _build_dev_b_instructions(work_item: WorkItem, *, dev_a_worker_id: str) -> s
         f"Corrective review of the implementation just produced by another developer "
         f"({dev_a_worker_id}) for: {work_item.title}\n\n"
         f"Acceptance criteria:\n{criteria}\n\n"
-        "Re-read the actual code and tests already committed on this branch. Verify it "
-        "genuinely meets the acceptance criteria, is simple (KISS), and does not implement "
-        "anything beyond this work item's scope (YAGNI). If you find evident issues, fix them "
-        "directly and commit the fix — do not just write a list of suggestions for someone else "
-        "to apply. Do not implement the next feature, refactor unrelated code, or add "
-        "frameworks/abstractions not required here.\n\n"
+        "Review the committed diff and relevant code/tests against these criteria. "
+        "Fix real defects directly, test affected behavior and commit corrections. "
+        "Reuse existing components; KISS/YAGNI, no unrelated refactors. Give a concise verdict.\n\n"
+        f"{_WORKER_EXECUTION_RULES}\n\n"
         f"{_COMMIT_GOVERNANCE_REMINDER}\n\n"
-        "When you are done reviewing (whether or not you made changes), emit exactly:\n\n"
-        f'ralph emit "{SUCCESS_TOPIC}" "done"\n\n'
-        "If you cannot complete this review, emit exactly:\n\n"
-        f'ralph emit "{FAILURE_TOPIC}" "<short reason>"\n\n'
-        "Then output:\n\nLOOP_COMPLETE\n"
+        f"{_COMPLETION_INSTRUCTIONS}"
     )
 
 
@@ -1297,6 +1303,7 @@ class MVPManager:
         build_plan = getattr(self._qa_engine, "build_plan", None)
         build_manifest = getattr(self._qa_engine, "build_manifest", None)
         manifest: QAEvidenceManifest | None = None
+        plan = None
         if callable(build_plan) and callable(build_manifest):
             plan = build_plan(request, phase=phase)
             manifest = build_manifest(plan)
@@ -1319,7 +1326,10 @@ class MVPManager:
         run_async = getattr(self._qa_engine, "run_async", None)
         try:
             if callable(run_async):
-                result = await run_async(request)
+                if plan is not None and _accepts_kwarg(run_async, "plan"):
+                    result = await run_async(request, plan=plan)
+                else:
+                    result = await run_async(request)
             else:
                 result = await asyncio.to_thread(self._qa_engine.run, request)
         except asyncio.CancelledError:

@@ -11,6 +11,7 @@ and conventions as ``tests/test_cli.py``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
@@ -401,6 +402,44 @@ class TestStatus:
 
 
 class TestProbeWorkers:
+    def test_independent_probes_overlap_and_preserve_partial_failure(self, tmp_path: Path) -> None:
+        started = set()
+        both_started = None
+
+        class BarrierAdapter(_FakeAdapter):
+            def __init__(self, name):
+                super().__init__()
+                self.name = name
+
+            async def probe(self):
+                nonlocal both_started
+                if both_started is None:
+                    both_started = asyncio.Event()
+                started.add(self.name)
+                if len(started) == 2:
+                    both_started.set()
+                await asyncio.wait_for(both_started.wait(), timeout=1)
+                if self.name == "openai":
+                    self.probe_calls += 1
+                    raise RuntimeError("probe unavailable")
+                return await super().probe()
+
+        registry = REGISTRY_TWO_WORKERS.replace("provider: anthropic", "provider: openai", 1)
+        config_path = _write_config(tmp_path, registry=registry)
+        adapters = {p: BarrierAdapter(p) for p in ("anthropic", "openai")}
+        engine = OrchestratorEngine.open(str(config_path), provider_adapters=adapters)
+
+        # Explicit probes stay fresh on each call, with one attempt per provider.
+        for count in (1, 2):
+            started.clear()
+            both_started = None
+            snapshots = engine.probe_workers()
+            assert [s.provider for s in snapshots] == ["anthropic", "openai"]
+            assert snapshots[0].available is True
+            assert snapshots[1].available is False
+            assert "probe unavailable" in snapshots[1].reason
+            assert all(a.probe_calls == count for a in adapters.values())
+
     def test_probe_returns_a_snapshot_per_provider_of_enabled_workers(self, tmp_path: Path) -> None:
         config_path = _write_config(tmp_path)
         adapter = _FakeAdapter(available=True)
@@ -465,7 +504,18 @@ class TestProbeWorkers:
 
 
 class TestRun:
-    def test_run_drives_full_workitem_flow_to_completed(self, tmp_path: Path) -> None:
+    def test_run_drives_full_workitem_flow_to_completed(self, tmp_path: Path, monkeypatch) -> None:
+        from orchestrator.internal_qa_engine import InternalQAEngine
+
+        plans = []
+        build_plan = InternalQAEngine.build_plan
+
+        def record_plan(self, request, **kwargs):
+            plan = build_plan(self, request, **kwargs)
+            plans.append(plan)
+            return plan
+
+        monkeypatch.setattr(InternalQAEngine, "build_plan", record_plan)
         config_path = _write_config(tmp_path)
         runner = _ScriptedRalphRunner(
             [
@@ -483,6 +533,7 @@ class TestRun:
         assert len(result.work_items) == 1
         assert result.work_items[0].status == "completed"
         assert len(runner.calls) == 2
+        assert len(plans) == 1  # same plan supplies the manifest and the actual QA run
         assert [e.kind for e in result.events] == ["work_item.completed"]
 
     def test_run_is_also_resume_and_never_reruns_a_completed_workitem(self, tmp_path: Path) -> None:
