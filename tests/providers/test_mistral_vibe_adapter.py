@@ -1,4 +1,4 @@
-"""Tests for MistralVibeAdapter (post-MVP 0.1 — see docs/VIBE_SPIKE.md).
+"""Tests for MistralVibeAdapter (post-MVP 0.1 — see the Vibe spike (Git history)).
 
 All tests are offline: no network call, no real Vibe invocation anywhere in
 this file except the one real subprocess-timeout test, which spawns the

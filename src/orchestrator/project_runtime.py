@@ -2,7 +2,7 @@
 stores/services/``MVPManager`` WorkItem Flow needs (P1).
 
 Centralizes exactly the wiring previously done by hand in
-``scripts/run_external_project_pilot.py`` (evidence this shape works, not
+the former external-project pilot harness (Git history) (evidence this shape works, not
 a second architecture) — so the public ``aido`` CLI, and any future
 caller, never repeats it.
 
@@ -29,7 +29,7 @@ clearly, before any execution, rather than being silently dropped.
 ``ProviderConfigurationError`` remains available for any future provider
 whose adapter factory needs configuration it does not have (e.g. an API
 key) rather than being already-authenticated externally like the 4
-providers above — none of them needs one today (P20, ROADMAP.md §13:
+providers above — none of them needs one today (P20, ROADMAP.md:
 DeepSeek/Kimi, the only two providers that ever exercised this path,
 were removed from the active product — never validated by a real
 execution). Per the same "only providers of enabled workers are
@@ -240,7 +240,7 @@ class ProjectRuntime:
             validation_store.set_project_commands(config.project.id, list(config.qa_commands))
 
             # Same proven WorkItem Flow-compatible policy already used by
-            # scripts/run_external_project_pilot.py: require_review/
+            # the former external-project pilot harness: require_review/
             # require_required_gates default True in GitGovernancePolicy,
             # but WorkItem Flow wires neither a quality_gate_runner nor a
             # review_store into MVPManager (the QA phase's own commands ARE

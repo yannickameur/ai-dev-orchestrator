@@ -331,7 +331,7 @@ class TestNoRealExecutionDependency:
 
 class TestPermissionModeAudit:
     """P12 — project-controlled worker execution permission mode must be
-    observable/auditable per execution (ROADMAP.md §13)."""
+    observable/auditable per execution (ROADMAP.md)."""
 
     def test_new_execution_stores_requested_permission_mode(self, tmp_path: Path) -> None:
         store = _store(tmp_path)

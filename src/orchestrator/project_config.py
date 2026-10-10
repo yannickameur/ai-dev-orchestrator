@@ -6,8 +6,8 @@ reference, execution permission policy, Git base branch, the current
 MVP, its WorkItems, and its deterministic QA commands.
 
 This eliminates the two current architectural problems P12 is meant to
-fix (ROADMAP.md §13): (A) external projects were only describable/wired
-through a custom Python harness (e.g. ``scripts/run_external_project_pilot.py``);
+fix (ROADMAP.md): (A) external projects were only describable/wired
+through a custom Python harness (e.g. the former external-project pilot harness (Git history));
 (B) worker execution permission mode depended entirely on machine-local
 CLI configuration rather than an explicit, project-declared policy.
 
@@ -51,7 +51,7 @@ Path semantics: every relative path in ``aido.yaml`` (``project.workspace``,
 working directory. ``~`` is expanded. If ``project.state_dir`` is omitted,
 it defaults deterministically to
 ``~/.local/state/ai-dev-orchestrator/projects/<project-id>/`` — the same
-convention already used elsewhere in this project (ROADMAP.md §8) — never
+convention already used elsewhere in this project (ROADMAP.md) — never
 ``/tmp``.
 
 This module does not yet wire a ``ProjectConfig`` into

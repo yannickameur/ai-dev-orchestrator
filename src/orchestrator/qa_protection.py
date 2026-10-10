@@ -2,7 +2,7 @@
 not been silently weakened, deleted, or semantically rewritten
 (Slice 22).
 
-CENTRAL INVARIANT (``docs/QA_STRATEGY.md`` §5): an existing regression
+CENTRAL INVARIANT (the QA strategy study (Git history) §5): an existing regression
 test is a protected asset. Neither an internal QA engine nor an external
 solution can delete an assertion, weaken it, skip the test, replace an
 expected value, or semantically "self-heal" it, just because new code

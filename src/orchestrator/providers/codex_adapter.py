@@ -32,7 +32,7 @@ Design notes:
   layered on top — one overall bound is enough and easier to reason about.
 - Native ``rateLimits.primary``/``rateLimits.secondary`` map to
   ``QuotaWindow`` types ``primary_5h``/``secondary_7d`` (see
-  docs/SPIKE_RALPH.md and tests/providers/test_contracts.py for this
+  the Ralph spike (Git history) and tests/providers/test_contracts.py for this
   established naming) — one window is built per native key that is
   actually present, never assuming both must exist.
 - ``usedPercent`` (an integer 0-100) is converted to a ``utilization``
@@ -80,7 +80,7 @@ _MAX_LINES_PER_PHASE = 25
 
 # Native rateLimits.<key> -> normalized QuotaWindow.window_type. Confirmed
 # native windows are a rolling 5h window and a 7-day window (see
-# docs/SPIKE_RALPH.md) — never write "5m" here, that would be a 5-minute
+# the Ralph spike (Git history)) — never write "5m" here, that would be a 5-minute
 # window, not the observed 5-hour one.
 _WINDOW_LABELS = {"primary": "primary_5h", "secondary": "secondary_7d"}
 

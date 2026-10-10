@@ -1,6 +1,6 @@
 """MistralVibeAdapter — probes Vibe CLI availability via a minimal real call.
 
-EXECUTION_PROBE_ONLY (see docs/VIBE_SPIKE.md §9, §12): unlike
+EXECUTION_PROBE_ONLY (see the Vibe spike (Git history)): unlike
 ``ClaudeCodeAdapter``/``CodexAdapter``, Vibe exposes **no** structured
 quota/rate-limit telemetry anywhere — confirmed both by a real spike
 execution (zero `usage`/`token`/`quota`/`rate_limit` fields in its
@@ -21,7 +21,7 @@ This adapter never fabricates what it cannot know:
   during the spike, so this classification is best-effort only and must
   never be treated as authoritative.
 
-Reference command (see docs/VIBE_SPIKE.md, real spike evidence):
+Reference command (see the Vibe spike (Git history), real spike evidence):
 
     vibe -p "<prompt>" --output json --trust --auto-approve --max-turns 1
 """

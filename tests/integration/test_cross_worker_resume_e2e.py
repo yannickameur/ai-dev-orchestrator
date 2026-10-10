@@ -31,7 +31,7 @@ not simulated in memory.
 
 The chosen "tiny but real" feature: a fixture ``review_candidate.py``
 contains a deliberately-wrong ``add(a, b): return a - b`` — the same
-tiny bug shape ``docs/SPIKE_RALPH.md``'s author!=reviewer spike
+tiny bug shape the Ralph spike (Git history)'s author!=reviewer spike
 historically used (that original spike lived in a real, separate
 developer-machine checkout; this test no longer depends on it existing
 and instead reproduces the same bug in a real, disposable Git

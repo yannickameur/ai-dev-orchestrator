@@ -23,17 +23,12 @@ jamais sur la seule parole d'un LLM.
 
 ## État du projet
 
-Voir [`docs/status.md`](docs/status.md) pour l'état factuel courant et
-[`ROADMAP.md`](ROADMAP.md) pour le détail complet (vision, état actuel
-du produit, architecture, WorkItem Flow, invariants, validations réelles
-et propositions à voter — la source de vérité fonctionnelle de ce
-projet).
+Voir [`ROADMAP.md`](ROADMAP.md) pour l'état courant, les principes et
+les travaux futurs (source de vérité fonctionnelle de ce projet).
 
-**MVP 0.1 : `DONE`** (contrat d'acceptation dans
-[`MVP_SPEC.yaml`](MVP_SPEC.yaml)). Gouvernance Git/merge/tag, QA gouvernée,
-et le workflow ci-dessous sont implémentés, testés, et validés par une
-exécution réelle de bout en bout sur un projet externe (voir « Exemple
-réel » plus bas).
+**MVP 0.1 : `DONE`.** Gouvernance Git/merge/tag, QA gouvernée et le
+workflow ci-dessous sont implémentés, testés et validés par des
+exécutions réelles de bout en bout.
 
 ## Comment ça marche
 
@@ -135,7 +130,7 @@ interne uniquement — jamais réinstallée comme surface produit. P13 (le
 découplage initial) et P13.5 (l'injection `WorkerRegistry`) restent les
 jalons historiques ayant rendu ce découplage possible ; voir
 [`docs/PROJECT_CONFIG.md`](docs/PROJECT_CONFIG.md), « Engine/library
-boundary », et `ROADMAP.md` §13.
+boundary ».
 
 ## Providers intégrés
 
@@ -143,8 +138,8 @@ boundary », et `ROADMAP.md` §13.
 |---|---|---|
 | Anthropic | Claude Code | ✅ VALIDATED |
 | OpenAI | Codex CLI | ✅ VALIDATED |
-| Mistral | Vibe | ✅ VALIDATED — voir [`docs/VIBE_SPIKE.md`](docs/VIBE_SPIKE.md). Son signal de disponibilité reste `EXECUTION_PROBE_ONLY` (pas de fenêtre de quota observable), jamais fabriqué en pourcentage |
-| Gravity | agy | ✅ VALIDATED — voir `ROADMAP.md` §13, sections P19/P20. Son état de quota provient du probe read-only `agy -p "/usage" --output-format json` (aucun tour modèle consommé). Workers : Arthur et Nora |
+| Mistral | Vibe | ✅ VALIDATED. Son signal de disponibilité reste `EXECUTION_PROBE_ONLY` (pas de fenêtre de quota observable), jamais fabriqué en pourcentage |
+| Gravity | agy | ✅ VALIDATED — voir `ROADMAP.md`. Son état de quota provient du probe read-only `agy -p "/usage" --output-format json` (aucun tour modèle consommé). Workers : Arthur et Nora |
 
 Workers actifs (8, 4 providers) : Alice, Lydie (Anthropic) ; Victor, Yannick
 (OpenAI) ; Nathaniel, Juno (Mistral) ; Arthur, Nora (Gravity). DeepSeek et
@@ -274,10 +269,6 @@ plus tard, contre le même `aido.yaml`, rouvre le même état persistant
 `RECOVERY_REQUIRED` existants — il n'existe pas de commande `aido resume`
 séparée.
 
-`scripts/run_external_project_pilot.py` reste un exemple réel antérieur à
-P1 (jamais lancé via `pytest` — voir son propre docstring), gardé comme
-preuve d'implémentation, pas comme surface produit.
-
 **Permissions d'exécution réelle** : les tests offline ci-dessus ne
 nécessitent aucun accès provider. Une exécution réelle de worker exige en
 revanche des CLI providers déjà authentifiées et capables d'une exécution
@@ -293,22 +284,6 @@ exécution réelle, sans jamais demander de confirmation interactive
 et `CONTRIBUTING.md`, « Real worker execution and permissions », pour la
 mise en garde de sécurité — vous avez toujours besoin des CLI providers
 installées et authentifiées vous-même, AIDO ne les gère jamais.
-
-Pour un cas réel complet, narré et honnête (y compris une régression
-découverte et corrigée), voir l'exemple ci-dessous.
-
-## Exemple réel — Morpion Web 3D
-
-Un vrai jeu de morpion (tic-tac-toe) web a été construit, de bout en
-bout, par ce projet : roadmap → WorkItems → DEV A → DEV B → QA
-déterministe (pytest + tests Node + régression navigateur Playwright) →
-merge → tag — avec routage multi-provider réel, repli same-provider, et
-une régression bien réelle découverte après un premier acceptance
-incomplet.
-
-Voir [`examples/morpion-web-3d/README.md`](examples/morpion-web-3d/README.md)
-pour le récit complet, y compris pourquoi la reprise d'un WorkItem
-`WAITING` doit utiliser un état persistant hors `/tmp`.
 
 ## État de projet / persistance
 
@@ -332,8 +307,7 @@ qu'une simple survie inter-process. Un chemin persistant typique :
 explicitement aux constructeurs de store existants (aucun nouveau
 framework de persistance). Une copie de travail purement jetable
 (checkout temporaire pour reproduire un bug) peut en revanche rester
-sous `/tmp` sans problème. Voir l'exemple Morpion ci-dessus pour le cas
-réel qui a établi cette leçon.
+sous `/tmp` sans problème.
 
 ## Soutenir le projet
 
@@ -376,10 +350,7 @@ Voir [`CONTRIBUTING.md`](CONTRIBUTING.md).
 ## Documentation
 
 - [ROADMAP.md](ROADMAP.md) — vision, architecture, WorkItem Flow, propositions à voter — source de vérité fonctionnelle
-- [docs/status.md](docs/status.md) — état factuel courant, court
-- [MVP_SPEC.yaml](MVP_SPEC.yaml) — critères d'acceptation mesurables du MVP 0.1
 - [docs/PROJECT_CONFIG.md](docs/PROJECT_CONFIG.md) — format de configuration public `aido.yaml` (P12) et mode de permission d'exécution des workers
-- [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md) — étude des projets comparables
-- [docs/SPIKE_RALPH.md](docs/SPIKE_RALPH.md) — résultats du spike Phase 0.5
-- [docs/VIBE_SPIKE.md](docs/VIBE_SPIKE.md) — étude de faisabilité Mistral Vibe
-- [examples/morpion-web-3d/README.md](examples/morpion-web-3d/README.md) — exemple réel complet
+- [docs/GIT_GOVERNANCE.md](docs/GIT_GOVERNANCE.md) — contrat de gouvernance Git
+- [docs/QA_GOVERNANCE.md](docs/QA_GOVERNANCE.md) — contrat de QA gouvernée
+- [docs/ADAPTIVE_EXECUTION.md](docs/ADAPTIVE_EXECUTION.md) — sélection adaptative worker/profil

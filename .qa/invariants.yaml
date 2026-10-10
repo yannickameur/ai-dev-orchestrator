@@ -6,7 +6,7 @@
 # src/orchestrator/qa_knowledge.py) — it is just this project's own
 # convention.
 #
-# Git vs SQLite boundary (docs/QA_STRATEGY.md §15.1): this file is
+# Git vs SQLite boundary (see docs/QA_GOVERNANCE.md): this file is
 # durable product knowledge that travels with the repository — never
 # orchestrator runtime/audit state (that stays in SQLite stores).
 invariants:

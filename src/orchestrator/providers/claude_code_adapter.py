@@ -6,7 +6,7 @@ parses the resulting JSONL stream, and normalizes it into a
 probes state: it never becomes an execution engine (see
 ``orchestrator.providers.adapter.ProviderAdapter``).
 
-Reference command (see docs/SPIKE_RALPH.md):
+Reference command (see the Ralph spike (Git history)):
 
     claude -p --model haiku --output-format stream-json --verbose "<prompt>"
 
@@ -248,7 +248,7 @@ def _availability_from_status(
     status: str | None, observed_at: datetime
 ) -> ProviderAvailability:
     # Only two `rate_limit_info.status` values have ever actually been
-    # observed (docs/SPIKE_RALPH.md, tests/providers/test_claude_code_
+    # observed (the Ralph spike (Git history), tests/providers/test_claude_code_
     # adapter.py): "allowed" and "rejected" (its real, confirmed
     # semantics is quota exhaustion). A status this adapter has never
     # actually seen (e.g. a future Anthropic-side addition, or a

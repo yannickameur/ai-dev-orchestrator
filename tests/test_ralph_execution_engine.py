@@ -404,7 +404,7 @@ class TestWorkerSnapshotAndTranslation:
 
 
 class TestVibeBackendMapping:
-    """Vibe (post-MVP 0.1, see docs/VIBE_SPIKE.md) is the first backend
+    """Vibe (post-MVP 0.1, see the Vibe spike (Git history)) is the first backend
     that cannot use Ralph's hats mechanism at all (VERIFIED by the spike:
     Ralph's hats reject any non-native backend type). These tests prove
     the solo-mode path this engine falls back to for it, and that every
@@ -546,7 +546,7 @@ class TestVibeBackendMapping:
 
 
 class TestGravityBackendMapping:
-    """Gravity (P19, ROADMAP.md §13) reuses the exact same solo/no-hats
+    """Gravity (P19, ROADMAP.md) reuses the exact same solo/no-hats
     "custom" mechanism already proven by Vibe (`TestVibeBackendMapping`
     above) — these tests mirror that class's own structure to prove the
     same invariants for `gravity_ralph_bridge.py`, never a second

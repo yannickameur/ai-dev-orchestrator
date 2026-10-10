@@ -2,7 +2,7 @@
 
 Source of truth for `orchestrator.project_config.ProjectConfig` — the
 public project configuration format approved as part of the
-productisation/onboarding cycle (ROADMAP.md §13). It solves two current
+productisation/onboarding cycle (ROADMAP.md). It solves two current
 architectural problems: (A) external projects were only describable/
 wired through a custom Python harness; (B) worker execution permission
 mode depended entirely on machine-local CLI configuration rather than an
@@ -55,8 +55,8 @@ document's own schema, built either by `ProjectConfig.load(aido.yaml)`
 or directly via its plain Python constructor) and a `WorkerRegistry`,
 and executes them. `WorkerSelector` remains the sole owner of *which*
 worker is picked; injection only supplies *what's available*. See
-"Worker registry reference" below, and `ROADMAP.md` §13, sub-section
-P13.5, for the full rationale.
+"Worker registry reference" below, and the Git history of `ROADMAP.md`
+(P13.5) for the full rationale.
 
 ## Guided project bootstrap (P1.1)
 
@@ -212,7 +212,7 @@ If `project.state_dir` is omitted, it defaults deterministically to:
 ```
 
 — the same convention already used elsewhere in this project
-(ROADMAP.md §8). This default is never `/tmp` (a real incident on the
+(ROADMAP.md). This default is never `/tmp` (a real incident on the
 Morpion Web 3D pilot showed why: `/tmp` is generally cleared on reboot,
 which is not the same guarantee as simple inter-process survival). If
 `state_dir` is explicitly configured, that value is respected instead.
@@ -344,4 +344,4 @@ obviously-wrong key names (`api_key`, `token`, `secret`, `password`,
 All four active providers (Claude Code, Codex, Vibe, Gravity) are
 authenticated entirely outside this project: no secret is ever handled
 here. (The API-key-based DeepSeek/Kimi providers were removed in P20, see
-`ROADMAP.md` §13.)
+`ROADMAP.md`.)

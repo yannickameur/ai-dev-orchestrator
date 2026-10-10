@@ -297,7 +297,7 @@ def _default_id_factory() -> str:
 # development-role instruction (DEV A and DEV B alike). Not backend- or
 # provider-specific: Claude Code/Codex already commit reliably on their
 # own agentic default and this reminder is harmless for them; some
-# backends (e.g. Vibe — see docs/VIBE_SPIKE.md §19) do not commit unless
+# backends (e.g. Vibe — see the Vibe spike (Git history)) do not commit unless
 # explicitly told to, and this is what makes them do so reliably —
 # VERIFIED by a real disposable execution, not assumed. Never a
 # backend-specific branch in code: the same instructions text for every
@@ -1762,7 +1762,7 @@ class MVPManager:
         ``.ralph/`` noise, if anything, differs).
 
         Added after a real external-project pilot (found via
-        ``scripts/run_external_project_pilot.py`` against a genuine
+        the former external-project pilot harness (Git history) against a genuine
         third-party repo, never reproduced by self-dogfooding this
         control plane) showed a REAL review execution — never verified
         read-only anywhere, unlike development/QA-authoring — could write

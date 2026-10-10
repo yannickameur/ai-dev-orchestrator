@@ -44,7 +44,7 @@ remet en cause aucune des Slices 0-14.
 
 ## 1. Ce que Ralph fournit déjà (findings)
 
-Source : `docs/SPIKE_RALPH.md` (spike expérimental déjà exécuté et validé,
+Source : le spike Ralph (historique Git) (spike expérimental déjà exécuté et validé,
 Ralph 2.10.1), complété par l'inspection de `~/projects/ralph-spike`
 (`ralph.yml`, `ralph-codex.yml`, `hats-backend-spike.yml`) et de l'aide CLI
 locale (`ralph --help`, `ralph hats --help`, `ralph tutorial --no-input`)
@@ -115,7 +115,7 @@ config. Les modèles/efforts fixes actuels (`Worker.model`,
 aucune rupture.
 
 Chargement externe (Slice 15) : `config/workers.yaml`, répondant enfin à
-l'AC-2 de `MVP_SPEC.yaml` (au moment de l'étude, aucun `WorkerRegistry`,
+l'AC-2 du contrat MVP 0.1 (historique Git ; au moment de l'étude, aucun `WorkerRegistry`,
 aucun loader YAML, aucun `config/` n'existait encore dans `src/` — cette
 lacune a depuis été résolue par Slice 15, voir
 `src/orchestrator/worker_registry.py`). Aucun nom de modèle n'est câblé en
@@ -485,5 +485,5 @@ entrées « Résolu par Slice 18.5 »/« Résolu par Slice 19 » ci-dessous.
   n'y est jamais nommée), symétriquement à `WorkerSelector` qui ne nomme
   jamais un provider concret.
 - Sandbox/permissions Codex sous adaptive execution : héritage direct du
-  `NOT VALIDATED` déjà noté dans `docs/SPIKE_RALPH.md` — toujours non
+  `NOT VALIDATED` déjà noté dans le spike Ralph (historique Git) — toujours non
   bloquant, toujours à re-tester avant toute hypothèse de sécurité.

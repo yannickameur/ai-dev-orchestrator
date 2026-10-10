@@ -5,7 +5,7 @@ defines: how permissive a worker is allowed to be when Ralph actually
 launches it. It knows nothing about Claude/Codex/Vibe CLI flags — that
 translation lives exclusively at the execution/backend boundary
 (``orchestrator.ralph_execution_engine``), never here, never in
-``MVPManager``, never in ``WorkerSelector``. See ROADMAP.md §13 for the
+``MVPManager``, never in ``WorkerSelector``. See ROADMAP.md for the
 product rationale (project-controlled permission mode, approved as a
 cross-cutting requirement of the P1/P12 cycle).
 

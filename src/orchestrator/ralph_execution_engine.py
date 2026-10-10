@@ -4,7 +4,7 @@ This module is the only place in the codebase that actually launches a
 worker. It sits strictly downstream of :mod:`~orchestrator.worker_selector`
 (which decides *which* worker, before this module ever runs) and upstream
 of nothing else in this slice — no MVP/task orchestration, no GitHub PR
-flow. See ROADMAP.md, Phase 1, step 9, and docs/SPIKE_RALPH.md for the
+flow. See ROADMAP.md, Phase 1, step 9, and the Ralph spike (Git history) for the
 validated Ralph behaviors this module relies on.
 
 Pipeline (see task description): ``ExecutionRequest`` -> create an
@@ -20,7 +20,7 @@ Design invariants:
   already done before an ``ExecutionRequest`` reaches this module).
 - It never calls ``claude`` or ``codex`` directly — only ``ralph``. Ralph
   itself launches the concrete backend.
-- EXIT CODE != BUSINESS VERDICT (validated in docs/SPIKE_RALPH.md: a real
+- EXIT CODE != BUSINESS VERDICT (validated in the Ralph spike (Git history): a real
   run produced the ``LOOP_COMPLETE`` event, yet Ralph still reported
   ``reason=max_iterations`` and exit code 2). The verdict is derived
   exclusively from the business events named in
@@ -112,14 +112,14 @@ _RESERVED_EVENT_TOPICS = frozenset({"task.start", "task.resume"})
 #
 # "vibe"/"gravity" map to Ralph's own "custom" backend type deliberately:
 # Ralph's hats mechanism (used by every other backend below) rejects any
-# backend type it does not natively know — VERIFIED in docs/VIBE_SPIKE.md
+# backend type it does not natively know — VERIFIED in the Vibe spike (Git history)
 # §5 (`ralph doctor` reports "Unknown hat backend" for anything other than
 # Ralph's fixed native list). Only Ralph's top-level, solo-mode
 # `cli.backend: "custom"` accepts an arbitrary command — see
 # `_SOLO_MODE_BACKENDS`/`_BACKEND_COMMANDS` below, which drive
 # `_write_runtime_config`/`_build_ralph_args` to skip hats.yml entirely
 # for these backends, exactly as the spike's real experiment required.
-# "gravity" (P19, ROADMAP.md §13) reuses this exact same custom-backend
+# "gravity" (P19, ROADMAP.md) reuses this exact same custom-backend
 # mechanism for the `agy` CLI — never a second execution engine.
 _RALPH_BACKEND_TYPE: dict[str, str] = {
     "claude_code": "claude",
@@ -310,7 +310,7 @@ def _build_backend_args(
         # codex-style `-c key=value` override, Claude Code takes it
         # directly), passed through verbatim as an extra hat backend arg,
         # the same mechanism already validated for codex's
-        # `model_reasoning_effort` (see docs/SPIKE_RALPH.md). Omitted
+        # `model_reasoning_effort` (see the Ralph spike (Git history)). Omitted
         # entirely when unset, matching the codex branch above, so a
         # profile that never set reasoning_effort (e.g. today's Claude
         # profiles in config/workers.yaml) transmits nothing extra.
@@ -322,7 +322,7 @@ def _build_backend_args(
         return args
     if backend == "vibe":
         # Vibe has no `--model`/reasoning-effort CLI flag at all (VERIFIED
-        # via `vibe --help`, docs/VIBE_SPIKE.md §6/§13) — model selection
+        # via `vibe --help`, the Vibe spike (Git history)) — model selection
         # is env/config-driven (`VIBE_ACTIVE_MODEL`). `--model <name>` here
         # is consumed by `vibe_ralph_bridge.py`, never forwarded to `vibe`
         # itself as a literal flag. reasoning_effort has no honest
@@ -701,7 +701,7 @@ def _render_ralph_config(
     # `backend_command` is only set for solo-mode backends (see
     # `_SOLO_MODE_BACKENDS`) — Ralph's "custom" backend requires an
     # explicit `cli.command` (VERIFIED: `ralph doctor` fails closed
-    # without it, docs/VIBE_SPIKE.md §5); native backends never set this,
+    # without it, the Vibe spike (Git history)); native backends never set this,
     # Ralph resolves their binary itself.
     command_line = f"  command: {_yaml_str(backend_command)}\n" if backend_command else ""
     return (
@@ -776,7 +776,7 @@ def _write_runtime_config(
 
     if solo_mode:
         # Ralph's hats mechanism rejects solo-mode backends entirely
-        # (VERIFIED, docs/VIBE_SPIKE.md §5) — no hats.yml is written or
+        # (VERIFIED, the Vibe spike (Git history)) — no hats.yml is written or
         # referenced for these; business events are still read from
         # `.ralph/events-*.jsonl` exactly as for every other backend (see
         # `_read_ralph_events`, which is hat-agnostic already).

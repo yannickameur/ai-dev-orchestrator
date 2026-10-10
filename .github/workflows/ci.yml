@@ -4,9 +4,8 @@ name: CI
 # Mistral, never invokes claude/codex/vibe, and never uses any real
 # provider quota. It runs exactly `pytest` against this repository's
 # own offline test suite (tests/), which is fake/in-memory throughout —
-# see CONTRIBUTING.md. Scripts under scripts/ that launch real provider
-# workers are deliberately excluded from this suite (their own
-# docstrings say "NEVER run this via pytest") and are not run here.
+# see CONTRIBUTING.md. Nothing that launches real provider workers is
+# run here.
 
 on:
   push:

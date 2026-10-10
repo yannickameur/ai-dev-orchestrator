@@ -497,8 +497,7 @@ class TestWorkItemNominalFlow:
 
     def test_default_git_governance_policy_blocks_merge_despite_real_qa_pass(self, tmp_path: Path) -> None:
         """Regression test for a real defect found integrating Morpion Web
-        3D's WI-11 (docs/reports/morpion-computer-turn-regression-2026-09-18.md
-        §28): a caller that wires WorkItem Flow's ``MVPManager`` (no
+        3D's WI-11 (pilot report, Git history): a caller that wires WorkItem Flow's ``MVPManager`` (no
         ``quality_gate_runner``, no ``review_store`` — DEV B's corrective
         review and the QA phase's own commands stand in for both) but
         constructs ``GitGovernanceService`` with a plain
@@ -508,8 +507,7 @@ class TestWorkItemNominalFlow:
         real QA `PASS` but its git record never reaches `MERGED`,
         because eligibility can never see a gate/review verdict that was
         never produced. This is exactly the trap
-        ``scripts/run_external_project_pilot.py`` and
-        ``scripts/run_morpion_wi11.py`` fell into before being fixed to
+        the former pilot harnesses (Git history) fell into before being fixed to
         pass ``require_review=False, require_required_gates=False``
         explicitly (see this file's own ``_git_service`` default, which
         already gets it right — this test guards the *wrong* default from

@@ -2,7 +2,7 @@
 """vibe_ralph_bridge — bridges Ralph's "custom" solo backend to Vibe's CLI.
 
 Ralph's hats mechanism (used by every other backend in this project) does
-not accept a "custom" backend type at all (see docs/VIBE_SPIKE.md §5) —
+not accept a "custom" backend type at all (see the Vibe spike (Git history)) —
 only Ralph's top-level, solo-mode `cli.backend: "custom"` does, and that
 mechanism invokes ``<command> <configured args...> <prompt-file-path>``:
 the final argument is a PATH to a file containing the full prompt, never
@@ -40,7 +40,7 @@ whatever Vibe itself already resolves as its own default rather than
 fabricating one.
 
 ``--permission-mode {standard,unrestricted}``, if present, is the generic
-``ExecutionPermissionMode`` (P12, ROADMAP.md §13) chosen by
+``ExecutionPermissionMode`` (P12, ROADMAP.md) chosen by
 ``RalphExecutionEngine``, translated here — and only here — into real,
 VERIFIED Vibe CLI flags (``vibe --help``, Vibe 2.25.4):
 

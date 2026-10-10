@@ -28,7 +28,7 @@ from typing import Any
 @dataclass(frozen=True, slots=True)
 class EngineEvent:
     """The smallest structured event contract a live consumer needs
-    (P18, ROADMAP.md §13). See ``ROADMAP.md`` for the full, approved
+    (P18, ROADMAP.md). See ``ROADMAP.md`` for the full, approved
     event catalog and DTO field provenance rules.
 
     ``kind`` is one of ``"work_item.<status>"`` (the coarse event this
