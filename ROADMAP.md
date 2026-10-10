@@ -3153,11 +3153,89 @@ sans approbation automatique après 20 minutes. P21.1 reste
 `PARTIAL / RECOVERY REQUIRED`, M3.1 reste `PARTIAL`, et le contrat de
 WI-P21.1-03/04 reste inchangé.
 
-**Next** : synchroniser cette preuve documentaire, puis contrôler en
-lecture seule configuration, branches, état des deux WorkItems, registre
-des workers, environnement QA et sauvegarde initiale. Demander ensuite
-un GO humain distinct avant toute exécution gouvernée de WI-P21.1-03/04.
-Ne pas commencer M4.
+**Constat après exécution gouvernée (2026-10-09)** : WI-P21.1-03 est
+`COMPLETED` ; son correctif de frontière publique a été livré sur `main`
+par la PR #44 (`dae6e6ab0fd7928f3bc20b566adad988ddc270b3`, CI
+Python 3.10 et 3.12 `PASS`). WI-P21.1-04 est `BLOCKED` terminal avec
+`HUMAN_REVIEW_REQUIRED` après trois tentatives QA. Sa branche
+`work/wi-p21.1-04` (`a7f24722`) contient seulement des comptes rendus
+documentaires, aucun changement fonctionnel ou de test ; elle reste
+intacte et non fusionnée. Les deux premiers échecs QA provenaient de
+`pytest` absent de l'interpréteur exact du runner, le troisième de `pip`
+absent lors des tests de packaging. Après installation de `pip` dans cet
+environnement, les 16 tests ciblés de packaging et les 1 426 tests
+offline passent ; cela établit la cause environnementale des trois
+échecs QA, sans valider rétroactivement WI-04. Les `ExecutionRecord`
+`succeeded` des phases DEV reflètent le verdict métier Ralph ; leur
+`exit_code` distinct peut être non nul. Ils ne signifient pas que QA ou
+le WorkItem ont réussi. Les états et records terminaux restent inchangés.
+
+La branche WI-04 a produit des preuves jetables Claude/Ralph : sorties
+opérationnelles sûres, quatre heartbeats, diagnostics publics bornés et
+absence de processus résiduel sur les parcours observés. Les blocs bruts
+`thinking` avaient un texte vide ; des signatures privées non vides
+étaient présentes et absentes des événements publics. Les régressions
+synthétiques `PRIVATE_REASONING_SENTINEL` passent, mais la suppression
+d'un **texte de raisonnement privé non vide chez le provider réel** n'est
+pas prouvée. Le parcours AIDO Code M3.1 d'un seul WorkItem jetable
+valide le chemin live concerné, pas l'acceptance complète des trois
+contrats M3.1. Aucun défaut fonctionnel supplémentaire n'est établi par
+ces échecs QA ; les cas réels restants doivent encore être vérifiés.
+
+**Proposition de reprise WI-P21.1-05 — Complete real acceptance after QA
+environment failure**. Nouveau MVP proposé :
+`p21-1-acceptance-recovery`, projet `ai-dev-orchestrator-p21-1`, un seul
+WorkItem `wi-p21.1-05` sans dépendance runtime envers WI-04 terminal.
+La livraison WI-03 sur `main` est un prérequis documentaire vérifiable.
+Racine d'état indépendante prévue :
+`~/.local/state/ai-dev-orchestrator/projects/ai-dev-orchestrator-p21-1-acceptance-recovery/` ;
+configuration candidate externe :
+`~/.local/state/ai-dev-orchestrator/recovery-configs/p21-1-acceptance/aido.yaml` ;
+worktree propre sur `main` :
+`~/projects/ai-dev-orchestrator-p21-1-acceptance-recovery`.
+La racine SQLite proposée **n'est pas initialisée**. L'environnement QA
+privé, séparé du `.venv` que des workers peuvent recréer, est
+`~/.local/state/ai-dev-orchestrator/qa-envs/p21-1-acceptance/` ;
+Python 3.12, `pip`, `pytest`, packaging et la suite offline y passent.
+Avant toute tentative gouvernée, revérifier ces outils depuis
+l'interpréteur exact configuré et protéger cet environnement des
+commandes `uv run` des workers.
+
+Le contrat de WI-05 reprend **tous** les critères non clos de WI-04 :
+suite moteur complète et CI Python 3.10/3.12 ; acceptance Claude/Ralph
+réelle en processus neuf et environnement jetable ; stdout/stderr et
+`FailureDiagnostic` uniquement publics, heartbeat, troncature, faits
+terminaux, timeout/annulation et nettoyage des groupes de processus ;
+absence de fuite de raisonnement et de processus résiduel. Séparer dans
+le rapport la preuve synthétique déterministe, le comportement réel
+observé et les cas réels non prouvés si aucun raisonnement privé non vide
+n'est obtenu. Rejouer **l'ensemble** du contrat AIDO Code M3.1 : CLI
+`aido run`, REPL `/run`, intent run/continue, événements live et
+diagnostics, interruption/reprise, régressions des trois WorkItems M3.1 ;
+un seul WorkItem frontend jetable ne suffit pas. Ne pas ajouter de filtre
+spécifique Claude au frontend. Employer le WorkItem Flow existant :
+DEV A, DEV B indépendant, DEV FIX si nécessaire, QA déterministe et
+merge gouverné. Une preuve documentaire peut être livrée sans commit
+fonctionnel fictif : le moteur accepte une phase DEV B sans nouveau
+commit et un fast-forward sans changement lorsque les preuves liées au
+HEAD passent. Aucun statut `COMPLETED` ni clôture M3.1 sans ces preuves.
+
+**Décision requise avant initialisation ou exécution de WI-05** :
+l'exception `HISTORICAL_RUNTIME_STATE_UNAVAILABLE` et les GO antérieurs
+ne couvrent que `p21-1-recovery` et WI-03/04. La règle
+`ApprovalCoordinator` des 20 minutes ne s'applique qu'aux propositions
+roadmap/MVP, pas au traitement d'un échec terminal. Il faut une décision
+humaine explicite sur le nouveau MVP et sa racine, puis un GO distinct
+pour son bootstrap et un autre pour le lancement gouverné de WI-05.
+Aucun ancien WorkItem, record ou store ne
+sera muté. P21.1 reste `PARTIAL / RECOVERY REQUIRED` et M3.1 reste
+`PARTIAL` ; ne pas commencer M4.
+
+**Next** : faire valider explicitement cette nouvelle portée, puis
+contrôler `main` et la configuration candidate avant tout bootstrap.
+Après le GO de bootstrap, initialiser une seule fois le nouveau runtime
+et sauvegarder son état ; après un GO d'exécution séparé, lancer WI-05
+via le WorkItem Flow et n'acter la clôture qu'après toutes les preuves.
 
 ### Ordre approuvé
 
@@ -3236,7 +3314,7 @@ Ne pas commencer M4.
 | P18 | Live execution events and graceful interruption | `OrchestratorEngine` doit-il exposer des événements publics fins (DEV A/DEV B/DEV FIX/QA/Git) en temps réel, avec les métadonnées réellement décidées, et traiter explicitement une interruption pendant `run()` ? | **`DONE`** (GO humain 2026-09-26) — callback `on_event` optionnel ; **P18-01/P18-02/P18-03 `DONE`** (transport live + métadonnées fines DEV A/B/FIX/QA/Git, `EngineEvent` dans `orchestrator.engine_events`, `RunResult.events` inchangé, interruption/recovery DEV+QA) ; Adaptive Execution non branché ; recovery étendu (jamais dupliqué) ; voir sous-section P18 ci-dessus |
 | P19 | Gravity worker/backend | Un worker Gravity (`agy`), exécutable via Ralph en réutilisant le mécanisme custom backend déjà employé par Vibe, mérite-t-il d'être intégré ? | **`APPROUVÉ`** (GO humain 2026-09-28) — Phase A (spike réel) `DONE` ; implémentation en cours (branche `feature/p19-gravity-worker-backend`) ; pas une dépendance de M3 ; voir sous-section P19 ci-dessus |
 | P21 | Live worker execution observability | Comment rendre visibles les sorties réelles du worker et les échecs sans verdict métier dans `aido run`, sans scraping frontend ni retry ? | **`DONE` (2026-10-06)** — WorkItems P21-01/02/03/04 livrés, PR #36, CI Python 3.10/3.12 et acceptance Gravity jetable ; voir sous-section P21 ci-dessus |
-| P21.1 | Safe public execution output | Comment garantir que sorties et diagnostics publics n'exposent aucun bloc de raisonnement privé ? | **`PARTIAL / RECOVERY REQUIRED`** — première tentative : WI-P21.1-01 `FAILED` en DEV B, WI-P21.1-02 `BLOCKED`, QA non atteinte ; reprise documentaire WI-P21.1-03/04 sous le nouveau MVP `p21-1-recovery` ; voir sous-section P21.1 ci-dessus |
+| P21.1 | Safe public execution output | Comment garantir que sorties et diagnostics publics n'exposent aucun bloc de raisonnement privé ? | **`PARTIAL / RECOVERY REQUIRED`** — WI-P21.1-01 `FAILED` et 02 `BLOCKED` historiques ; WI-03 `COMPLETED` sur `main`, WI-04 `BLOCKED` terminal après trois échecs QA environnementaux ; nouveau WI-05 sous MVP indépendant proposé, non initialisé et soumis à GO explicite ; voir sous-section P21.1 ci-dessus |
 | P13.5 | Frontière moteur/librairie : injection du `WorkerRegistry`, `workers:` optionnel | `aido.yaml` doit-il rester la source de configuration complète du pool de workers, ou le moteur doit-il accepter un `WorkerRegistry` construit/injecté par l'application appelante (AIDO Code) ? | **`DONE`** (2026-09-24) — `workers:` optionnel dans `ProjectConfig` ; `OrchestratorEngine`/`ProjectRuntime` acceptent `worker_registry=` ; `WorkerSelector` reste seul propriétaire de la sélection ; chemin legacy fichier intégralement conservé et testé ; voir sous-section P13.5 ci-dessus |
 | P13.6 | Retrait de la commande produit `aido` (cutover AIDO Code) | AIDO Code ayant atteint son propre cutover produit, `ai-dev-orchestrator` doit-il cesser d'installer la commande `aido` ? | **`DONE`** (2026-09-24) — `[project.scripts]` retiré de `pyproject.toml` ; `orchestrator.cli`/`default_workers.yaml` conservés, legacy/internes, toujours réellement testés ; aucun binaire de compatibilité ajouté (YAGNI) ; voir sous-section P13.6 ci-dessus |
 | P13.7 | Pre-execution state safety | Le cutover M8 d'AIDO Code a révélé un défaut réel (`WI-M8-01` resté `RUNNING` durablement, sans `ExecutionRecord`) — un WorkItem/son MVP doivent-ils n'être marqués `RUNNING` qu'une fois tous les prérequis pré-exécution (préparation Git notamment) réellement satisfaits ? | **`DONE`** (2026-09-25) — `mark_mvp_running`/`mark_work_item_running` déplacés après les prérequis dans `_execute_work_item` et `_resume_dev_b_wait` (deux sites réels) ; invariant de recovery existant inchangé ; 4 nouveaux tests, chacun vérifié rouge sans le correctif ; `WI-M8-01` non modifié rétroactivement (YAGNI) ; voir sous-section P13.7 ci-dessus |
