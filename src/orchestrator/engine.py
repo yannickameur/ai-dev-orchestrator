@@ -43,6 +43,7 @@ load_worker_registry()`` path for a config that still declares a
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -512,6 +513,7 @@ class OrchestratorEngine:
     def run(
         self, *, max_cycles: int = DEFAULT_MAX_CYCLES,
         on_event: Callable[[EngineEvent], None] | None = None,
+        interrupt: threading.Event | None = None,
     ) -> RunResult:
         """Starts or resumes the project: bootstrap (idempotent) then drive
         ``MVPManager.run_next_work_item``, the exact ``aido run`` loop,
@@ -531,7 +533,15 @@ class OrchestratorEngine:
         immediately and unchanged to this method's own caller — never
         swallowed, never converted into an ``EngineError`` — and never
         undoes a fact already durably persisted before that callback
-        ran."""
+        ran.
+
+        ``interrupt`` (optional) lets a caller running this method off the
+        main thread, where Ctrl+C never reaches ``asyncio.run()``, request
+        the same graceful interruption: once set, the current cycle's task
+        is cancelled exactly as a real Ctrl+C would cancel it (process
+        group terminated, ``*.interrupted`` events, nothing completed or
+        merged) and ``KeyboardInterrupt`` is raised to the caller. No new
+        cycle starts once it is set."""
         try:
             runtime = ProjectRuntime.open(
                 self._config,
@@ -548,7 +558,7 @@ class OrchestratorEngine:
             except ConfigRuntimeConflictError as exc:
                 raise EngineError(str(exc)) from exc
             try:
-                return self._drive(runtime, max_cycles=max_cycles, on_event=on_event)
+                return self._drive(runtime, max_cycles=max_cycles, on_event=on_event, interrupt=interrupt)
             except GitGovernanceError as exc:
                 raise EngineError(delivery_blocked_message(exc)) from exc
         finally:
@@ -557,6 +567,7 @@ class OrchestratorEngine:
     def _drive(
         self, runtime: ProjectRuntime, *, max_cycles: int,
         on_event: Callable[[EngineEvent], None] | None = None,
+        interrupt: threading.Event | None = None,
     ) -> RunResult:
         mvp_id = self._config.mvp.id
         events: list[EngineEvent] = []
@@ -566,7 +577,12 @@ class OrchestratorEngine:
 
         for cycle in range(1, max_cycles + 1):
             cycles_run = cycle
-            result = asyncio.run(runtime.manager.run_next_work_item(mvp_id, on_event=on_event))
+            if interrupt is not None and interrupt.is_set():
+                raise KeyboardInterrupt
+            cycle_coro = runtime.manager.run_next_work_item(mvp_id, on_event=on_event)
+            result = asyncio.run(
+                cycle_coro if interrupt is None else _cancel_when_set(cycle_coro, interrupt)
+            )
             if result is None:
                 break
             if result.failure_diagnostic is not None:
@@ -625,3 +641,22 @@ class OrchestratorEngine:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+
+_INTERRUPT_POLL_SECONDS = 0.1
+
+
+async def _cancel_when_set(coro: Any, interrupt: threading.Event) -> Any:
+    """Runs one engine cycle; cancels it, like a real Ctrl+C, once
+    ``interrupt`` is set, then raises ``KeyboardInterrupt``."""
+    task = asyncio.ensure_future(coro)
+    while not task.done():
+        if interrupt.is_set():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            raise KeyboardInterrupt
+        await asyncio.wait({task}, timeout=_INTERRUPT_POLL_SECONDS)
+    return task.result()

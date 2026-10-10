@@ -611,6 +611,69 @@ class TestRun:
             engine.run()
 
 
+class TestThreadInterrupt:
+    """``run(interrupt=...)`` gives a caller running the engine off the
+    main thread (where Ctrl+C never reaches ``asyncio.run()``) the same
+    graceful interruption as a real Ctrl+C."""
+
+    def test_interrupt_set_from_another_thread_cancels_dev_a_like_ctrl_c(self, tmp_path: Path) -> None:
+        import threading
+
+        started = threading.Event()
+
+        class BlockingRunner:
+            calls = 0
+
+            async def __call__(self, args, cwd, timeout, *, on_output=None):
+                BlockingRunner.calls += 1
+                started.set()
+                await asyncio.sleep(30)
+                raise AssertionError("the blocked worker must be cancelled, never complete")
+
+        engine = OrchestratorEngine.open(
+            str(_write_config(tmp_path)),
+            provider_adapters={"anthropic": _FakeAdapter(available=True)},
+            subprocess_runner=BlockingRunner(),
+        )
+        interrupt = threading.Event()
+        seen: list = []
+        outcome: dict = {}
+
+        def drive() -> None:
+            try:
+                engine.run(on_event=seen.append, interrupt=interrupt)
+            except BaseException as exc:  # noqa: BLE001 - the outcome under test
+                outcome["exc"] = exc
+
+        thread = threading.Thread(target=drive)
+        thread.start()
+        assert started.wait(10)
+        interrupt.set()
+        thread.join(10)
+
+        assert not thread.is_alive()
+        assert isinstance(outcome.get("exc"), KeyboardInterrupt)
+        assert BlockingRunner.calls == 1
+        kinds = [e.kind for e in seen]
+        assert kinds[-3:] == ["run.interruption_requested", "dev_a.interrupted", "run.interrupted"]
+        assert not any(k.startswith("qa.") or k.endswith(".completed") for k in kinds)
+
+    def test_interrupt_already_set_starts_no_cycle(self, tmp_path: Path) -> None:
+        import threading
+
+        runner = _ScriptedRalphRunner([])
+        engine = OrchestratorEngine.open(
+            str(_write_config(tmp_path)),
+            provider_adapters={"anthropic": _FakeAdapter(available=True)},
+            subprocess_runner=runner,
+        )
+        interrupt = threading.Event()
+        interrupt.set()
+        with pytest.raises(KeyboardInterrupt):
+            engine.run(interrupt=interrupt)
+        assert runner.calls == []
+
+
 class TestOnEvent:
     """P18-01: the optional, synchronous ``on_event`` live channel.
 
