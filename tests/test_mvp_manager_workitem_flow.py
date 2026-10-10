@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from orchestrator.git_governance import (
     LocalGitWorkspace,
 )
 from orchestrator.handoff import HandoffStore
+from orchestrator.internal_qa_engine import InternalQAEngine
 from orchestrator.mvp_manager import MVPManager
 from orchestrator.project_state import MVPStatus, ProjectStateStore, WorkItemStatus
 from orchestrator.qa import (
@@ -51,6 +53,7 @@ from orchestrator.qa import (
 from orchestrator.recovery import RecoveryCoordinator
 from orchestrator.ralph_execution_engine import ExecutionResult
 from orchestrator.validation import (
+    QualityGateRunner,
     ValidationCommand,
     ValidationEnvironmentEvidence,
     ValidationKind,
@@ -405,6 +408,31 @@ class TestWorkItemNominalFlow:
         result = asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
 
         assert result.work_item.work_item_id == "wi-1"
+
+    def test_python_qa_leaves_no_bytecode_and_merges(self, tmp_path: Path) -> None:
+        """Real governed QA subprocess importing project code: no untracked
+        ``__pycache__/`` may block the dirty-tree check of the merge."""
+        validation_store = ValidationStore(tmp_path / "validation.sqlite3", clock=lambda: UTC_NOW)
+        validation_store.set_project_commands("proj-1", [ValidationCommand(
+            validation_id="qa-01", kind=ValidationKind.UNIT_TEST, argv=(sys.executable, "test_greet.py"),
+        )])
+        qa_engine = InternalQAEngine(
+            validation_store=validation_store, gate_runner=QualityGateRunner(validation_store, clock=lambda: UTC_NOW),
+            clock=lambda: UTC_NOW,
+        )
+        stack = _new_stack(
+            tmp_path, workers=[_worker("alice"), _worker("victor", provider="openai", backend="codex")],
+            qa_engine=qa_engine, qa_policy=QAPolicy(),
+            dev_actions=[_commit_action("greet.py", "def greet(name):\n    return f'Hello, {name}!'\n", "greet"),
+                         _commit_action("test_greet.py", "from greet import greet\nassert greet('Ada') == 'Hello, Ada!'\n", "test")],
+        )
+
+        result = asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert stack["qa_run_store"].list_for_work_item("wi-1")[-1].verdict.status is QAVerdictStatus.PASS
+        assert not (stack["repo"] / "__pycache__").exists()
+        assert stack["git_store"].get("wi-1").status is GitWorkItemStatus.MERGED
 
     def test_workitem_flow_completes_dev_a_dev_b_qa_merge_tag(self, tmp_path: Path) -> None:
         alice, victor = _worker("alice"), _worker("victor", provider="openai", backend="codex")
