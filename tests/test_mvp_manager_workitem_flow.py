@@ -33,6 +33,7 @@ from orchestrator.git_governance import (
     GitWorkItemStatus,
     GitWorkItemStore,
     LocalGitWorkspace,
+    PendingMergeBlockedError,
 )
 from orchestrator.handoff import HandoffStore
 from orchestrator.internal_qa_engine import InternalQAEngine
@@ -530,6 +531,66 @@ class TestWorkItemNominalFlow:
         record = stack["git_store"].get("wi-1")
         assert record.status is GitWorkItemStatus.IN_PROGRESS
         assert record.merged_sha is None
+
+
+class TestPendingMergeResume:
+    """COMPLETED + git MERGE_READY (merge refused after QA PASS): the next
+    run finishes the delivery without replaying DEV A/DEV B/QA."""
+
+    @staticmethod
+    def _stack_with_refused_merge(tmp_path: Path):
+        def qa_leaving_artifact(request):
+            (Path(request.workspace) / "stray.pyc").write_bytes(b"qa artifact")
+            return _qa_result(head_sha=request.head_sha)
+
+        stack = _new_stack(
+            tmp_path, workers=[_worker("alice"), _worker("victor", provider="openai", backend="codex")],
+            dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A"), None],
+            qa_script=[qa_leaving_artifact],
+        )
+        with pytest.raises(PendingMergeBlockedError, match="stray.pyc"):
+            asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+        assert stack["project_store"].get_work_item("wi-1").status is WorkItemStatus.COMPLETED
+        assert stack["git_store"].get("wi-1").status is GitWorkItemStatus.MERGE_READY
+        return stack
+
+    def test_completed_merge_ready_resumes_merge_and_tag_without_replay(self, tmp_path: Path) -> None:
+        stack = self._stack_with_refused_merge(tmp_path)
+        (stack["repo"] / "stray.pyc").unlink()
+        events: list[EngineEvent] = []
+
+        result = asyncio.run(stack["manager"].run_next_work_item("mvp-1", on_event=events.append))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert [e.kind for e in events] == ["git.merge_ready", "git.merge_completed"]
+        record = stack["git_store"].get("wi-1")
+        assert record.status is GitWorkItemStatus.MERGED
+        assert _run_git(stack["repo"], "rev-parse", "feature/wi-1/done").stdout.strip() == record.merged_sha
+        assert len(stack["engine"].requests) == 2 and len(stack["qa_engine"].requests) == 1
+
+    def test_repeated_resume_never_merges_or_tags_twice(self, tmp_path: Path) -> None:
+        stack = self._stack_with_refused_merge(tmp_path)
+        (stack["repo"] / "stray.pyc").unlink()
+        asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+        merged_sha = stack["git_store"].get("wi-1").merged_sha
+
+        assert asyncio.run(stack["manager"].run_next_work_item("mvp-1")) is None
+        assert stack["git_store"].get("wi-1").merged_sha == merged_sha
+        assert _run_git(stack["repo"], "tag", "--list").stdout.split() == ["feature/wi-1/done"]
+        assert len(stack["engine"].requests) == 2 and len(stack["qa_engine"].requests) == 1
+
+    def test_really_dirty_tree_still_refuses_the_resumed_merge(self, tmp_path: Path) -> None:
+        stack = self._stack_with_refused_merge(tmp_path)
+        base_before = _run_git(stack["repo"], "rev-parse", "main").stdout.strip()
+
+        with pytest.raises(PendingMergeBlockedError, match="merge is pending.*stray.pyc"):
+            asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+
+        assert stack["git_store"].get("wi-1").status is GitWorkItemStatus.MERGE_READY
+        assert _run_git(stack["repo"], "rev-parse", "main").stdout.strip() == base_before
+        assert (stack["repo"] / "stray.pyc").exists()
+        assert _run_git(stack["repo"], "tag", "--list").stdout.strip() == ""
+        assert len(stack["engine"].requests) == 2 and len(stack["qa_engine"].requests) == 1
 
 
 # --- K/L/M/N: bounded QA fix-and-retry, then HUMAN_REVIEW_REQUIRED ----------
