@@ -135,9 +135,10 @@ def test_wheel_import_path_unchanged(built_wheel, tmp_path):
 
 
 def test_v0_1_1_tag_unchanged():
-    # Locks the historical release tag to the commit it pointed to before
-    # this packaging change; this expected SHA must never be updated to
-    # match a moved/re-tagged v0.1.1.
+    # Locks the historical release tag to its release commit. The SHA was
+    # updated once, deliberately, for the 2026-10-10 commit-message history
+    # rewrite (same tree ca64c4a); never update it to match any other
+    # moved/re-tagged v0.1.1.
     verify = subprocess.run(
         ["git", "rev-parse", "--verify", "-q", "v0.1.1"],
         capture_output=True,
@@ -154,4 +155,4 @@ def test_v0_1_1_tag_unchanged():
         text=True,
         cwd=REPO_ROOT,
     )
-    assert result.stdout.strip() == "544102e3687e7d155311d72374f83527ccf45a3a"
+    assert result.stdout.strip() == "1200321d1089b30558fb708d9359e7b5028733cc"
