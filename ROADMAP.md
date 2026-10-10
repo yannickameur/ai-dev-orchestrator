@@ -153,6 +153,7 @@ importable (tests, développement dual-repo) mais n'est plus installé.
 | Jalon | Statut |
 |---|---|
 | MVP 0.1, Phase 1, release v0.1.1 (open source) | `DONE` |
+| Release v0.2.0 (GitHub Release : wheel et sdist, sans PyPI) | `DONE` (2026-10-10) |
 | P1 CLI publique, P1.1 bootstrap guidé, P12 `aido.yaml` + permissions | `DONE` |
 | P13 découplage moteur / AIDO Code, P13.1–P13.7 | `DONE` |
 | P17 routing quota-aware | `DONE` |

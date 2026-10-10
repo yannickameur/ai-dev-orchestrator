@@ -158,7 +158,15 @@ Prérequis :
   réellement ;
 - `git`.
 
-Installation :
+Installation depuis la release publiée (GitHub Release, pas de PyPI) :
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install https://github.com/yannickameur/ai-dev-orchestrator/releases/download/v0.2.0/ai_dev_orchestrator-0.2.0-py3-none-any.whl
+```
+
+Installation pour le développement :
 
 ```bash
 git clone https://github.com/yannickameur/ai-dev-orchestrator.git

@@ -38,7 +38,7 @@ def _pyproject_text() -> str:
 def test_distribution_name_and_version():
     text = _pyproject_text()
     assert re.search(r'(?m)^name\s*=\s*"ai-dev-orchestrator"\s*$', text)
-    assert re.search(r'(?m)^version\s*=\s*"0\.1\.3"\s*$', text)
+    assert re.search(r'(?m)^version\s*=\s*"0\.2\.0"\s*$', text)
 
 
 def test_no_dependency_on_third_party_orchestrator_package():
@@ -78,7 +78,7 @@ def built_wheel(tmp_path_factory) -> Path:
 
 def test_wheel_builds_with_correct_metadata(built_wheel):
     wheel_path = built_wheel
-    assert wheel_path.name.startswith("ai_dev_orchestrator-0.1.3-")
+    assert wheel_path.name.startswith("ai_dev_orchestrator-0.2.0-")
 
     with zipfile.ZipFile(wheel_path) as z:
         metadata_name = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
@@ -91,7 +91,7 @@ def test_wheel_builds_with_correct_metadata(built_wheel):
         entry_points = z.read(entry_points_names[0]).decode() if entry_points_names else ""
 
     assert "Name: ai-dev-orchestrator" in metadata
-    assert "Version: 0.1.3" in metadata
+    assert "Version: 0.2.0" in metadata
     for line in metadata.splitlines():
         if line.startswith("Requires-Dist:"):
             assert not line[len("Requires-Dist:") :].strip().lower().startswith("orchestrator")
