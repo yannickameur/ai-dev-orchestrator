@@ -50,6 +50,7 @@ from typing import Any, Callable
 
 from orchestrator.engine_events import EngineEvent, FailureDiagnostic
 from orchestrator.git_governance import GitGovernanceError
+from orchestrator.mvp_manager import DEFAULT_WORK_ITEM_ROLE
 from orchestrator.project_config import ProjectConfig, ProjectConfigError
 from orchestrator.project_runtime import (
     ConfigRuntimeConflictError,
@@ -239,6 +240,31 @@ class ProjectStatusSnapshot:
     project_name: str | None
     mvp: MVPStatusSnapshot | None
     work_items: tuple[WorkItemSnapshot, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderExecutionTime:
+    """AI execution time of one provider's work-item executions.
+
+    ``seconds`` is ``None`` when the provider has executions but none with
+    a known duration (never ``0.0`` by invention)."""
+
+    provider: str
+    seconds: float | None
+    executions: int
+    #: Executions without ``finished_at`` (running / never finalized).
+    unknown_executions: int
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionTimeSnapshot:
+    """Per-provider AI execution time for the configured MVP, derived
+    read-only from recorded work-item executions."""
+
+    mvp_id: str
+    providers: tuple[ProviderExecutionTime, ...]
+    total_seconds: float | None
+    unknown_executions: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -437,6 +463,49 @@ class OrchestratorEngine:
             )
         try:
             return self._read_status(reader)
+        finally:
+            reader.close()
+
+    def execution_times(self) -> ExecutionTimeSnapshot:
+        """Strictly read-only like ``status()``: sums ``finished_at -
+        started_at`` of the recorded work-item executions (DEV A/B/FIX,
+        every attempt) of this MVP's WorkItems, per provider. Never
+        bootstraps, never calls a provider, never runs Ralph."""
+        mvp_id = self._config.mvp.id
+        empty = ExecutionTimeSnapshot(mvp_id=mvp_id, providers=(), total_seconds=None, unknown_executions=0)
+        reader = ProjectStatusReader.open(self._config)
+        if reader is None:
+            return empty
+        try:
+            try:
+                work_items = reader.project_store.list_work_items(mvp_id)
+            except UnknownMVPError:
+                return empty
+            known: dict[str, list[float]] = {}
+            counts: dict[str, int] = {}
+            unknown: dict[str, int] = {}
+            for wi in work_items:
+                for ex in reader.list_executions_for_work_item(wi.work_item_id):
+                    if ex.role != DEFAULT_WORK_ITEM_ROLE:
+                        continue
+                    counts[ex.provider] = counts.get(ex.provider, 0) + 1
+                    if ex.finished_at is None:
+                        unknown[ex.provider] = unknown.get(ex.provider, 0) + 1
+                    else:
+                        known.setdefault(ex.provider, []).append((ex.finished_at - ex.started_at).total_seconds())
+            providers = tuple(
+                ProviderExecutionTime(
+                    provider=p, seconds=sum(known[p]) if p in known else None,
+                    executions=counts[p], unknown_executions=unknown.get(p, 0),
+                )
+                for p in sorted(counts)
+            )
+            all_known = [s for p in known.values() for s in p]
+            return ExecutionTimeSnapshot(
+                mvp_id=mvp_id, providers=providers,
+                total_seconds=sum(all_known) if all_known else None,
+                unknown_executions=sum(unknown.values()),
+            )
         finally:
             reader.close()
 

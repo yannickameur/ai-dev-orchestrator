@@ -25,6 +25,7 @@ from orchestrator.engine import (
     EngineConfigError,
     EngineError,
     EngineEvent,
+    ExecutionTimeSnapshot,
     OrchestratorEngine,
     ProjectSnapshot,
     ProjectStatusSnapshot,
@@ -399,6 +400,123 @@ class TestStatus:
         engine = OrchestratorEngine.open(str(config_path), provider_adapters={"anthropic": _NeverCalledAdapter()})
         with pytest.raises(RuntimeError, match="simulated corrupted project store"):
             engine.status()
+
+
+class TestExecutionTimes:
+    def _bootstrapped(self, tmp_path: Path):
+        from orchestrator.execution_store import ExecutionStore
+        from orchestrator.project_runtime import STORE_FILENAMES, ProjectRuntime
+
+        config_path = _write_config(tmp_path)
+        config = ProjectConfig.load(config_path)
+        with ProjectRuntime.open(config, clock=lambda: UTC_T0, provider_adapters={"anthropic": _FakeAdapter()}) as rt:
+            rt.bootstrap()
+        store = ExecutionStore(config.project.state_dir / STORE_FILENAMES["executions"])
+        engine = OrchestratorEngine.open(str(config_path), provider_adapters={"anthropic": _NeverCalledAdapter()})
+        return engine, store
+
+    @staticmethod
+    def _add(store, eid: str, provider: str, seconds: float | None, *, task="wi-1", role="developer", fail=False):
+        store.create(
+            execution_id=eid, task_id=task, worker_id="w", provider=provider, backend="b", model="m",
+            role=role, started_at=UTC_T0,
+        )
+        if seconds is None:
+            return
+        end = UTC_T0 + timedelta(seconds=seconds)
+        if fail == "interrupted":
+            store.mark_interrupted(eid, finished_at=end)
+        elif fail:
+            store.mark_failed(eid, finished_at=end)
+        else:
+            store.mark_succeeded(eid, finished_at=end)
+
+    def test_not_bootstrapped_is_empty_and_creates_nothing(self, tmp_path: Path) -> None:
+        config_path = _write_config(tmp_path)
+        config = ProjectConfig.load(config_path)
+        engine = OrchestratorEngine.open(str(config_path), provider_adapters={"anthropic": _NeverCalledAdapter()})
+        snap = engine.execution_times()
+        assert isinstance(snap, ExecutionTimeSnapshot)
+        assert snap == ExecutionTimeSnapshot(mvp_id="mvp-1", providers=(), total_seconds=None, unknown_executions=0)
+        assert not config.project.state_dir.exists()
+
+    def test_bootstrapped_without_executions_is_empty(self, tmp_path: Path) -> None:
+        engine, store = self._bootstrapped(tmp_path)
+        store.close()
+        snap = engine.execution_times()
+        assert snap.providers == () and snap.total_seconds is None and snap.unknown_executions == 0
+
+    def test_one_provider_sums_every_attempt(self, tmp_path: Path) -> None:
+        engine, store = self._bootstrapped(tmp_path)
+        self._add(store, "e1", "anthropic", 10)
+        self._add(store, "e2", "anthropic", 5.5)
+        store.close()
+        snap = engine.execution_times()
+        assert [(p.provider, p.seconds, p.executions, p.unknown_executions) for p in snap.providers] == [
+            ("anthropic", 15.5, 2, 0)
+        ]
+        assert snap.total_seconds == 15.5 and snap.unknown_executions == 0
+
+    def test_several_providers_sorted(self, tmp_path: Path) -> None:
+        engine, store = self._bootstrapped(tmp_path)
+        self._add(store, "e1", "openai", 3)
+        self._add(store, "e2", "anthropic", 4)
+        self._add(store, "e3", "mistral", 5)
+        store.close()
+        snap = engine.execution_times()
+        assert [p.provider for p in snap.providers] == ["anthropic", "mistral", "openai"]
+        assert snap.total_seconds == 12
+
+    def test_failed_and_interrupted_are_counted(self, tmp_path: Path) -> None:
+        engine, store = self._bootstrapped(tmp_path)
+        self._add(store, "e1", "anthropic", 2, fail=True)
+        self._add(store, "e2", "anthropic", 3, fail="interrupted")
+        store.close()
+        snap = engine.execution_times()
+        assert snap.providers[0].executions == 2 and snap.providers[0].seconds == 5
+
+    def test_running_execution_is_unknown_not_zero(self, tmp_path: Path) -> None:
+        engine, store = self._bootstrapped(tmp_path)
+        self._add(store, "e1", "anthropic", None)
+        self._add(store, "e2", "openai", 7)
+        self._add(store, "e3", "openai", None)
+        store.close()
+        snap = engine.execution_times()
+        by = {p.provider: p for p in snap.providers}
+        assert by["anthropic"].seconds is None and by["anthropic"].unknown_executions == 1
+        assert by["openai"].seconds == 7 and by["openai"].executions == 2 and by["openai"].unknown_executions == 1
+        assert snap.total_seconds == 7 and snap.unknown_executions == 2
+
+    def test_only_unknown_gives_no_total(self, tmp_path: Path) -> None:
+        engine, store = self._bootstrapped(tmp_path)
+        self._add(store, "e1", "anthropic", None)
+        store.close()
+        snap = engine.execution_times()
+        assert snap.total_seconds is None and snap.unknown_executions == 1
+
+    def test_non_work_item_roles_excluded(self, tmp_path: Path) -> None:
+        engine, store = self._bootstrapped(tmp_path)
+        self._add(store, "e1", "anthropic", 4)
+        self._add(store, "e2", "openai", 100, role="estimator")
+        self._add(store, "e3", "mistral", 100, role="qa")
+        store.close()
+        snap = engine.execution_times()
+        assert [p.provider for p in snap.providers] == ["anthropic"]
+        assert snap.total_seconds == 4
+
+    def test_other_mvp_executions_excluded(self, tmp_path: Path) -> None:
+        engine, store = self._bootstrapped(tmp_path)
+        self._add(store, "e1", "anthropic", 4)
+        self._add(store, "e2", "openai", 50, task="wi-other-mvp")
+        store.close()
+        snap = engine.execution_times()
+        assert [p.provider for p in snap.providers] == ["anthropic"]
+
+    def test_never_calls_a_provider(self, tmp_path: Path) -> None:
+        engine, store = self._bootstrapped(tmp_path)
+        self._add(store, "e1", "anthropic", 1)
+        store.close()
+        engine.execution_times()  # _NeverCalledAdapter.probe would raise
 
 
 class TestProbeWorkers:
