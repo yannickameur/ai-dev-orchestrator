@@ -8,10 +8,10 @@
 # — never an API key, token, or credential in this file.
 #
 # Model names below are the ones already confirmed in this project's own
-# tests/docs (docs/SPIKE_RALPH.md, ralph.yml/ralph-codex.yml in
+# tests/docs (the Ralph spike (Git history), ralph.yml/ralph-codex.yml in
 # ~/projects/ralph-spike) — never invented. Exception: the Mistral workers'
 # `model: vibe-default` is a deliberate sentinel, not a real model name —
-# see docs/VIBE_SPIKE.md §13 and src/orchestrator/vibe_ralph_bridge.py
+# see the Vibe spike (Git history) and src/orchestrator/vibe_ralph_bridge.py
 # (no specific Mistral model identifier was verified by the spike, so none
 # is fabricated here; Vibe's own configured default is used instead).
 #
@@ -174,7 +174,7 @@ workers:
         reasoning_effort: high
         cost_rank: 30
 
-  # Mistral (Vibe) — added post-MVP 0.1, see docs/VIBE_SPIKE.md.
+  # Mistral (Vibe) — added post-MVP 0.1, see the Vibe spike (Git history).
   # Priority deliberately below the validated Anthropic/OpenAI pool
   # (100/90): this adds capacity/provider diversity, it never silently
   # displaces an already-validated primary. Only `development` is granted
@@ -222,7 +222,7 @@ workers:
         model: vibe-default
         cost_rank: 20
 
-  # Gravity (P19/P20, ROADMAP.md §13) — `agy` CLI, reusing the exact
+  # Gravity (P19/P20, ROADMAP.md) — `agy` CLI, reusing the exact
   # custom-backend mechanism already proven by Vibe
   # (`gravity_ralph_bridge.py`). Real, verified (P19 Phase A + P20): `agy`
   # 1.2.12, `--mode=accept-edits` alone (no bypass) genuinely

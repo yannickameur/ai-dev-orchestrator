@@ -27,11 +27,8 @@ The full suite is offline — no real Anthropic/OpenAI/Mistral/Gravity
 calls, no provider credentials required, no quota consumed. It is what
 CI runs (`.github/workflows/ci.yml`).
 
-A few scripts under `scripts/` are deliberately **excluded** from the
-offline suite (their own docstrings say so explicitly, e.g. "NEVER run
-this via pytest") — they launch real provider workers, consume real
-quota, and are meant for manual, opt-in verification only. Do not add
-these to CI.
+Never add anything to CI that launches real provider workers or
+consumes real quota: real-provider verification is manual and opt-in.
 
 There is currently no configured linter/formatter/type-checker in this
 repository — don't assume one; if you want to propose adding one, do
@@ -94,8 +91,7 @@ via `ProjectRuntime.open(..., provider_adapters=..., subprocess_runner=...)`
 — the smallest test seams that layer offers, never used by real `aido`
 invocations.
 
-Running `aido run` for real (or `scripts/run_external_project_pilot.py`,
-or your own harness) is different, and there are real, current
+Running `aido run` for real (or your own harness) is different, and there are real, current
 limitations/costs you should know about before trying it:
 
 - The provider CLI you use (Claude Code, Codex, Mistral Vibe, Gravity's
@@ -164,7 +160,7 @@ These are load-bearing product decisions, not style preferences — see
   regression tests, ...) and computes the verdict itself; a worker's
   own claim that "the tests pass" is never sufficient.
 - **"Deterministic" means same SHA + same command + same *observed*
-  validation environment** (`docs/QA_STRATEGY.md`, §8.3) — not a claim
+  validation environment** (`docs/QA_GOVERNANCE.md`) — not a claim
   of full sandbox hermeticity. Found necessary by a real defect: a real
   AIDO Code self-dogfood run (WI-02) produced a `FAIL` then a `PASS` on
   the identical head SHA and QA command because an external process
@@ -211,6 +207,5 @@ existing mechanisms; do not add a metrics or supervision framework.
 
 If you change observable behavior, update the docs that describe it:
 `README.md` for anything a newcomer needs, `ROADMAP.md` for the
-functional source of truth, `docs/status.md` for the short factual
-status summary. Don't duplicate `ROADMAP.md`'s content into `README.md`
+functional source of truth and current status. Don't duplicate `ROADMAP.md`'s content into `README.md`
 — link to it instead.

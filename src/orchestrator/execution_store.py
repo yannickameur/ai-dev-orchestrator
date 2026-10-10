@@ -45,7 +45,7 @@ Design invariants:
   one of ``SUCCEEDED``/``FAILED``/``INTERRUPTED``/``RECOVERY_REQUIRED``;
   every other status is terminal and can never be transitioned out of,
   preventing a terminal execution from being silently reopened.
-- ``permission_mode`` (P12, ROADMAP.md §13) is an identity field like
+- ``permission_mode`` (P12, ROADMAP.md) is an identity field like
   ``worker_id``/``role`` — set once at ``create()``, exactly reflecting
   the requesting ``RalphExecutionEngine``'s own configured
   ``ExecutionPermissionMode`` (or ``None`` if that engine was not

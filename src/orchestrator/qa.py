@@ -827,10 +827,10 @@ def evaluate_qa_verdict(
     (see that function). "DETERMINISTIC QA EVIDENCE" means: same head SHA
     + same validation command + same *observed* validation environment —
     never a claim of full sandbox hermeticity (see
-    ``docs/QA_STRATEGY.md``).
+    the QA strategy study (Git history)).
 
     Order of checks mirrors the minimal PASS conditions from
-    ``docs/QA_STRATEGY.md``/``docs/QA_GOVERNANCE.md``: run must be
+    the QA strategy study (Git history)/``docs/QA_GOVERNANCE.md``: run must be
     ``COMPLETED``; a read-only Final Verification that can't prove it
     stayed read-only is ``INCONCLUSIVE``; a missing ``QAResult`` on a
     completed run is ``INCONCLUSIVE`` (an infrastructure gap, not a

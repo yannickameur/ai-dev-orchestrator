@@ -381,7 +381,7 @@ class TestShippedExampleConfig:
         }
 
     def test_config_workers_yaml_workers_are_enabled(self) -> None:
-        """P20 (ROADMAP.md §13): DeepSeek/Kimi (never validated by a real
+        """P20 (ROADMAP.md): DeepSeek/Kimi (never validated by a real
         execution) were removed from the active product entirely, rather
         than kept `enabled: false` — the product now exposes exactly the
         4 real, VALIDATED providers, all 8 of whose workers are enabled."""
@@ -394,7 +394,7 @@ class TestShippedExampleConfig:
         participating provider, so DEV B selection never has to wait for
         the *other* provider to reset when the author's own provider is
         still available — see ROADMAP.md, "Worker pool". Mistral (milo/
-        juno, added post-MVP 0.1, see docs/VIBE_SPIKE.md) and Gravity
+        juno, added post-MVP 0.1, see the Vibe spike (Git history)) and Gravity
         (gravity_primary/gravity_secondary, P20) follow the same rule —
         no single-worker exception remains."""
         registry = WorkerRegistry.load(Path("config/workers.yaml"))
@@ -406,7 +406,7 @@ class TestShippedExampleConfig:
             assert len(workers) >= 2, f"provider {provider!r} has fewer than 2 enabled workers"
 
     def test_gravity_workers_never_use_gravity_as_a_display_name(self) -> None:
-        """P20 product decision (ROADMAP.md §13): Gravity is the
+        """P20 product decision (ROADMAP.md): Gravity is the
         provider/backend identifier, never a worker's human display_name —
         exactly two real identities, Arthur (primary) and Nora
         (secondary)."""

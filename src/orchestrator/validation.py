@@ -132,7 +132,7 @@ class ValidationEnvironmentEvidence:
     execution, alongside the git SHA it ran against.
 
     Found necessary via a real AIDO Code self-dogfood run (WI-02, see
-    ``docs/reports/``): a project's configured QA command (``pytest -q``,
+    pilot reports): a project's configured QA command (``pytest -q``,
     resolved as a bare name via inherited ``PATH``) FAILed with
     ``ModuleNotFoundError`` on some head SHA, then PASSed on that exact
     same SHA and command after an unrelated process installed the
@@ -151,7 +151,7 @@ class ValidationEnvironmentEvidence:
 
     This does not prove the execution environment was hermetic/sandboxed
     — only that it was *observed*, so a later drift is *detectable*. See
-    ``docs/QA_STRATEGY.md``'s "DETERMINISTIC QA EVIDENCE" definition.
+    the QA strategy study (Git history)'s "DETERMINISTIC QA EVIDENCE" definition.
     """
 
     resolved_executable: str | None

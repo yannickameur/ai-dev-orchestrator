@@ -1,7 +1,7 @@
 """Regression knowledge base — Git-durable, provider-independent QA
 knowledge for a target repository's ``.qa/`` directory (Slice 22).
 
-GIT VS SQLITE BOUNDARY (see ``docs/QA_STRATEGY.md`` §15.1,
+GIT VS SQLITE BOUNDARY (see the QA strategy study (Git history) §15.1,
 ``docs/QA_GOVERNANCE.md``): this module reads/writes **only**
 ``.qa/*.yaml`` in the *target* repository — durable product knowledge
 that travels with the project (invariants, regression map, critical

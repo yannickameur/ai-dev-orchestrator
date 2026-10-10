@@ -1,8 +1,8 @@
 """aido — the public AIDO CLI (P1).
 
 Removes the need for a user to write a custom Python harness
-(``scripts/run_external_project_pilot.py`` remains real implementation
-evidence, not the product surface). Consumes ``ProjectConfig`` (P12) and
+(the former external-project pilot harness, now in Git history, was
+implementation evidence, not the product surface). Consumes ``ProjectConfig`` (P12) and
 ``ProjectRuntime`` — this module stays thin: argument parsing and plain-
 text presentation only. It never composes stores/services itself and
 never contains WorkItem-scheduling logic (``MVPManager`` stays

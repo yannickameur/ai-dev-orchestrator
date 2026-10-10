@@ -936,7 +936,7 @@ def _juno(**overrides) -> Worker:
 
 
 class TestMistralProviderIntegration:
-    """Mistral (Vibe, post-MVP 0.1 — see docs/VIBE_SPIKE.md) is a third
+    """Mistral (Vibe, post-MVP 0.1 — see the Vibe spike (Git history)) is a third
     provider added purely by configuration: none of these tests require
     WorkerSelector to know the string "mistral" exists — the same generic
     capability/governance/quota pipeline as Anthropic/OpenAI is exercised

@@ -7,7 +7,7 @@ validation: no execution, no caching/TTL policy, no consumption of reset
 credits. Those responsibilities belong to later components (QuotaManager,
 RalphExecutionEngine, explicit policy decisions) — see ROADMAP.md, Phase 1.
 
-Design invariants (see ROADMAP.md / docs/SPIKE_RALPH.md for the rationale):
+Design invariants (see ROADMAP.md / the Ralph spike (Git history) for the rationale):
 
 - A provider may expose several simultaneous quota windows (e.g. a 5h and a
   7d window) — there is no single ``reset_at`` at the ``ProviderState``
