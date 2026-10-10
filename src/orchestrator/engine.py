@@ -48,6 +48,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from orchestrator.engine_events import EngineEvent, FailureDiagnostic
+from orchestrator.git_governance import GitGovernanceError
 from orchestrator.project_config import ProjectConfig, ProjectConfigError
 from orchestrator.project_runtime import (
     ConfigRuntimeConflictError,
@@ -252,6 +253,12 @@ class RunResult:
     #: P21-02 — one typed diagnostic per development execution that
     #: failed during this call, in order; empty when none did.
     diagnostics: tuple[FailureDiagnostic, ...] = ()
+
+
+def delivery_blocked_message(exc: GitGovernanceError) -> str:
+    """Short, actionable text for an expected git-governance refusal; the
+    technical cause stays chained on the raised exception."""
+    return f"delivery blocked by git governance: {exc}. Fix the cause, then run again to resume the merge."
 
 
 class OrchestratorEngine:
@@ -540,7 +547,10 @@ class OrchestratorEngine:
                 runtime.bootstrap()
             except ConfigRuntimeConflictError as exc:
                 raise EngineError(str(exc)) from exc
-            return self._drive(runtime, max_cycles=max_cycles, on_event=on_event)
+            try:
+                return self._drive(runtime, max_cycles=max_cycles, on_event=on_event)
+            except GitGovernanceError as exc:
+                raise EngineError(delivery_blocked_message(exc)) from exc
         finally:
             runtime.close()
 

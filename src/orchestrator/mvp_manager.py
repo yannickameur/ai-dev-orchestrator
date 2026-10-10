@@ -153,10 +153,13 @@ from orchestrator.engine_events import EngineEvent, FailureDiagnostic
 from orchestrator.execution_store import ExecutionRecord, ExecutionStatus, ExecutionStore, UnknownExecutionError
 from orchestrator.git_governance import (
     RALPH_RUNTIME_NOISE_PREFIXES,
+    GitGovernanceError,
     GitGovernanceService,
     GitWorkItemRecord,
     GitWorkItemStatus,
     LocalGitWorkspace,
+    MergeEligibilityResult,
+    PendingMergeBlockedError,
 )
 from orchestrator.handoff import HandoffRecord, HandoffStore
 from orchestrator.internal_qa_engine import working_tree_changed_files
@@ -467,6 +470,10 @@ class MVPManager:
         second orchestration authority, purely an observer. ``None``
         (the default) reproduces this method's exact pre-P18 behavior.
         """
+        resumed_merge = self._try_resume_pending_merge(mvp_id, on_event=on_event)
+        if resumed_merge is not None:
+            return resumed_merge
+
         if self._recovery_coordinator is not None:
             reconciled = self._recovery_coordinator.reconcile_mvp(mvp_id)
             if reconciled and on_event is not None:
@@ -1089,10 +1096,13 @@ class MVPManager:
 
         if run.verdict is not None and run.verdict.status is QAVerdictStatus.PASS:
             work_item = self._project_state_store.mark_work_item_completed(work_item.work_item_id)
-            self._maybe_finalize_git(
-                project=project, work_item=work_item, gate_result=None,
-                qa_passed=True, qa_git_sha=head_sha,
-            )
+            try:
+                self._maybe_finalize_git(
+                    project=project, work_item=work_item, gate_result=None,
+                    qa_passed=True, qa_git_sha=head_sha,
+                )
+            except GitGovernanceError as exc:
+                raise PendingMergeBlockedError(work_item.work_item_id, str(exc)) from exc
             if on_event is not None and self._git_governance_service is not None:
                 record = self._git_governance_service.try_get(work_item.work_item_id)
                 if record is not None and record.status in (
@@ -1144,6 +1154,55 @@ class MVPManager:
         handoff = self._create_qa_handoff(project=project, mvp_id=mvp_id, work_item=work_item, run=run, head_sha=head_sha)
         rework = self._project_state_store.mark_work_item_needs_rework(work_item.work_item_id)
         return WorkItemRunResult(work_item=rework, handoff=handoff)
+
+    def _try_resume_pending_merge(
+        self, mvp_id: str, *, on_event: Callable[[EngineEvent], None] | None = None,
+    ) -> WorkItemRunResult | None:
+        """Finishes the delivery of a COMPLETED WorkItem whose governed
+        merge never happened (e.g. refused by a dirty working tree right
+        after QA PASS) — never by replaying DEV A/DEV B/QA, and never
+        launching a provider. Eligibility is recomputed from the persisted
+        QA/gate evidence (``_maybe_finalize_git``'s restart path) and
+        ``GitGovernanceService.merge`` re-checks the branch tip and the
+        working tree itself: any refusal leaves the WorkItem COMPLETED with
+        its merge still pending and raises ``PendingMergeBlockedError``
+        (fail-closed, never silent). Idempotent: a MERGED record is never
+        selected again. Only with ``auto_merge`` — otherwise MERGE_READY is
+        the intended resting state, awaiting an explicit merge."""
+        service = self._git_governance_service
+        if service is None or not service.policy.auto_merge:
+            return None
+        for work_item in sorted(self._project_state_store.list_work_items(mvp_id), key=lambda wi: wi.work_item_id):
+            if work_item.status is not WorkItemStatus.COMPLETED:
+                continue
+            record = service.try_get(work_item.work_item_id)
+            if record is None or record.status in (GitWorkItemStatus.MERGED, GitWorkItemStatus.ABANDONED):
+                continue
+            mvp = self._project_state_store.get_mvp(mvp_id)
+            project = self._project_state_store.get_project(mvp.project_id)
+            common = dict(project_id=project.project_id, mvp_id=mvp_id, work_item_id=work_item.work_item_id)
+            if on_event is not None and record.status is GitWorkItemStatus.MERGE_READY:
+                on_event(EngineEvent(
+                    kind="git.merge_ready", timestamp=self._clock().isoformat(), payload={}, **common,
+                ))
+            try:
+                eligibility = self._maybe_finalize_git(project=project, work_item=work_item, gate_result=None)
+            except GitGovernanceError as exc:
+                raise PendingMergeBlockedError(work_item.work_item_id, str(exc)) from exc
+            if eligibility is None or not eligibility.mergeable:
+                reason = eligibility.reason if eligibility is not None else "no eligibility computed"
+                raise PendingMergeBlockedError(work_item.work_item_id, reason or "not mergeable")
+            merge_result = self._maybe_tag_merge(project=project, work_item=work_item)
+            if on_event is not None and merge_result is not None:
+                merged_sha, tag_name = merge_result
+                on_event(EngineEvent(
+                    kind="git.merge_completed", timestamp=self._clock().isoformat(),
+                    payload={"tag": tag_name}, commit_sha=merged_sha, **common,
+                ))
+            return WorkItemRunResult(
+                work_item=work_item, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
+            )
+        return None
 
     def _maybe_tag_merge(self, *, project: Project, work_item: WorkItem) -> tuple[str, str] | None:
         """Tags the exact merged SHA immediately after a real merge — never
@@ -1722,7 +1781,7 @@ class MVPManager:
         self, *, project: Project, work_item: WorkItem,
         gate_result: QualityGateResult | None,
         qa_passed: bool | None = None, qa_git_sha: str | None = None,
-    ) -> None:
+    ) -> MergeEligibilityResult | None:
         """Computes merge eligibility once a WorkItem reaches ``COMPLETED``,
         and merges immediately if ``policy.auto_merge`` says so —
         otherwise leaves it at ``MERGE_READY`` for a later explicit merge.
@@ -1748,7 +1807,7 @@ class MVPManager:
         ``False`` by any caller of this codebase's WorkItem-Flow pipeline).
         """
         if self._git_governance_service is None:
-            return
+            return None
 
         gate_passed: bool | None = None
         gate_git_sha: str | None = None
@@ -1787,3 +1846,4 @@ class MVPManager:
                 work_item.work_item_id, repository_path=project.workspace, eligibility=eligibility,
                 noise_path_prefixes=self._RALPH_HOUSEKEEPING_PREFIX,
             )
+        return eligibility

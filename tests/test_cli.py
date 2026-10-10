@@ -659,6 +659,32 @@ class TestRunEndToEnd:
             assert all(e.status is ExecutionStatus.SUCCEEDED for e in executions)
             assert all(e.permission_mode == "standard" for e in executions)  # P12 audit
 
+    def test_refused_merge_prints_a_short_error_and_exits_non_zero(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from orchestrator.git_governance import DirtyWorkingTreeError, GitGovernanceService
+
+        def refuse(self, *a, **k):
+            raise DirtyWorkingTreeError(["__pycache__/x.pyc"])
+
+        monkeypatch.setattr(GitGovernanceService, "merge", refuse)
+        runner = _ScriptedRalphRunner(
+            [
+                {"topic": "work.completed", "mutate": _commit_action("feature.py", "x = 1\n", "DEV A")},
+                {"topic": "work.completed"},
+            ]
+        )
+        exit_code = _invoke(
+            ["run", str(_write_config(tmp_path))],
+            provider_adapters={"anthropic": _FakeAdapter(available=True)},
+            subprocess_runner=runner,
+        )
+        err = capsys.readouterr().err
+        assert exit_code == 1
+        assert "aido run: FAIL — delivery blocked by git governance" in err
+        assert "merge is pending" in err and "__pycache__/x.pyc" in err
+        assert "Traceback" not in err
+
     def test_rerun_after_completion_does_not_duplicate_or_rerun(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
         config_path = _write_config(tmp_path)
         config = ProjectConfig.load(config_path)
