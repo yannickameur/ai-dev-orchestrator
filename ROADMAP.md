@@ -161,7 +161,8 @@ importable (tests, développement dual-repo) mais n'est plus installé.
 | P21 observabilité live des workers | `DONE` |
 | P21.1 sorties publiques sûres | `DONE` (acceptance gouvernée 2026-10-10) |
 | P3 DeepSeek + Kimi, P4 étude Mammouth | `RETIRÉ` |
-| P14 observabilité de consommation | `APPROUVÉ`, non implémenté |
+| P14 simplifié : temps d'exécution IA par fournisseur | `DONE` (2026-10-10, `execution_times()`) |
+| P14 complet : tokens, coûts, tentatives | `APPROUVÉ`, non implémenté |
 | P15 prompt optimization externe | `APPROUVÉ POUR ÉTUDE`, pas d'intégration |
 | P16 revue YAGNI/REUSE FIRST | `APPROUVÉ POUR REVUE`, pas de refactor global |
 
@@ -174,7 +175,7 @@ synthétiques déterministes. Les statuts historiques WI-P21.1-04
 
 ## 8. Travaux futurs
 
-### P14 — Observabilité de consommation (`APPROUVÉ`)
+### P14 — Observabilité de consommation (`APPROUVÉ`, version simplifiée livrée)
 
 Enregistrer par exécution, quand réellement disponible : projet/MVP/
 WorkItem, phase (DEV A/B/FIX, QA), worker, provider, backend, modèle/
@@ -183,7 +184,12 @@ raisonnement, appels provider, tentatives, reprises, `permission_mode`,
 coût observé ou estimé. Capacité exclusivement moteur ; AIDO Code
 affiche sans recalculer.
 
-Critères d'acceptation :
+Livré (P14 simplifié) : `OrchestratorEngine.execution_times()`, temps
+d'exécution IA par fournisseur du MVP courant (DEV A/B/FIX, toutes
+tentatives), lu en lecture seule depuis l'`ExecutionStore` ; affiché par
+AIDO Code M3.4 avec les forfaits issus de `probe_workers()`.
+
+Critères d'acceptation restants :
 - une métrique non fournie par un backend reste `None`/`UNKNOWN`, jamais
   fabriquée ;
 - aucune influence sur la sélection de worker ni sur le verdict QA ;
@@ -224,7 +230,6 @@ explicite de l'utilisateur.
 
 ## 9. Prochain jalon à discuter
 
-Aucun jalon moteur n'est engagé. Candidats naturels : P14 (prérequis de
-P15 et d'un affichage de consommation dans AIDO Code), puis P16 au fil
-de l'eau. AIDO Code M4 (mode non interactif) n'est pas commencé et ne
+Aucun jalon moteur n'est engagé. Candidats naturels : le reste de P14
+(tokens et coûts, prérequis de P15), puis P16 au fil de l'eau. AIDO Code M4 (mode non interactif) n'est pas commencé et ne
 requiert aucune capacité moteur nouvelle connue.
