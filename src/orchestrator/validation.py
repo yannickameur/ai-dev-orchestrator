@@ -653,9 +653,14 @@ async def _default_subprocess_runner(
     (``asyncio.CancelledError``) is never caught here — it propagates
     unchanged up through ``QualityGateRunner``/``InternalQAEngine`` to
     ``MVPManager``, which finalizes the ``QARun`` as ``INTERRUPTED``
-    before re-raising it."""
+    before re-raising it.
+
+    ``PYTHONDONTWRITEBYTECODE=1``: a Python QA command must not leave an
+    untracked ``__pycache__/`` behind, which the governed merge would
+    then (rightly) refuse as a dirty working tree."""
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     try:
-        return await run_in_new_process_group(argv, cwd, timeout)
+        return await run_in_new_process_group(argv, cwd, timeout, env=env)
     except asyncio.TimeoutError:
         raise ValidationTimeoutError(f"validation command timed out after {timeout}s: {list(argv)!r}")
 
