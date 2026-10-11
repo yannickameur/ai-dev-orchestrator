@@ -1665,14 +1665,18 @@ class StopScriptEngine:
             self.store.mark_interrupted(eid, finished_at=UTC_NOW)
             raise asyncio.CancelledError()
         if kind == "timeout":
-            return ExecutionResult(record=self.store.mark_interrupted(eid, finished_at=UTC_NOW))
+            return ExecutionResult(
+                record=self.store.mark_interrupted(eid, finished_at=UTC_NOW),
+                last_output="H1 missing permission: refused in logs; H2 codec: not tested yet",
+                last_output_stream="stdout",
+            )
         if kind == "ok":
             record = self.store.mark_succeeded(eid, exit_code=0, git_sha_after=sha_after, finished_at=UTC_NOW)
             return ExecutionResult(record=record, exit_code=0, events=(event("work.completed"),))
         record = self.store.mark_failed(eid, exit_code=0, git_sha_after=sha_after, finished_at=UTC_NOW)
         events = {
             "max_iter": (event("loop.terminate", _MAX_ITER_PAYLOAD),),
-            "explicit_fail": (event("work.failed", "cannot do it"),),
+            "explicit_fail": (event("work.failed", "tried H1 (config) and H2 (permission): both ruled out"),),
         }.get(kind, ())
         return ExecutionResult(
             record=record, exit_code=0, events=events,
@@ -1928,3 +1932,116 @@ class TestAuditedReopenOfFailedWorkItem:
         with pytest.raises(ValueError):
             stack["manager"].reopen_failed_work_item("wi-1", reason="  ")
         assert _status(stack) is WorkItemStatus.FAILED
+
+
+def _qa_fail_as(*classifications: FailureClassification):
+    from dataclasses import replace
+
+    return lambda request: replace(
+        _qa_result(head_sha=request.head_sha, regressions=("t::a",)), failure_classifications=classifications,
+    )
+
+
+class TestBoundedDiagnosisAndRelay:
+    """Hotfix #57 — generic triage method, classification-driven guidance,
+    governed relay to another worker, no invented PASS."""
+
+    def _fix_prompt(self, tmp_path: Path, classification: FailureClassification | None) -> str:
+        stack = _stop_stack(tmp_path, workers=_pool(), script=[("ok", _commit_action("a.py", "a=1\n", "A")), "ok", "ok"])
+        fail = _qa_fail_as(classification) if classification else _qa_fail_as()
+        stack["qa_engine"]._script = [fail]
+        asyncio.run(stack["manager"].run_next_work_item("mvp-1"))  # DEV A, DEV B, QA FAIL
+        asyncio.run(stack["manager"].run_next_work_item("mvp-1"))  # DEV FIX, QA PASS
+        return stack["engine"].requests[2].instructions
+
+    def test_fix_prompt_carries_the_generic_triage_method(self, tmp_path: Path) -> None:
+        prompt = self._fix_prompt(tmp_path, None)
+
+        assert "at most three falsifiable hypotheses" in prompt
+        assert "inconclusive" in prompt and "never claim a pass you did not observe" in prompt
+        assert "Never weaken or skip acceptance criteria" in prompt
+        for name in ("Android", "Flutter", "SwiftShader", "AudioFlinger"):
+            assert name not in prompt  # a method, not technology-specific rules
+
+    def test_environment_classification_adds_environment_guidance(self, tmp_path: Path) -> None:
+        prompt = self._fix_prompt(tmp_path, FailureClassification.ENVIRONMENT_FAILURE)
+
+        assert "environment/tooling failure" in prompt and "smallest reversible change" in prompt
+
+    def test_application_failure_never_triggers_environment_diagnosis(self, tmp_path: Path) -> None:
+        prompt = self._fix_prompt(tmp_path, FailureClassification.REGRESSION)
+
+        assert "product/test failure" in prompt
+        assert "environment/tooling failure" not in prompt
+
+    def test_unclassified_failure_gets_no_guess_either_way(self, tmp_path: Path) -> None:
+        prompt = self._fix_prompt(tmp_path, FailureClassification.UNKNOWN)
+
+        assert "environment/tooling failure" not in prompt and "product/test failure" not in prompt
+
+    def test_environment_fix_is_followed_by_a_real_qa_pass_and_is_traceable(self, tmp_path: Path) -> None:
+        stack = _stop_stack(tmp_path, workers=_pool(), script=[("ok", _commit_action("a.py", "a=1\n", "A")), "ok", "ok"])
+        stack["qa_engine"]._script = [_qa_fail_as(FailureClassification.ENVIRONMENT_FAILURE)]
+        manager = stack["manager"]
+
+        assert asyncio.run(manager.run_next_work_item("mvp-1")).work_item.status is WorkItemStatus.NEEDS_REWORK
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert len(stack["qa_engine"].requests) == 2  # the same QA ran again, for real
+        assert stack["git_store"].get("wi-1").status is GitWorkItemStatus.MERGED
+        fix_handoffs = [h for h in stack["handoff_store"].list_for_work_item("wi-1")
+                        if (h.next_action or "").startswith("DEV FIX complete")]
+        assert len(fix_handoffs) == 1 and fix_handoffs[0].worker_id == stack["engine"].requests[2].worker.worker_id
+
+    def test_diagnosis_timeout_stops_cleanly_and_relays_context_to_another_worker(self, tmp_path: Path) -> None:
+        stack = _stop_stack(tmp_path, workers=_pool(), script=[
+            ("ok", _commit_action("a.py", "a=1\n", "A")), "ok", "timeout", "ok",
+        ])
+        stack["qa_engine"]._script = [_qa_fail_as(FailureClassification.ENVIRONMENT_FAILURE)]
+        manager, engine = stack["manager"], stack["engine"]
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        stopped = asyncio.run(manager.run_next_work_item("mvp-1"))  # diagnosis session times out
+
+        assert stopped.work_item.status is WorkItemStatus.RECOVERY_REQUIRED
+        relayed = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert relayed.work_item.status is WorkItemStatus.COMPLETED
+        first, second = engine.requests[2], engine.requests[3]
+        assert second.worker.worker_id != first.worker.worker_id
+        prompt = second.instructions
+        assert "QA findings" in prompt  # initial problem and QA evidence
+        assert "H1 missing permission" in prompt  # hypotheses already tested, not redone
+        assert "Recovery attempts remaining after this one: 1" in prompt
+        assert "environment/tooling failure" in prompt
+        assert len(engine.requests) == 4  # DEV A/DEV B never replayed
+
+    def test_diagnosis_relay_is_bounded_then_terminal(self, tmp_path: Path) -> None:
+        stack = _stop_stack(tmp_path, workers=_pool(), script=[
+            ("ok", _commit_action("a.py", "a=1\n", "A")), "ok", "timeout", "timeout", "timeout",
+        ])
+        stack["qa_engine"]._script = [_qa_fail_as(FailureClassification.ENVIRONMENT_FAILURE)]
+        manager = stack["manager"]
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        statuses = [asyncio.run(manager.run_next_work_item("mvp-1")).work_item.status for _ in range(3)]
+
+        assert statuses[-1] is WorkItemStatus.FAILED  # stops; no unbounded loop, no invented PASS
+        assert len(stack["engine"].requests) == 5
+        assert stack["git_store"].get("wi-1").status is not GitWorkItemStatus.MERGED
+
+    def test_explicit_diagnosis_failure_keeps_its_hypotheses_for_a_later_reopen(self, tmp_path: Path) -> None:
+        stack = _stop_stack(tmp_path, workers=_pool(), script=[
+            ("ok", _commit_action("a.py", "a=1\n", "A")), "ok", "explicit_fail", "ok",
+        ])
+        stack["qa_engine"]._script = [_qa_fail_as(FailureClassification.ENVIRONMENT_FAILURE)]
+        manager = stack["manager"]
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+        assert asyncio.run(manager.run_next_work_item("mvp-1")).work_item.status is WorkItemStatus.FAILED
+
+        manager.reopen_failed_work_item("wi-1", reason="human reviewed the hypotheses")
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert "both ruled out" in stack["engine"].requests[3].instructions

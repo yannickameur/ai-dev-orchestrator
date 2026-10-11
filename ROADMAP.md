@@ -118,6 +118,16 @@ QA FAIL → DEV FIX → QA … (3 tentatives QA au total)
   (2) et `recovery_budget_seconds` (6 h). Seul un `work.failed` attribué
   à l'exécution courante est un échec métier : `FAILED`, jamais converti.
   `exit_code=0` sans événement fiable ne produit jamais de succès.
+- Diagnostic QA (DEV FIX) : méthode de triage générique et bornée injectée
+  dans le prompt (erreurs explicites d'abord, ≤ 3 hypothèses
+  falsifiables, correctif minimal, « inconclusif » si le comportement réel
+  n'est pas observable) ; consigne d'environnement seulement si la QA a
+  elle-même classé `environment_failure`, consigne applicative pour
+  `regression`, aucune supposition sinon. Un diagnostic qui dépasse son
+  budget est relayé (même mécanisme de reprise) à un autre worker avec les
+  hypothèses déjà testées, la dernière sortie publique et les tentatives
+  restantes ; la même QA est rejouée pour de vrai. Aucune règle propre à
+  une technologie dans le moteur.
 - Un `FAILED` terminal se reprend uniquement via
   `OrchestratorEngine.reopen_work_item(id, reason=...)` : handoff d'audit,
   budget de reprise neuf, dépendants bloqués par lui libérés ; `COMPLETED`
@@ -175,8 +185,8 @@ importable (tests, développement dual-repo) mais n'est plus installé.
 | P21 observabilité live des workers | `DONE` |
 | P21.1 sorties publiques sûres | `DONE` (acceptance gouvernée 2026-10-10) |
 | P3 DeepSeek + Kimi, P4 étude Mammouth | `RETIRÉ` |
-| Hotfix #58 : arrêts récupérables et reprise gouvernée | `EN COURS` (PR 1/2) |
-| Hotfix #57 : diagnostic borné et relais IA | `À FAIRE` (PR 2/2, après #58) |
+| Hotfix #58 : arrêts récupérables et reprise gouvernée | `DONE` (PR #59) |
+| Hotfix #57 : diagnostic borné et relais IA | `EN COURS` (PR 2/2) |
 | P14 simplifié : temps d'exécution IA par fournisseur | `DONE` (2026-10-10, `execution_times()`) |
 | P14 complet : tokens, coûts, tentatives | `APPROUVÉ`, non implémenté |
 | P15 prompt optimization externe | `APPROUVÉ POUR ÉTUDE`, pas d'intégration |
