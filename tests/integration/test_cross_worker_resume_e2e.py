@@ -53,6 +53,7 @@ import asyncio
 import json
 import subprocess
 import sys
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -181,7 +182,7 @@ class _ScriptedFileMutatingRunner:
         ralph_dir = Path(cwd) / ".ralph"
         ralph_dir.mkdir(parents=True, exist_ok=True)
         (ralph_dir / "current-loop-id").write_text(step.get("loop_id", "e2e-loop"))
-        events_filename = f"events-{len(self.calls)}.jsonl"
+        events_filename = f"events-{uuid.uuid4().hex}.jsonl"  # real Ralph names are unique per loop
         (ralph_dir / "current-events").write_text(f".ralph/{events_filename}")
         line = json.dumps({
             "topic": step["topic"], "ts": UTC_T0.isoformat(), "payload": step.get("payload"),

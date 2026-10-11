@@ -1238,7 +1238,7 @@ class TestExecutionOutputAndDiagnostics:
             if event.kind == "execution.heartbeat":
                 raise RuntimeError("renderer bug")
 
-        (diag,) = engine.run(on_event=_on_event).diagnostics
+        (diag,) = engine.run(max_cycles=1, on_event=_on_event).diagnostics
         assert diag.output_delivery_failures == 1
         assert diag.business_verdict == "absent"
 
@@ -1247,9 +1247,9 @@ class TestExecutionOutputAndDiagnostics:
             {"topic": "loop.terminate", "payload": _MAX_ITERATIONS_TERMINATE, "exit_code": 2,
              "stdout": _claude_ndjson("backend said something").encode(), "stderr": b"line 1\nraw stderr\n"},
         ])
-        result = engine.run()
+        result = engine.run(max_cycles=1)
 
-        assert result.work_items[0].status == "failed"
+        assert result.work_items[0].status == "recovery_required"
         (diag,) = result.diagnostics
         assert diag.phase == "dev_a"
         assert diag.business_verdict == "absent"
@@ -1272,7 +1272,7 @@ class TestExecutionOutputAndDiagnostics:
             "topic": "loop.terminate", "payload": f"## Reason\n{sentinel}\n\n- Iterations: 5",
             "exit_code": 2, "stderr": sentinel.encode(),
         }])
-        (diag,) = engine.run().diagnostics
+        (diag,) = engine.run(max_cycles=1).diagnostics
         assert diag.ralph_termination_reason is None
         assert sentinel not in repr(diag)
 
@@ -1280,7 +1280,7 @@ class TestExecutionOutputAndDiagnostics:
         engine = _open_engine(tmp_path, [
             {"topic": "loop.terminate", "payload": "garbled", "exit_code": 1},
         ])
-        (diag,) = engine.run().diagnostics
+        (diag,) = engine.run(max_cycles=1).diagnostics
         assert diag.ralph_termination_reason is None
         assert diag.business_verdict == "absent"
         assert diag.summary.startswith("Ralph termination reason unknown;")
@@ -1298,7 +1298,7 @@ class TestExecutionOutputAndDiagnostics:
             provider_adapters={"anthropic": _FakeAdapter(available=True)},
             subprocess_runner=TimingOutRunner(),
         )
-        (diag,) = engine.run().diagnostics
+        (diag,) = engine.run(max_cycles=1).diagnostics
         assert diag.execution_status == "interrupted"
         assert diag.business_verdict == "absent"
         assert diag.last_output == "worker progress before timeout"
@@ -1306,7 +1306,7 @@ class TestExecutionOutputAndDiagnostics:
 
     def test_explicit_work_failed_keeps_business_verdict_failed(self, tmp_path: Path) -> None:
         engine = _open_engine(tmp_path, [{"topic": "work.failed", "exit_code": 0}])
-        (diag,) = engine.run().diagnostics
+        (diag,) = engine.run(max_cycles=1).diagnostics
         assert diag.business_verdict == "failed"
         assert diag.exit_code == 0
 
@@ -1323,7 +1323,7 @@ class TestExecutionOutputAndDiagnostics:
             if event.kind == "execution.output":
                 raise RuntimeError("renderer bug")
 
-        result = engine.run(on_event=_on_event)
+        result = engine.run(max_cycles=1, on_event=_on_event)
         assert result.work_items[0].status == "completed"
         assert seen.count("execution.output") == 2
 
@@ -1337,7 +1337,7 @@ class TestExecutionOutputAndDiagnostics:
             if event.kind == "execution.output":
                 raise RuntimeError("renderer bug")
 
-        (diag,) = engine.run(on_event=_on_event).diagnostics
+        (diag,) = engine.run(max_cycles=1, on_event=_on_event).diagnostics
         assert diag.output_delivery_failures == 1
         # Type name only: an exception message may echo output text.
         assert diag.last_output_delivery_error == "RuntimeError"
@@ -1351,7 +1351,7 @@ class TestExecutionOutputAndDiagnostics:
                 raise RuntimeError("transition renderer bug")
 
         with pytest.raises(RuntimeError, match="transition renderer bug"):
-            engine.run(on_event=_on_event)
+            engine.run(max_cycles=1, on_event=_on_event)
 
 
 class TestBoundedLiveOutput:
@@ -1367,14 +1367,14 @@ class TestBoundedLiveOutput:
     def test_normal_flow_is_untouched(self, tmp_path: Path) -> None:
         engine = _open_engine(tmp_path, self._steps([("stdout", f"l{i}\n") for i in range(50)]))
         seen: list[EngineEvent] = []
-        engine.run(on_event=seen.append)
+        engine.run(max_cycles=1, on_event=seen.append)
         assert sum(e.kind == "execution.output" for e in seen) == 50
         assert all(e.kind != "execution.output_truncated" for e in seen)
 
     def test_event_burst_is_truncated_once(self, tmp_path: Path) -> None:
         engine = _open_engine(tmp_path, self._steps([("stdout", "x\n")] * 300))
         seen: list[EngineEvent] = []
-        result = engine.run(on_event=seen.append)
+        result = engine.run(max_cycles=1, on_event=seen.append)
         assert result.work_items[0].status == "completed"
         assert sum(e.kind == "execution.output" for e in seen) == 100
         (signal,) = [e for e in seen if e.kind == "execution.output_truncated"]
@@ -1393,7 +1393,7 @@ class TestBoundedLiveOutput:
         output = [("stdout", "x") for i in range(502)]
         engine = _open_engine(tmp_path, self._steps(output))
         seen: list[EngineEvent] = []
-        assert engine.run(on_event=seen.append).work_items[0].status == "completed"
+        assert engine.run(max_cycles=1, on_event=seen.append).work_items[0].status == "completed"
         delivered = [e for e in seen if e.kind == "execution.output"]
         assert len(delivered) == 500
         assert {e.payload["stream"] for e in delivered} == {"stdout"}
@@ -1404,7 +1404,7 @@ class TestBoundedLiveOutput:
         big = "y" * 30_000
         engine = _open_engine(tmp_path, self._steps([("stdout", big)] * 4 + [("stdout", "tail\n")]))
         seen: list[EngineEvent] = []
-        engine.run(on_event=seen.append)
+        engine.run(max_cycles=1, on_event=seen.append)
         outputs = [e.payload["text"] for e in seen if e.kind == "execution.output"]
         assert sum(map(len, outputs)) == 64_000
         signals = [e for e in seen if e.kind == "execution.output_truncated"]
@@ -1425,7 +1425,7 @@ class TestBoundedLiveOutput:
             subprocess_runner=NoisyTimeoutRunner(),
         )
         seen: list[EngineEvent] = []
-        (diag,) = engine.run(on_event=seen.append).diagnostics
+        (diag,) = engine.run(max_cycles=1, on_event=seen.append).diagnostics
         assert diag.execution_status == "interrupted"
         assert diag.last_output.endswith("noise\nfinal words") and diag.last_output_stream == "stdout"
         assert sum(e.kind == "execution.output_truncated" for e in seen) == 1
@@ -1452,3 +1452,28 @@ class TestBoundedLiveOutput:
                 raise RuntimeError("renderer bug")
 
         assert engine.run(on_event=_on_event).work_items[0].status == "completed"
+
+
+class TestReopenFailedWorkItem:
+    """Hotfix #58 — the only supported way out of a terminal FAILED."""
+
+    def test_reopen_audits_then_next_run_resumes_with_a_new_execution(self, tmp_path: Path) -> None:
+        engine = _open_engine(tmp_path, [
+            {"topic": "work.failed", "exit_code": 0},  # authentic failure: stays FAILED
+            {"topic": "work.completed", "mutate": _commit_action("feature.py", "x = 1\n", "DEV A")},
+            {"topic": "work.completed"},
+        ])
+        first = engine.run(max_cycles=1)
+        assert first.work_items[0].status == "failed"
+
+        snapshot = engine.reopen_work_item("wi-1", reason="reviewed: environment issue, not the code")
+        assert snapshot.status == "recovery_required"
+
+        result = engine.run()
+        assert result.work_items[0].status == "completed"
+
+    def test_reopen_of_a_non_failed_item_is_an_engine_error(self, tmp_path: Path) -> None:
+        engine = _open_engine(tmp_path, [{"topic": "work.completed"}])
+
+        with pytest.raises(EngineError):
+            engine.reopen_work_item("wi-1", reason="nothing failed")

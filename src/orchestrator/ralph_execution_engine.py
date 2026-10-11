@@ -490,6 +490,9 @@ class ExecutionResult:
     #: any text, else stdout), ``""`` when the process printed nothing.
     last_output: str = ""
     last_output_stream: str | None = None
+    #: Hotfix #58 — ``stale_events`` (``current-events`` untouched by this
+    #: run) or ``conflicting_terminal_events``; ``None`` when attributable.
+    event_anomaly: str | None = None
 
 
 _FRACTIONAL_SECONDS_RE = re.compile(r"\.(\d+)")
@@ -546,15 +549,28 @@ def _determine_verdict(
 ) -> bool | None:
     """Returns True (success), False (failure), or None (no verdict found).
 
-    The first event, in order, whose topic matches either set wins — this
-    slice runs a single hat for a single terminal decision, so the first
-    match is also the only one expected in practice.
+    Contradictory terminal events (both a success and a failure topic in
+    the same attributed event stream) are not a verdict at all: neither
+    outcome is invented, the caller sees ``None`` (see
+    ``_event_anomaly``) and the execution stays fail-closed.
     """
-    for event in events:
-        if event.topic in failure_topics:
-            return False
-        if event.topic in success_topics:
-            return True
+    has_failure = any(e.topic in failure_topics for e in events)
+    has_success = any(e.topic in success_topics for e in events)
+    if has_failure and has_success:
+        return None
+    if has_failure:
+        return False
+    return True if has_success else None
+
+
+def _event_anomaly(
+    events: Sequence[RalphEvent], *, success_topics: frozenset[str], failure_topics: frozenset[str],
+    stale: bool,
+) -> str | None:
+    if stale:
+        return "stale_events"
+    if any(e.topic in failure_topics for e in events) and any(e.topic in success_topics for e in events):
+        return "conflicting_terminal_events"
     return None
 
 
@@ -640,15 +656,37 @@ def _read_ralph_loop_id(workspace: Path) -> str | None:
     return _read_optional_text(workspace / ".ralph" / "current-loop-id")
 
 
-def _read_ralph_events(workspace: Path) -> list[RalphEvent]:
-    events_relative_path = _read_optional_text(workspace / ".ralph" / "current-events")
-    if events_relative_path is None:
-        return []
+def _events_snapshot(workspace: Path) -> tuple[str, bytes] | None:
+    """``current-events`` pointer and file content, as they stand right now."""
+    relative = _read_optional_text(workspace / ".ralph" / "current-events")
+    if relative is None:
+        return None
     try:
-        lines = (workspace / events_relative_path).read_text().splitlines()
+        return relative, (workspace / relative).read_bytes()
     except OSError:
-        return []
-    return parse_ralph_events(lines)
+        return None
+
+
+def _read_ralph_events(
+    workspace: Path, before: tuple[str, bytes] | None = None
+) -> tuple[list[RalphEvent], bool]:
+    """Events produced by *this* run, and whether stale ones were dropped.
+
+    ``before`` is the pointer/content snapshot taken before launching
+    Ralph. A pointer that still targets the same file with unchanged
+    content is a leftover from an earlier run (stale, unattributable);
+    an appended file only contributes its new tail.
+    """
+    after = _events_snapshot(workspace)
+    if after is None:
+        return [], False
+    relative, content = after
+    if before is not None and before[0] == relative:
+        if content == before[1]:
+            return [], True
+        if content.startswith(before[1]):
+            content = content[len(before[1]):]
+    return parse_ralph_events(content.decode("utf-8", errors="replace").splitlines()), False
 
 
 def _tail(data: bytes) -> str:
@@ -1131,6 +1169,7 @@ class RalphExecutionEngine:
         heartbeat = _guard_heartbeat(request.heartbeat_observer)
         git_sha_before = _git_head_sha(request.workspace)
         untracked_before = _list_untracked_files_with_hashes(request.workspace)
+        events_before = _events_snapshot(request.workspace)
 
         record = self._execution_store.create(
             execution_id=request.execution_id,
@@ -1244,7 +1283,7 @@ class RalphExecutionEngine:
                 raise
 
         try:
-            events = _read_ralph_events(request.workspace)
+            events, stale_events = _read_ralph_events(request.workspace, events_before)
         except RalphEventParseError:
             self._execution_store.mark_failed(
                 request.execution_id, exit_code=exit_code, git_sha_after=git_sha_after,
@@ -1254,6 +1293,10 @@ class RalphExecutionEngine:
 
         verdict = _determine_verdict(
             events, success_topics=request.success_topics, failure_topics=request.failure_topics
+        )
+        event_anomaly = _event_anomaly(
+            events, success_topics=request.success_topics, failure_topics=request.failure_topics,
+            stale=stale_events,
         )
 
         if verdict is True:
@@ -1288,6 +1331,7 @@ class RalphExecutionEngine:
             untracked_changes=untracked_changes,
             last_output=last_output,
             last_output_stream=last_output_stream,
+            event_anomaly=event_anomaly,
         )
 
     def _build_ralph_args(self, runtime_dir: Path, request: ExecutionRequest) -> list[str]:

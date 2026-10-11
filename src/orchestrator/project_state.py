@@ -735,6 +735,42 @@ class ProjectStateStore:
         """
         return self._transition_work_item(work_item_id, WorkItemStatus.RECOVERY_REQUIRED)
 
+    def reopen_failed_work_item(self, work_item_id: str) -> list[WorkItem]:
+        """Explicit exception to FAILED being terminal (hotfix #58): moves a
+        FAILED WorkItem to RECOVERY_REQUIRED and releases the dependents that
+        were only BLOCKED because of it (transitively, back to PLANNED so
+        ``refresh_readiness`` re-evaluates them). Only for the audited
+        operator path (``MVPManager.reopen_failed_work_item``); the general
+        transition table keeps FAILED terminal. Returns every changed WorkItem."""
+        current = self.get_work_item(work_item_id)
+        if current.status is not WorkItemStatus.FAILED:
+            raise InvalidWorkItemTransitionError(
+                work_item_id, current.status, WorkItemStatus.RECOVERY_REQUIRED
+            )
+        changed = [replace(current, status=WorkItemStatus.RECOVERY_REQUIRED, blocked_reason=None)]
+        reopened = {work_item_id}
+        items = self.list_work_items(current.mvp_id)
+        progress = True
+        while progress:
+            progress = False
+            for item in items:
+                if (
+                    item.status is WorkItemStatus.BLOCKED
+                    and item.work_item_id not in reopened
+                    and (item.blocked_reason or "").startswith("dependency cannot complete")
+                    and reopened & set(item.dependencies)
+                ):
+                    reopened.add(item.work_item_id)
+                    changed.append(replace(item, status=WorkItemStatus.PLANNED, blocked_reason=None))
+                    progress = True
+        with self._conn:
+            for item in changed:
+                self._conn.execute(
+                    "UPDATE work_items SET status = ?, blocked_reason = NULL WHERE work_item_id = ?",
+                    (item.status.value, item.work_item_id),
+                )
+        return changed
+
     def mark_work_item_blocked(self, work_item_id: str, *, reason: str) -> WorkItem:
         """Blocks a WorkItem for a reason other than dependency resolution.
 
