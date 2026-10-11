@@ -140,9 +140,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -163,7 +162,9 @@ from orchestrator.git_governance import (
 )
 from orchestrator.handoff import HandoffRecord, HandoffStore
 from orchestrator.internal_qa_engine import working_tree_changed_files
-from orchestrator.project_state import MVP, Project, ProjectStateStore, WorkItem, WorkItemStatus
+from orchestrator.project_state import (
+    MVP, InvalidWorkItemTransitionError, Project, ProjectStateStore, WorkItem, WorkItemStatus,
+)
 from orchestrator.qa import (
     QAEngine,
     QAEvidenceManifest,
@@ -193,7 +194,8 @@ from orchestrator.ralph_execution_engine import (
     _accepts_kwarg,
     _determine_verdict,
 )
-from orchestrator.recovery import RecoveryCoordinator
+from orchestrator.recovery import RECOVERY_NEXT_ACTION, RecoveryCoordinator
+from orchestrator.stop_cause import StopCause, classify_stop, ralph_termination as _ralph_termination
 from orchestrator.validation import QualityGateResult, ValidationStore
 from orchestrator.wait import WaitCoordinator, WaitPhase, WaitRecord, WaitStore
 from orchestrator.worker_selector import (
@@ -210,6 +212,14 @@ IdFactory = Callable[[], str]
 
 DEFAULT_WORK_ITEM_ROLE = "developer"
 DEFAULT_TIMEOUT_SECONDS = 900.0
+#: Hotfix #58 — bounded automatic recovery of a recoverable stop (Ralph
+#: ``max_iterations``, timeout, technical error, inconsistent events).
+DEFAULT_MAX_STOP_RECOVERIES = 2
+DEFAULT_RECOVERY_BUDGET_SECONDS = 6 * 3600.0
+_DEV_A_DONE_PREFIX = "DEV A succeeded"
+_DEV_B_DONE_PREFIX = "DEV B corrective review complete"
+_QA_FINDINGS_PREFIX = "QA verdict="
+REOPEN_NEXT_ACTION = "work item explicitly reopened after a terminal failure; continue from persisted state"
 INITIAL_EVENT_TOPIC = "work.start"
 SUCCESS_TOPIC = "work.completed"
 FAILURE_TOPIC = "work.failed"
@@ -224,28 +234,10 @@ _MAX_DIAGNOSTIC_OUTPUT_CHARS = 600
 _MAX_LIVE_OUTPUT_EVENTS = 500
 _MAX_LIVE_OUTPUT_CHARS = 64_000
 _MAX_LIVE_OUTPUT_EVENTS_PER_SECOND = 100
-_RALPH_REASON_RE = re.compile(r"^## Reason\s*\n\s*(\S+)", re.MULTILINE)
-_RALPH_ITERATIONS_RE = re.compile(r"^- Iterations:\s*(\d+)", re.MULTILINE)
-_PUBLIC_RALPH_REASONS = frozenset({"max_iterations", "max_runtime_seconds"})
 _NEXT_ACTION_AFTER_FAILURE = (
-    "Inspect the observed output and decide on a new governed WorkItem; "
-    "the terminal WorkItem is never relaunched automatically."
+    "Inspect the observed output. A recoverable stop is resumed automatically within its bounded "
+    "budget; otherwise decide on a new governed WorkItem or an explicit, audited reopen."
 )
-
-
-def _ralph_termination(events: tuple[RalphEvent, ...]) -> tuple[str | None, int | None]:
-    """Reason/iteration count of the last readable ``loop.terminate``
-    event, each ``None`` when Ralph's payload does not actually state it."""
-    for event in reversed(events):
-        if event.topic != "loop.terminate":
-            continue
-        payload = event.payload or ""
-        reason = _RALPH_REASON_RE.search(payload)
-        iterations = _RALPH_ITERATIONS_RE.search(payload)
-        count = int(iterations.group(1)) if iterations else event.iteration
-        public_reason = reason.group(1) if reason else None
-        return (public_reason if public_reason in _PUBLIC_RALPH_REASONS else None), count
-    return None, None
 
 
 def _build_failure_diagnostic(
@@ -339,15 +331,19 @@ def _build_dev_instructions(work_item: WorkItem, *, resume_context: str | None) 
     )
 
 
-def _build_dev_b_instructions(work_item: WorkItem, *, dev_a_worker_id: str) -> str:
+def _build_dev_b_instructions(
+    work_item: WorkItem, *, dev_a_worker_id: str, resume_context: str | None = None,
+) -> str:
     """DEV B's corrective review — deliberately NOT read-only: fix evident
     issues directly rather than only listing suggestions, and commit the
     fix."""
     criteria = "\n".join(f"- {c}" for c in work_item.acceptance_criteria) or "- (none specified)"
+    resume_block = f"{resume_context}\n\n" if resume_context else ""
     return (
         f"Corrective review of the implementation just produced by another developer "
         f"({dev_a_worker_id}) for: {work_item.title}\n\n"
         f"Acceptance criteria:\n{criteria}\n\n"
+        f"{resume_block}"
         "Review the committed diff and relevant code/tests against these criteria. "
         "Fix real defects directly, test affected behavior and commit corrections. "
         "Reuse existing components; KISS/YAGNI, no unrelated refactors. Give a concise verdict.\n\n"
@@ -402,6 +398,8 @@ class MVPManager:
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        max_stop_recoveries: int = DEFAULT_MAX_STOP_RECOVERIES,
+        recovery_budget_seconds: float = DEFAULT_RECOVERY_BUDGET_SECONDS,
     ) -> None:
         self._project_state_store = project_state_store
         self._handoff_store = handoff_store
@@ -410,6 +408,8 @@ class MVPManager:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or _default_id_factory
         self._timeout_seconds = timeout_seconds
+        self._max_stop_recoveries = max_stop_recoveries
+        self._recovery_budget_seconds = recovery_budget_seconds
         self._wait_store = wait_store
         self._adaptive_execution_selector = adaptive_execution_selector
         self._validation_store = validation_store
@@ -541,6 +541,23 @@ class MVPManager:
 
     async def _select_dev_worker(
         self, *, mvp: MVP, work_item: WorkItem, is_rework: bool,
+        prefer_not: frozenset[str] = frozenset(),
+    ) -> tuple[Worker, str | None, str | None]:
+        """Recovery after a stop prefers a different worker (``prefer_not``)
+        but, when none other is eligible, falls back to the same selection
+        without the preference — never to a worker the selector refuses."""
+        if prefer_not:
+            try:
+                return await self._select_dev_worker_once(
+                    mvp=mvp, work_item=work_item, is_rework=is_rework, excluded=prefer_not,
+                )
+            except NoEligibleWorkerError:
+                pass
+        return await self._select_dev_worker_once(mvp=mvp, work_item=work_item, is_rework=is_rework)
+
+    async def _select_dev_worker_once(
+        self, *, mvp: MVP, work_item: WorkItem, is_rework: bool,
+        excluded: frozenset[str] = frozenset(),
     ) -> tuple[Worker, str | None, str | None]:
         """Resolves the developer for one DEVELOPMENT/REWORK attempt.
 
@@ -572,10 +589,13 @@ class MVPManager:
             selection = await self._adaptive_execution_selector.select(
                 estimation_request=estimation_request,
                 required_capabilities=work_item.required_capabilities,
+                excluded_worker_ids=excluded,
             )
             return selection.worker, selection.decision.model, selection.decision.reasoning_effort
         worker = await self._worker_selector.select(
-            WorkerSelectionRequest(required_capabilities=work_item.required_capabilities)
+            WorkerSelectionRequest(
+                required_capabilities=work_item.required_capabilities, excluded_worker_ids=excluded,
+            )
         )
         return worker, None, None
 
@@ -850,10 +870,16 @@ class MVPManager:
             ))
 
         if is_rework:
-            latest_handoff = self._handoff_store.latest_for_work_item(work_item.work_item_id)
+            qa_handoff = next(
+                (h for h in reversed(self._handoff_store.list_for_work_item(work_item.work_item_id))
+                 if (h.open_issues or "").startswith(_QA_FINDINGS_PREFIX)),
+                None,
+            )
             fix_context = resume_context
-            if latest_handoff is not None and latest_handoff.open_issues:
-                fix_context = f"QA findings from the previous attempt: {latest_handoff.open_issues}"
+            if qa_handoff is not None:
+                fix_context = f"QA findings from the previous attempt: {qa_handoff.open_issues}"
+                if resume_context:
+                    fix_context += f"\n\n{resume_context}"
             dev_result, dev_diagnostic = await self._run_development(
                 project=project, mvp_id=mvp_id, work_item=work_item, worker=dev_worker,
                 model=dev_model, reasoning_effort=dev_reasoning_effort,
@@ -861,7 +887,10 @@ class MVPManager:
                 phase="dev_fix", on_event=on_event,
             )
             if dev_result.record.status is not ExecutionStatus.SUCCEEDED:
-                work_item = self._project_state_store.mark_work_item_failed(work_item.work_item_id)
+                work_item = self._fail_or_recover(
+                    project=project, mvp_id=mvp_id, work_item=work_item, result=dev_result,
+                    diagnostic=dev_diagnostic, phase="dev_fix",
+                )
                 return WorkItemRunResult(
                     work_item=work_item, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
                 failure_diagnostic=dev_diagnostic,
@@ -880,7 +909,10 @@ class MVPManager:
             phase="dev_a", on_event=on_event,
         )
         if dev_a_result.record.status is not ExecutionStatus.SUCCEEDED:
-            work_item = self._project_state_store.mark_work_item_failed(work_item.work_item_id)
+            work_item = self._fail_or_recover(
+                project=project, mvp_id=mvp_id, work_item=work_item, result=dev_a_result,
+                diagnostic=dev_a_diagnostic, phase="dev_a",
+            )
             return WorkItemRunResult(
                 work_item=work_item, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
                 failure_diagnostic=dev_a_diagnostic,
@@ -926,6 +958,7 @@ class MVPManager:
         self, *, project: Project, mvp_id: str, work_item: WorkItem, dev_a_worker_id: str,
         dev_b_worker: Worker, head_after_a: str, base_sha: str,
         on_event: Callable[[EngineEvent], None] | None = None,
+        resume_context: str | None = None,
     ) -> WorkItemRunResult:
         """DEV B's corrective review execution (write-capable, direct in
         the governed workspace — never read-only, never isolated: a
@@ -936,11 +969,16 @@ class MVPManager:
         dev_b_result, dev_b_diagnostic = await self._run_development(
             project=project, mvp_id=mvp_id, work_item=work_item, worker=dev_b_worker,
             model=profile.model, reasoning_effort=profile.reasoning_effort,
-            instructions=_build_dev_b_instructions(work_item, dev_a_worker_id=dev_a_worker_id),
+            instructions=_build_dev_b_instructions(
+                work_item, dev_a_worker_id=dev_a_worker_id, resume_context=resume_context,
+            ),
             phase="dev_b", on_event=on_event,
         )
         if dev_b_result.record.status is not ExecutionStatus.SUCCEEDED:
-            work_item = self._project_state_store.mark_work_item_failed(work_item.work_item_id)
+            work_item = self._fail_or_recover(
+                project=project, mvp_id=mvp_id, work_item=work_item, result=dev_b_result,
+                diagnostic=dev_b_diagnostic, phase="dev_b",
+            )
             return WorkItemRunResult(
                 work_item=work_item, handoff=self._handoff_store.latest_for_work_item(work_item.work_item_id),
                 failure_diagnostic=dev_b_diagnostic,
@@ -1616,16 +1654,160 @@ class MVPManager:
                 project=project, mvp_id=mvp_id, work_item=work_item, on_event=on_event,
             )
 
-        dev_worker, dev_model, dev_reasoning_effort = await self._select_dev_worker(
-            mvp=mvp, work_item=work_item, is_rework=False,
-        )
+        phase, dev_a_handoff = self._pending_dev_phase(work_item.work_item_id)
+        prefer_not = frozenset({last_dev.worker_id}) if last_dev is not None else frozenset()
         resume_context = self._build_resume_context(work_item.work_item_id)
+        if phase == "dev_b":
+            return await self._resume_dev_b_recovery(
+                mvp=mvp, work_item=work_item, dev_a_handoff=dev_a_handoff, prefer_not=prefer_not,
+                resume_context=resume_context, on_event=on_event,
+            )
+        is_rework = phase == "dev_fix"
+        dev_worker, dev_model, dev_reasoning_effort = await self._select_dev_worker(
+            mvp=mvp, work_item=work_item, is_rework=is_rework, prefer_not=prefer_not,
+        )
         return await self._execute_work_item(
             mvp_id=mvp_id, mvp=mvp, work_item=work_item, dev_worker=dev_worker,
-            is_rework=False, resume_context=resume_context,
+            is_rework=is_rework, resume_context=resume_context,
             dev_model=dev_model, dev_reasoning_effort=dev_reasoning_effort,
             on_event=on_event,
         )
+
+    def _pending_dev_phase(self, work_item_id: str) -> tuple[str, HandoffRecord | None]:
+        """Which development phase a recovered WorkItem still owes, from
+        durable handoffs only (recovery handoffs are ignored): ``dev_a`` until
+        DEV A hands off, then ``dev_b``, and ``dev_fix`` once QA produced
+        findings after DEV B. Returns DEV A's handoff for ``dev_b``."""
+        phase, dev_a_handoff = "dev_a", None
+        for handoff in self._handoff_store.list_for_work_item(work_item_id):
+            action = handoff.next_action or ""
+            if action.startswith(_DEV_A_DONE_PREFIX):
+                phase, dev_a_handoff = "dev_b", handoff
+            elif action.startswith(_DEV_B_DONE_PREFIX):
+                phase = "qa"
+            elif (handoff.open_issues or "").startswith(_QA_FINDINGS_PREFIX):
+                phase = "dev_fix"
+        return ("dev_a", None) if phase == "qa" else (phase, dev_a_handoff)
+
+    async def _resume_dev_b_recovery(
+        self, *, mvp: MVP, work_item: WorkItem, dev_a_handoff: HandoffRecord,
+        prefer_not: frozenset[str], resume_context: str | None,
+        on_event: Callable[[EngineEvent], None] | None,
+    ) -> WorkItemRunResult:
+        """DEV A already succeeded: only DEV B runs again, as a new
+        execution by a worker independent from DEV A (never DEV A replayed)."""
+        project = self._project_state_store.get_project(mvp.project_id)
+        request = WorkerSelectionRequest(
+            required_capabilities=work_item.required_capabilities,
+            author_worker_id=dev_a_handoff.worker_id,
+        )
+        try:
+            dev_b_worker = await self._worker_selector.select(
+                replace(request, excluded_worker_ids=prefer_not) if prefer_not else request
+            )
+        except NoEligibleWorkerError:
+            if not prefer_not:
+                raise
+            dev_b_worker = await self._worker_selector.select(request)
+        base_sha = dev_a_handoff.git_sha_after
+        if self._git_governance_service is not None:
+            base_sha = self._reconcile_governed_head(work_item.work_item_id, project.workspace).base_sha
+        work_item = self._project_state_store.mark_work_item_running(work_item.work_item_id)
+        if on_event is not None:
+            on_event(EngineEvent(
+                kind="work_item.started", timestamp=self._clock().isoformat(),
+                project_id=project.project_id, mvp_id=mvp.mvp_id,
+                work_item_id=work_item.work_item_id, payload={},
+            ))
+        return await self._run_dev_b_onward(
+            project=project, mvp_id=mvp.mvp_id, work_item=work_item,
+            dev_a_worker_id=dev_a_handoff.worker_id, dev_b_worker=dev_b_worker,
+            head_after_a=dev_a_handoff.git_sha_after, base_sha=base_sha,
+            on_event=on_event, resume_context=resume_context,
+        )
+
+    def reopen_failed_work_item(self, work_item_id: str, *, reason: str) -> list[WorkItem]:
+        """Audited operator action: gives a terminal FAILED WorkItem a fresh
+        recovery budget. Commits and handoffs are kept; a durable handoff
+        records who/why, then the WorkItem resumes through the normal
+        RECOVERY_REQUIRED path (new execution, bounded, independent DEV B).
+        Dependents blocked only by it return to PLANNED. Never edits SQLite
+        by hand, never marks anything COMPLETED."""
+        if not reason or not reason.strip():
+            raise ValueError("reason must be a non-empty string")
+        work_item = self._project_state_store.get_work_item(work_item_id)
+        if work_item.status is not WorkItemStatus.FAILED:
+            raise InvalidWorkItemTransitionError(
+                work_item_id, work_item.status, WorkItemStatus.RECOVERY_REQUIRED
+            )
+        mvp = self._project_state_store.get_mvp(work_item.mvp_id)
+        previous = self._handoff_store.latest_for_work_item(work_item_id)
+        last_dev = None
+        if self._execution_store is not None:
+            developer_runs = [
+                e for e in self._execution_store.list_for_task(work_item_id) if e.role == DEFAULT_WORK_ITEM_ROLE
+            ]
+            last_dev = developer_runs[-1] if developer_runs else None
+        self._handoff_store.create(
+            handoff_id=self._id_factory(), project_id=mvp.project_id, mvp_id=mvp.mvp_id,
+            work_item_id=work_item_id, objective=work_item.title,
+            execution_id=last_dev.execution_id if last_dev else None,
+            worker_id=last_dev.worker_id if last_dev else None,
+            open_issues=f"reopened after terminal FAILED: {reason.strip()}",
+            next_action=REOPEN_NEXT_ACTION,
+            git_sha_after=(last_dev.git_sha_after if last_dev else None) or (previous.git_sha_after if previous else None),
+            created_at=self._clock(),
+        )
+        return self._project_state_store.reopen_failed_work_item(work_item_id)
+
+    def _recovery_allowed(self, work_item_id: str, cause: StopCause) -> bool:
+        """Bounded: attempts and wall-clock budget count only executions since
+        the last explicit reopen; an explicit failure is never recovered."""
+        if not cause.recoverable or self._execution_store is None:
+            return False
+        records = [
+            e for e in self._execution_store.list_for_task(work_item_id) if e.role == DEFAULT_WORK_ITEM_ROLE
+        ]
+        reopen = next(
+            (h for h in reversed(self._handoff_store.list_for_work_item(work_item_id))
+             if h.next_action == REOPEN_NEXT_ACTION),
+            None,
+        )
+        if reopen is not None and reopen.execution_id is not None:
+            # The reopen handoff names the last execution before the reopen.
+            ids = [e.execution_id for e in records]
+            if reopen.execution_id in ids:
+                records = records[ids.index(reopen.execution_id) + 1:]
+        if sum(1 for e in records if e.status is not ExecutionStatus.SUCCEEDED) > self._max_stop_recoveries:
+            return False
+        if records and (self._clock() - records[0].started_at).total_seconds() > self._recovery_budget_seconds:
+            return False
+        return True
+
+    def _fail_or_recover(
+        self, *, project: Project, mvp_id: str, work_item: WorkItem, result: ExecutionResult,
+        diagnostic: FailureDiagnostic | None, phase: str,
+    ) -> WorkItem:
+        """A development execution did not succeed. A recoverable stop
+        (see :class:`StopCause`) within the attempt/time budget keeps the work
+        (commits, handoff) and moves to ``RECOVERY_REQUIRED`` — a new
+        execution resumes it. Anything else stays terminal ``FAILED``."""
+        cause = classify_stop(result)
+        if not self._recovery_allowed(work_item.work_item_id, cause):
+            return self._project_state_store.mark_work_item_failed(work_item.work_item_id)
+        previous = self._handoff_store.latest_for_work_item(work_item.work_item_id)
+        detail = diagnostic.summary if diagnostic is not None else "no diagnostic"
+        self._handoff_store.create(
+            handoff_id=self._id_factory(), project_id=project.project_id, mvp_id=mvp_id,
+            work_item_id=work_item.work_item_id, objective=work_item.title,
+            execution_id=result.record.execution_id, worker_id=result.record.worker_id,
+            completed_work="Commits made by the stopped execution are preserved on the governed branch.",
+            open_issues=f"{phase} stopped ({cause.value}), not a verified failure: {detail}",
+            next_action=RECOVERY_NEXT_ACTION,
+            git_sha_after=result.record.git_sha_after or (previous.git_sha_after if previous else None),
+            created_at=self._clock(),
+        )
+        return self._project_state_store.mark_work_item_recovery_required(work_item.work_item_id)
 
     async def _resume_qa_only(
         self, *, project: Project, mvp_id: str, work_item: WorkItem,

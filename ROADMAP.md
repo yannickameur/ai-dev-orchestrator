@@ -109,6 +109,19 @@ QA FAIL → DEV FIX → QA … (3 tentatives QA au total)
   re-probe réel.
 - `RECOVERY_REQUIRED` : exécution jamais terminée de façon fiable ;
   ré-orchestrable via une nouvelle exécution.
+- Arrêt d'une exécution DEV A/B/FIX classé sur preuves (`stop_cause.py`) :
+  `max_iterations`, timeout, erreur technique et événements Ralph
+  incohérents/périmés/contradictoires sont **récupérables** → commits et
+  handoff conservés, `RECOVERY_REQUIRED`, nouvelle exécution (worker
+  différent préféré via `WorkerSelector`, DEV B toujours indépendant de
+  DEV A, jamais de rejeu de DEV A), bornée par `max_stop_recoveries`
+  (2) et `recovery_budget_seconds` (6 h). Seul un `work.failed` attribué
+  à l'exécution courante est un échec métier : `FAILED`, jamais converti.
+  `exit_code=0` sans événement fiable ne produit jamais de succès.
+- Un `FAILED` terminal se reprend uniquement via
+  `OrchestratorEngine.reopen_work_item(id, reason=...)` : handoff d'audit,
+  budget de reprise neuf, dépendants bloqués par lui libérés ; `COMPLETED`
+  exige toujours revue, QA et gouvernance Git réelles.
 - Un WorkItem `BLOCKED`/`WAITING`/`FAILED` ne bloque jamais les
   WorkItems indépendants ; ses dépendants directs passent `BLOCKED`.
 - Les workers implémentent, testent et corrigent avec une progression
@@ -162,6 +175,8 @@ importable (tests, développement dual-repo) mais n'est plus installé.
 | P21 observabilité live des workers | `DONE` |
 | P21.1 sorties publiques sûres | `DONE` (acceptance gouvernée 2026-10-10) |
 | P3 DeepSeek + Kimi, P4 étude Mammouth | `RETIRÉ` |
+| Hotfix #58 : arrêts récupérables et reprise gouvernée | `EN COURS` (PR 1/2) |
+| Hotfix #57 : diagnostic borné et relais IA | `À FAIRE` (PR 2/2, après #58) |
 | P14 simplifié : temps d'exécution IA par fournisseur | `DONE` (2026-10-10, `execution_times()`) |
 | P14 complet : tokens, coûts, tentatives | `APPROUVÉ`, non implémenté |
 | P15 prompt optimization externe | `APPROUVÉ POUR ÉTUDE`, pas d'intégration |

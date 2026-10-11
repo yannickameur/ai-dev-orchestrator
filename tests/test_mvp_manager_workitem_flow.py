@@ -1623,3 +1623,308 @@ class TestDevPhaseInterruption:
         assert record is not None and record.status is not GitWorkItemStatus.MERGED
         kinds = [e.kind for e in seen]
         assert kinds[-3:] == ["run.interruption_requested", "dev_b.interrupted", "run.interrupted"]
+
+
+# --- Hotfix #58: recoverable stops, bounded recovery, explicit reopen --------
+
+
+_MAX_ITER_PAYLOAD = "## Reason\nmax_iterations\n\n## Summary\n- Iterations: 5"
+
+
+class StopScriptEngine:
+    """Scripted per-call outcomes persisted in a real ``ExecutionStore``.
+
+    Each entry is a kind (``ok``, ``max_iter``, ``timeout``, ``explicit_fail``,
+    ``silent``, ``stale``, ``cancel``) or ``(kind, workspace_action)``. A
+    ``max_iter`` run can commit useful work before stopping."""
+
+    def __init__(self, store: ExecutionStore, script: list) -> None:
+        self.store, self.script, self.requests = store, list(script), []
+
+    async def execute(self, request) -> ExecutionResult:
+        from orchestrator.ralph_execution_engine import RalphEvent
+
+        self.requests.append(request)
+        step = self.script.pop(0)
+        kind, action = (step, None) if isinstance(step, str) else step
+        sha_before = _run_git(request.workspace, "rev-parse", "HEAD").stdout.strip()
+        self.store.create(
+            execution_id=request.execution_id, task_id=request.task_id, worker_id=request.worker.worker_id,
+            provider=request.worker.provider, backend=request.worker.backend, model=request.model,
+            role=request.role, git_sha_before=sha_before, started_at=UTC_NOW,
+        )
+        if action is not None:
+            action(request.workspace)
+        sha_after = _run_git(request.workspace, "rev-parse", "HEAD").stdout.strip()
+
+        def event(topic, payload=None):
+            return RalphEvent(topic=topic, timestamp=UTC_NOW, payload=payload)
+
+        eid = request.execution_id
+        if kind == "cancel":
+            self.store.mark_interrupted(eid, finished_at=UTC_NOW)
+            raise asyncio.CancelledError()
+        if kind == "timeout":
+            return ExecutionResult(record=self.store.mark_interrupted(eid, finished_at=UTC_NOW))
+        if kind == "ok":
+            record = self.store.mark_succeeded(eid, exit_code=0, git_sha_after=sha_after, finished_at=UTC_NOW)
+            return ExecutionResult(record=record, exit_code=0, events=(event("work.completed"),))
+        record = self.store.mark_failed(eid, exit_code=0, git_sha_after=sha_after, finished_at=UTC_NOW)
+        events = {
+            "max_iter": (event("loop.terminate", _MAX_ITER_PAYLOAD),),
+            "explicit_fail": (event("work.failed", "cannot do it"),),
+        }.get(kind, ())
+        return ExecutionResult(
+            record=record, exit_code=0, events=events,
+            event_anomaly="stale_events" if kind == "stale" else None,
+        )
+
+
+def _stop_stack(tmp_path: Path, *, workers: list[Worker], script: list, dependent: bool = False,
+                selector=None, **manager_kwargs):
+    repo = _git_repo(tmp_path)
+    project_store, handoff_store = _stores(tmp_path, repo)
+    project_store.create_work_item(work_item_id="wi-1", mvp_id="mvp-1", title="A")
+    if dependent:
+        project_store.create_work_item(work_item_id="wi-2", mvp_id="mvp-1", title="B", dependencies=["wi-1"])
+    git_service, git_store = _git_service(tmp_path)
+    qa_run_store = QARunStore(tmp_path / "qa_runs.sqlite3", clock=lambda: UTC_NOW)
+    execution_store = ExecutionStore(tmp_path / "executions.sqlite3", clock=lambda: UTC_NOW)
+    engine = StopScriptEngine(execution_store, script)
+    qa_engine = DynamicQAEngine()
+    kwargs = dict(
+        git_governance_service=git_service, qa_engine=qa_engine,
+        qa_policy=QAPolicy(required_invariant_ids=("workitem-qa-check",)), qa_run_store=qa_run_store,
+        execution_store=execution_store, clock=lambda: UTC_NOW, id_factory=_counting_id_factory(),
+    )
+    kwargs.update(manager_kwargs)
+    manager = MVPManager(
+        project_store, handoff_store, selector or _real_worker_selector(workers), engine, **kwargs,
+    )
+    return dict(
+        repo=repo, project_store=project_store, handoff_store=handoff_store, git_store=git_store,
+        execution_store=execution_store, engine=engine, qa_engine=qa_engine, manager=manager,
+        kwargs=kwargs, git_service=git_service,
+    )
+
+
+def _pool() -> list[Worker]:
+    return [
+        _worker("alice"), _worker("victor", provider="openai", backend="codex"),
+        _worker("yannick", provider="openai", backend="codex"),
+    ]
+
+
+def _status(stack, work_item_id: str = "wi-1") -> WorkItemStatus:
+    return stack["project_store"].get_work_item(work_item_id).status
+
+
+class TestRecoverableStopsAreNotTerminal:
+    def test_max_iterations_after_useful_commits_resumes_dev_b_only_with_another_worker(
+        self, tmp_path: Path,
+    ) -> None:
+        stack = _stop_stack(tmp_path, workers=_pool(), script=[
+            ("ok", _commit_action("a.py", "a = 1\n", "DEV A work")),
+            ("max_iter", _commit_action("b.py", "b = 1\n", "DEV B partial work")),
+            "ok",
+        ])
+        manager, engine = stack["manager"], stack["engine"]
+
+        first = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert first.work_item.status is WorkItemStatus.RECOVERY_REQUIRED  # not FAILED
+        assert first.failure_diagnostic is not None  # the stop stays diagnosable
+        handoff = stack["handoff_store"].latest_for_work_item("wi-1")
+        assert "max_iterations" in handoff.open_issues and handoff.git_sha_after
+        branch_log = _run_git(stack["repo"], "log", "--format=%s", "work/wi-1").stdout
+        assert "DEV A work" in branch_log and "DEV B partial work" in branch_log  # nothing lost
+
+        second = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert second.work_item.status is WorkItemStatus.COMPLETED
+        assert len(engine.requests) == 3  # DEV A was never replayed
+        dev_a, failed_b, resumed_b = (r.worker.worker_id for r in engine.requests)
+        assert resumed_b not in (dev_a, failed_b)  # alternative, independent worker
+        assert "max_iterations" in engine.requests[2].instructions[:2000] or "stopped" in engine.requests[2].instructions
+        assert stack["git_store"].get("wi-1").status is GitWorkItemStatus.MERGED
+
+    def test_timeout_in_dev_a_is_handed_to_another_worker_with_context(self, tmp_path: Path) -> None:
+        stack = _stop_stack(tmp_path, workers=_pool(), script=[
+            ("timeout", _commit_action("a.py", "a = 1\n", "DEV A partial")), "ok", "ok",
+        ])
+        manager, engine = stack["manager"], stack["engine"]
+
+        assert asyncio.run(manager.run_next_work_item("mvp-1")).work_item.status is WorkItemStatus.RECOVERY_REQUIRED
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert engine.requests[1].worker.worker_id != engine.requests[0].worker.worker_id
+        assert "timeout" in engine.requests[1].instructions
+        assert (stack["repo"] / "a.py").is_file()  # the partial commit survived
+
+    def test_quota_exhausted_provider_is_skipped_on_recovery(self, tmp_path: Path) -> None:
+        pool = _pool() + [_worker("lydie")]
+        stack = _stop_stack(tmp_path, workers=pool, script=[("ok", _commit_action("a.py", "a=1\n", "A")), "max_iter"])
+        manager = stack["manager"]
+        assert asyncio.run(manager.run_next_work_item("mvp-1")).work_item.status is WorkItemStatus.RECOVERY_REQUIRED
+        failed_b = stack["engine"].requests[1].worker
+        # The failing provider's quota is now exhausted: the selector decides.
+        stack["engine"].script.append("ok")
+        degraded = MVPManager(
+            stack["project_store"], stack["handoff_store"],
+            _real_worker_selector_with_unavailable(pool, unavailable_provider=failed_b.provider),
+            stack["engine"], **stack["kwargs"],
+        )
+        result = asyncio.run(degraded.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert stack["engine"].requests[2].worker.provider != failed_b.provider
+
+    def test_explicit_work_failed_stays_failed_and_blocks_dependents(self, tmp_path: Path) -> None:
+        stack = _stop_stack(tmp_path, workers=_pool(), script=["explicit_fail"], dependent=True)
+        manager = stack["manager"]
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.FAILED  # exit_code=0 does not soften it
+        assert result.failure_diagnostic.business_verdict == "failed"
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+        assert _status(stack, "wi-2") is WorkItemStatus.BLOCKED
+
+    @pytest.mark.parametrize("kind", ["silent", "stale"])
+    def test_exit_zero_without_reliable_success_never_completes(self, tmp_path: Path, kind: str) -> None:
+        stack = _stop_stack(tmp_path, workers=_pool(), script=[kind] * 3)
+        manager = stack["manager"]
+
+        statuses = [asyncio.run(manager.run_next_work_item("mvp-1")).work_item.status for _ in range(3)]
+
+        # Two bounded recoveries, then terminal: no loop, no invented success.
+        assert statuses == [
+            WorkItemStatus.RECOVERY_REQUIRED, WorkItemStatus.RECOVERY_REQUIRED, WorkItemStatus.FAILED,
+        ]
+        assert stack["qa_engine"].requests == []
+        assert stack["git_store"].get("wi-1").status is not GitWorkItemStatus.MERGED
+
+    def test_time_budget_exhausted_is_terminal(self, tmp_path: Path) -> None:
+        stack = _stop_stack(tmp_path, workers=_pool(), script=["max_iter"], recovery_budget_seconds=-1)
+
+        result = asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.FAILED
+
+    def test_without_execution_store_failure_stays_terminal(self, tmp_path: Path) -> None:
+        stack = _stop_stack(tmp_path, workers=_pool(), script=["max_iter"], execution_store=None)
+
+        assert asyncio.run(stack["manager"].run_next_work_item("mvp-1")).work_item.status is WorkItemStatus.FAILED
+
+    def test_no_eligible_worker_keeps_the_recoverable_state(self, tmp_path: Path) -> None:
+        stack = _stop_stack(tmp_path, workers=_pool(), script=["max_iter"])
+        asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+        empty = MVPManager(
+            stack["project_store"], stack["handoff_store"],
+            ScriptedWorkerSelector([NoEligibleWorkerError(WorkerSelectionRequest())] * 2),
+            stack["engine"], **stack["kwargs"],
+        )
+
+        with pytest.raises(NoEligibleWorkerError):
+            asyncio.run(empty.run_next_work_item("mvp-1"))
+
+        assert _status(stack) is WorkItemStatus.RECOVERY_REQUIRED  # nothing lost, nothing launched
+        assert len(stack["engine"].requests) == 1
+
+    def test_ctrl_c_during_dev_b_is_recovered_as_dev_b_only(self, tmp_path: Path) -> None:
+        stack = _stop_stack(tmp_path, workers=_pool(), script=[
+            ("ok", _commit_action("a.py", "a = 1\n", "DEV A work")), "cancel", "ok",
+        ])
+        manager, engine = stack["manager"], stack["engine"]
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(manager.run_next_work_item("mvp-1"))
+        assert _status(stack) is WorkItemStatus.RUNNING  # state preserved, nothing completed
+
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert len(engine.requests) == 3  # DEV A, interrupted DEV B, resumed DEV B
+        assert "DEV A work" in _run_git(stack["repo"], "log", "--format=%s", "work/wi-1").stdout
+
+    def test_qa_fail_dev_fix_stop_resumes_as_rework_with_qa_findings(self, tmp_path: Path) -> None:
+        failing = _qa_result(head_sha="x", regressions=("tests/test_x.py::test_a",))
+        stack = _stop_stack(tmp_path, workers=_pool(), script=[
+            ("ok", _commit_action("a.py", "a = 1\n", "A")), "ok", "max_iter", "ok",
+        ])
+        stack["qa_engine"]._script = [lambda request: _qa_result(head_sha=request.head_sha, regressions=("t::a",))]
+        manager = stack["manager"]
+
+        assert asyncio.run(manager.run_next_work_item("mvp-1")).work_item.status is WorkItemStatus.NEEDS_REWORK
+        assert asyncio.run(manager.run_next_work_item("mvp-1")).work_item.status is WorkItemStatus.RECOVERY_REQUIRED
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        fix_prompt = stack["engine"].requests[3].instructions
+        assert "QA findings" in fix_prompt and "QA verdict=" in fix_prompt
+        assert len(stack["engine"].requests) == 4  # no DEV A / DEV B replay
+
+
+class TestAuditedReopenOfFailedWorkItem:
+    def _failed_stack(self, tmp_path: Path):
+        stack = _stop_stack(tmp_path, workers=_pool(), dependent=True, script=[
+            ("ok", _commit_action("a.py", "a = 1\n", "DEV A work")), "explicit_fail",
+        ])
+        manager = stack["manager"]
+        assert asyncio.run(manager.run_next_work_item("mvp-1")).work_item.status is WorkItemStatus.FAILED
+        asyncio.run(manager.run_next_work_item("mvp-1"))  # refresh: wi-2 becomes BLOCKED
+        assert _status(stack, "wi-2") is WorkItemStatus.BLOCKED
+        return stack
+
+    def test_reopen_keeps_commits_unblocks_dependents_and_resumes_dev_b(self, tmp_path: Path) -> None:
+        stack = self._failed_stack(tmp_path)
+        manager, engine = stack["manager"], stack["engine"]
+
+        changed = manager.reopen_failed_work_item("wi-1", reason="verified the review was a false negative")
+
+        assert {w.work_item_id for w in changed} == {"wi-1", "wi-2"}
+        assert _status(stack) is WorkItemStatus.RECOVERY_REQUIRED
+        assert _status(stack, "wi-2") is WorkItemStatus.PLANNED
+        audit = stack["handoff_store"].latest_for_work_item("wi-1")
+        assert "false negative" in audit.open_issues and audit.git_sha_after
+        assert "DEV A work" in _run_git(stack["repo"], "log", "--format=%s", "work/wi-1").stdout
+
+        engine.script.append("ok")
+        result = asyncio.run(manager.run_next_work_item("mvp-1"))
+
+        assert result.work_item.status is WorkItemStatus.COMPLETED  # only via real QA + merge
+        assert len(engine.requests) == 3  # DEV A not replayed
+        assert stack["git_store"].get("wi-1").status is GitWorkItemStatus.MERGED
+
+    def test_reopen_grants_a_fresh_recovery_budget(self, tmp_path: Path) -> None:
+        stack = _stop_stack(tmp_path, workers=_pool(), script=["silent"] * 6)
+        manager = stack["manager"]
+        for _ in range(3):
+            asyncio.run(manager.run_next_work_item("mvp-1"))
+        assert _status(stack) is WorkItemStatus.FAILED
+
+        manager.reopen_failed_work_item("wi-1", reason="environment fixed")
+
+        assert asyncio.run(manager.run_next_work_item("mvp-1")).work_item.status is WorkItemStatus.RECOVERY_REQUIRED
+
+    @pytest.mark.parametrize("target", ["completed", "ready"])
+    def test_only_failed_work_items_can_be_reopened(self, tmp_path: Path, target: str) -> None:
+        from orchestrator.project_state import InvalidWorkItemTransitionError
+
+        stack = _stop_stack(tmp_path, workers=_pool(), script=[])
+        if target == "completed":
+            store = stack["project_store"]
+            store.mark_work_item_ready("wi-1")
+            store.mark_work_item_running("wi-1")
+            store.mark_work_item_completed("wi-1")
+
+        with pytest.raises(InvalidWorkItemTransitionError):
+            stack["manager"].reopen_failed_work_item("wi-1", reason="why")
+
+    def test_reopen_requires_a_reason(self, tmp_path: Path) -> None:
+        stack = self._failed_stack(tmp_path)
+
+        with pytest.raises(ValueError):
+            stack["manager"].reopen_failed_work_item("wi-1", reason="  ")
+        assert _status(stack) is WorkItemStatus.FAILED

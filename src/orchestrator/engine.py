@@ -59,7 +59,9 @@ from orchestrator.project_runtime import (
     ProjectStatusReader,
     resolve_provider_adapters,
 )
-from orchestrator.project_state import UnknownMVPError, UnknownProjectError, WorkItem, WorkItemStatus
+from orchestrator.project_state import (
+    ProjectStateError, UnknownMVPError, UnknownProjectError, WorkItem, WorkItemStatus,
+)
 from orchestrator.quota_manager import ProviderProbeError, QuotaManager, QuotaPolicy
 from orchestrator.worker_registry import UnknownWorkerError, WorkerRegistry, WorkerRegistryError
 
@@ -630,6 +632,30 @@ class OrchestratorEngine:
                 return self._drive(runtime, max_cycles=max_cycles, on_event=on_event, interrupt=interrupt)
             except GitGovernanceError as exc:
                 raise EngineError(delivery_blocked_message(exc)) from exc
+        finally:
+            runtime.close()
+
+    def reopen_work_item(self, work_item_id: str, *, reason: str) -> WorkItemSnapshot:
+        """Audited, explicit recovery of a terminal ``FAILED`` WorkItem
+        (hotfix #58): keeps its commits/history, grants a fresh bounded
+        recovery budget and releases dependents blocked only by it. The
+        next ``run()`` resumes it with a new execution. Raises
+        ``EngineError`` if it is not FAILED."""
+        try:
+            runtime = ProjectRuntime.open(
+                self._config, worker_registry=self._worker_registry,
+                provider_adapters=self._provider_adapters, subprocess_runner=self._subprocess_runner,
+            )
+        except ProjectRuntimeError as exc:
+            raise EngineError(str(exc)) from exc
+        try:
+            try:
+                runtime.bootstrap()
+                runtime.manager.reopen_failed_work_item(work_item_id, reason=reason)
+            except (ConfigRuntimeConflictError, ProjectStateError, ValueError) as exc:
+                raise EngineError(str(exc)) from exc
+            wi = runtime.project_store.get_work_item(work_item_id)
+            return WorkItemSnapshot(work_item_id=wi.work_item_id, status=wi.status.value, blocked_reason=wi.blocked_reason)
         finally:
             runtime.close()
 

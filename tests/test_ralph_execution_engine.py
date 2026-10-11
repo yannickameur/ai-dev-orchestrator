@@ -2073,3 +2073,87 @@ class TestClaudePublicOutputBoundary:
         ))])
         assert received == [("stdout", "result: success\n")]
         assert SENTINEL not in result.last_output
+
+
+class TestEventProvenance:
+    """Hotfix #58 — a verdict must come from events produced by *this* run."""
+
+    @staticmethod
+    def _seed_previous_run(tmp_path: Path, *lines: str) -> None:
+        ralph_dir = tmp_path / ".ralph"
+        ralph_dir.mkdir(parents=True, exist_ok=True)
+        (ralph_dir / "current-events").write_text(".ralph/events-test.jsonl")
+        (ralph_dir / "events-test.jsonl").write_text("\n".join(lines) + "\n")
+
+    def test_untouched_stale_pointer_never_yields_a_verdict(self, tmp_path: Path) -> None:
+        # A previous run left work.completed behind; this run wrote nothing.
+        self._seed_previous_run(tmp_path, _event_line("work.completed"))
+        runner = _make_fake_runner(loop_id=None, events_lines=None, exit_code=0)
+        engine = RalphExecutionEngine(_store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        result = asyncio.run(engine.execute(_request(tmp_path)))
+
+        assert result.record.status is ExecutionStatus.FAILED  # no success invented
+        assert result.events == ()
+        assert result.event_anomaly == "stale_events"
+
+    def test_stale_failure_is_not_blamed_on_the_new_run(self, tmp_path: Path) -> None:
+        self._seed_previous_run(tmp_path, _event_line("work.failed"))
+        runner = _make_fake_runner(loop_id=None, events_lines=None, exit_code=0)
+        engine = RalphExecutionEngine(_store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        result = asyncio.run(engine.execute(_request(tmp_path)))
+
+        assert result.events == ()
+        assert result.event_anomaly == "stale_events"
+
+    def test_appended_file_only_contributes_its_new_events(self, tmp_path: Path) -> None:
+        self._seed_previous_run(tmp_path, _event_line("work.failed"))
+
+        async def runner(args, cwd, timeout):
+            path = Path(cwd) / ".ralph" / "events-test.jsonl"
+            path.write_text(path.read_text() + _event_line("work.completed") + "\n")
+            return 0, b"", b""
+
+        engine = RalphExecutionEngine(_store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        result = asyncio.run(engine.execute(_request(tmp_path)))
+
+        assert result.record.status is ExecutionStatus.SUCCEEDED
+        assert [e.topic for e in result.events] == ["work.completed"]
+        assert result.event_anomaly is None
+
+    def test_new_events_file_is_attributed_to_the_run(self, tmp_path: Path) -> None:
+        self._seed_previous_run(tmp_path, _event_line("work.failed"))
+
+        async def runner(args, cwd, timeout):
+            ralph_dir = Path(cwd) / ".ralph"
+            (ralph_dir / "events-new.jsonl").write_text(_event_line("work.completed") + "\n")
+            (ralph_dir / "current-events").write_text(".ralph/events-new.jsonl")
+            return 0, b"", b""
+
+        engine = RalphExecutionEngine(_store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        result = asyncio.run(engine.execute(_request(tmp_path)))
+
+        assert result.record.status is ExecutionStatus.SUCCEEDED
+
+    def test_genuine_work_failed_stays_a_failure_without_anomaly(self, tmp_path: Path) -> None:
+        runner = _make_fake_runner(events_lines=[_event_line("work.failed", payload="cannot")], exit_code=0)
+        engine = RalphExecutionEngine(_store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        result = asyncio.run(engine.execute(_request(tmp_path)))
+
+        assert result.record.status is ExecutionStatus.FAILED
+        assert result.event_anomaly is None
+
+    def test_contradictory_terminal_events_give_no_verdict(self, tmp_path: Path) -> None:
+        runner = _make_fake_runner(
+            events_lines=[_event_line("work.failed"), _event_line("work.completed")], exit_code=0,
+        )
+        engine = RalphExecutionEngine(_store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW)
+
+        result = asyncio.run(engine.execute(_request(tmp_path)))
+
+        assert result.record.status is ExecutionStatus.FAILED  # never an invented success
+        assert result.event_anomaly == "conflicting_terminal_events"
