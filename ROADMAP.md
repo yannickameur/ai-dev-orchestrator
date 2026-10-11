@@ -186,7 +186,7 @@ importable (tests, développement dual-repo) mais n'est plus installé.
 | P21.1 sorties publiques sûres | `DONE` (acceptance gouvernée 2026-10-10) |
 | P3 DeepSeek + Kimi, P4 étude Mammouth | `RETIRÉ` |
 | Hotfix #58 : arrêts récupérables et reprise gouvernée | `DONE` (PR #59) |
-| Hotfix #57 : diagnostic borné et relais IA | `EN COURS` (PR 2/2) |
+| Hotfix #57 : diagnostic borné et relais IA | `DONE` (PR #60) |
 | P14 simplifié : temps d'exécution IA par fournisseur | `DONE` (2026-10-10, `execution_times()`) |
 | P14 complet : tokens, coûts, tentatives | `APPROUVÉ`, non implémenté |
 | P15 prompt optimization externe | `APPROUVÉ POUR ÉTUDE`, pas d'intégration |

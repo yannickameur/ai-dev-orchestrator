@@ -1835,19 +1835,10 @@ class MVPManager:
     def _failed_count(records: list[ExecutionRecord]) -> int:
         return sum(1 for e in records if e.status is not ExecutionStatus.SUCCEEDED)
 
-    def _recovery_attempts_left(self, work_item_id: str) -> int | None:
-        if self._execution_store is None:
-            return None
-        records = [
-            e for e in self._execution_store.list_for_task(work_item_id) if e.role == DEFAULT_WORK_ITEM_ROLE
-        ]
-        return max(0, self._max_stop_recoveries - self._failed_count(records))
-
-    def _recovery_allowed(self, work_item_id: str, cause: StopCause) -> bool:
-        """Bounded: attempts and wall-clock budget count only executions since
-        the last explicit reopen; an explicit failure is never recovered."""
-        if not cause.recoverable or self._execution_store is None:
-            return False
+    def _budget_records(self, work_item_id: str) -> list[ExecutionRecord]:
+        """Developer executions that count against the recovery budget: only
+        those after the last explicit reopen (its handoff names the last
+        execution before it)."""
         records = [
             e for e in self._execution_store.list_for_task(work_item_id) if e.role == DEFAULT_WORK_ITEM_ROLE
         ]
@@ -1857,10 +1848,22 @@ class MVPManager:
             None,
         )
         if reopen is not None and reopen.execution_id is not None:
-            # The reopen handoff names the last execution before the reopen.
             ids = [e.execution_id for e in records]
             if reopen.execution_id in ids:
                 records = records[ids.index(reopen.execution_id) + 1:]
+        return records
+
+    def _recovery_attempts_left(self, work_item_id: str) -> int | None:
+        if self._execution_store is None:
+            return None
+        return max(0, self._max_stop_recoveries - self._failed_count(self._budget_records(work_item_id)))
+
+    def _recovery_allowed(self, work_item_id: str, cause: StopCause) -> bool:
+        """Bounded: attempts and wall-clock budget count only executions since
+        the last explicit reopen; an explicit failure is never recovered."""
+        if not cause.recoverable or self._execution_store is None:
+            return False
+        records = self._budget_records(work_item_id)
         if self._failed_count(records) > self._max_stop_recoveries:
             return False
         if records and (self._clock() - records[0].started_at).total_seconds() > self._recovery_budget_seconds:

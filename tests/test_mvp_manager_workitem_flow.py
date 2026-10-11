@@ -2045,3 +2045,19 @@ class TestBoundedDiagnosisAndRelay:
 
         assert result.work_item.status is WorkItemStatus.COMPLETED
         assert "both ruled out" in stack["engine"].requests[3].instructions
+
+
+class TestRecoveryBudgetAfterReopen:
+    def test_attempts_left_is_fresh_after_an_explicit_reopen(self, tmp_path: Path) -> None:
+        stack = _stop_stack(tmp_path, workers=_pool(), script=["silent"] * 3 + ["ok", "ok"])
+        manager = stack["manager"]
+        for _ in range(3):
+            asyncio.run(manager.run_next_work_item("mvp-1"))
+        assert _status(stack) is WorkItemStatus.FAILED
+        assert manager._recovery_attempts_left("wi-1") == 0
+
+        manager.reopen_failed_work_item("wi-1", reason="environment fixed")
+
+        assert manager._recovery_attempts_left("wi-1") == 2  # was 0 before the fix
+        asyncio.run(manager.run_next_work_item("mvp-1"))
+        assert "Recovery attempts remaining after this one: 2" in stack["engine"].requests[3].instructions
