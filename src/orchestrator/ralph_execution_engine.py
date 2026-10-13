@@ -82,6 +82,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -129,7 +130,7 @@ _RALPH_BACKEND_TYPE: dict[str, str] = {
 
 # Backends that must run via Ralph's solo/no-hats "custom" mechanism
 # instead of the hats.yml path every native backend uses (see comment
-# above). Each entry's command is the thin bridge script that translates
+# above). Each entry identifies the thin bridge script that translates
 # Ralph's file-path-argument convention into that backend's own CLI
 # invocation — never a second execution engine, never business-event
 # logic of its own (Ralph's existing `.ralph/events-*.jsonl` reading is
@@ -797,6 +798,10 @@ def _write_runtime_config(
     backend_type = _ralph_backend_type(backend)
     backend_args = _build_backend_args(backend, request.model, request.reasoning_effort, permission_mode)
     solo_mode = backend in _SOLO_MODE_BACKENDS
+    if solo_mode:
+        # Installed wheels need not preserve script execute bits. Use the
+        # embedding application's Python, preserving its virtual environment.
+        backend_args = [str(_BACKEND_COMMANDS[backend]), *backend_args]
 
     prompt_path = runtime_dir / "PROMPT.md"
     prompt_path.write_text(request.instructions)
@@ -808,7 +813,7 @@ def _write_runtime_config(
             backend_args=backend_args,
             prompt_path=prompt_path,
             max_runtime_seconds=max(1, int(request.timeout_seconds)),
-            backend_command=str(_BACKEND_COMMANDS[backend]) if solo_mode else None,
+            backend_command=sys.executable if solo_mode else None,
         )
     )
 

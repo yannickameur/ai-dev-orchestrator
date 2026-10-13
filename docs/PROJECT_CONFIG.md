@@ -299,6 +299,13 @@ policy, never a secret.
 
 ### Verified backend mapping
 
+Vibe and Gravity use Ralph's solo `custom` backend. Its `cli.command` is
+the embedding application's Python interpreter (`sys.executable`), and
+the first `cli.args` entry is the packaged bridge script's absolute path.
+This preserves the application's virtual environment and works even when
+installed Python files have no execute permission. The bridge then invokes
+the provider CLI with the model and permission arguments described below.
+
 The generic mode is translated into real CLI arguments exclusively at the
 execution/backend boundary (`orchestrator.ralph_execution_engine`) —
 `MVPManager`/`WorkerSelector` know nothing about any of this. Verified

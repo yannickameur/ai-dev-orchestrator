@@ -15,6 +15,8 @@ console script by a normal ``pip install ai-dev-orchestrator``.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
 import sys
@@ -132,6 +134,72 @@ def test_wheel_import_path_unchanged(built_wheel, tmp_path):
         env={"PYTHONPATH": str(install_dir), "PATH": "/usr/bin:/bin"},
     )
     assert result.stdout.strip() == "OK"
+
+
+@pytest.mark.parametrize("backend", ["gravity", "vibe"])
+@pytest.mark.parametrize("permission_mode", [None, "standard", "unrestricted"])
+def test_wheel_bridges_run_without_execute_permission(built_wheel, tmp_path, backend, permission_mode):
+    """Launch the generated custom command from a wheel with 0644 bridges.
+
+    Provider CLIs are local stubs; no real Ralph or provider is invoked.
+    """
+    installed = tmp_path / "site packages"
+    with zipfile.ZipFile(built_wheel) as wheel:
+        wheel.extractall(installed)
+    for bridge in (installed / "orchestrator").glob("*_ralph_bridge.py"):
+        bridge.chmod(0o644)
+
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    provider = binaries / ("agy" if backend == "gravity" else "vibe")
+    provider.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "print(json.dumps({'args': sys.argv[1:], 'model': os.getenv('VIBE_ACTIVE_MODEL'), 'cwd': os.getcwd()}))\n"
+    )
+    provider.chmod(0o755)
+    env = os.environ.copy()
+    env.update(PYTHONPATH=str(installed), PATH=str(binaries) + os.pathsep + env["PATH"])
+    env.pop("VIBE_ACTIVE_MODEL", None)
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import json, subprocess, sys
+from pathlib import Path
+from types import SimpleNamespace
+import yaml
+from orchestrator.execution_policy import ExecutionPermissionMode
+from orchestrator.ralph_execution_engine import _write_runtime_config
+
+backend, mode = sys.argv[1:]
+request = SimpleNamespace(worker=SimpleNamespace(backend=backend), model='test-model',
+    reasoning_effort=None, instructions='Corriger le café.\\nLOOP_COMPLETE', timeout_seconds=30)
+mode = ExecutionPermissionMode(mode) if mode else None
+config_path, hats_path, prompt_path = _write_runtime_config(Path.cwd(), request, mode)
+cli = yaml.safe_load(config_path.read_text())['cli']
+assert hats_path is None
+run = subprocess.run([cli['command'], *cli['args'],
+    'Please read and execute the task in ' + str(prompt_path)], capture_output=True, text=True)
+assert run.returncode == 0, run.stderr
+assert cli['command'] == sys.executable
+print(run.stdout, end='')
+""", backend, permission_mode or ""],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    prompt = "Corriger le café.\nLOOP_COMPLETE"
+    if backend == "gravity":
+        expected = ["-p", prompt, "--mode=accept-edits"]
+        if permission_mode == "unrestricted":
+            expected += ["--dangerously-skip-permissions"]
+        expected += ["--model", "test-model"]
+        assert observed["model"] is None
+    else:
+        permissions = ["--agent", "ask"] if permission_mode == "standard" else ["--auto-approve"]
+        expected = ["-p", prompt, "--trust", *permissions, "--output", "json"]
+        assert observed["model"] == "test-model"
+    assert observed["args"] == expected
+    assert observed["cwd"] == str(tmp_path)
 
 
 def test_v0_1_1_tag_unchanged():
