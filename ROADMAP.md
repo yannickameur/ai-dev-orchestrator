@@ -157,7 +157,10 @@ Source de vérité : `config/workers.yaml`. 8 workers, 4 providers, tous
 Vibe expose une disponibilité `EXECUTION_PROBE_ONLY` (rapportée
 `unknown`, jamais fabriquée). Gravity lit son quota via le probe
 read-only `agy -p "/usage" --output-format json` ; un bucket épuisé rend
-le provider indisponible. DeepSeek et Kimi ont été retirés faute de
+le provider indisponible. Les bridges Vibe/Gravity passent par le Python
+de l'application (`sys.executable`), même sans droit d'exécution sur les
+scripts installés ; régression vérifiée depuis une wheel avec des fichiers
+en `644`. DeepSeek et Kimi ont été retirés faute de
 preuve d'exécution réelle. Ollama n'est pas un provider actuel (P2).
 
 ## 6. Capacités optionnelles construites, non enchaînées

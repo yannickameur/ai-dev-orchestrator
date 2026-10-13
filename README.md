@@ -158,6 +158,10 @@ Prérequis :
   réellement ;
 - `git`.
 
+Les bridges Gravity et Vibe sont lancés via le Python de l'application
+AIDO : aucun droit d'exécution n'est requis sur leurs fichiers `.py`
+installés. Les CLI `agy` et `vibe` doivent rester exécutables et sur le `PATH`.
+
 Installation depuis la release publiée (GitHub Release, pas de PyPI) :
 
 ```bash
