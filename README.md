@@ -186,6 +186,9 @@ Tests offline (aucun appel provider réel, aucun quota consommé) :
 pytest
 ```
 
+Configuration locale Ollama sur BMAX, limites de contexte et retour arrière :
+[`docs/BMAX_OLLAMA.md`](docs/BMAX_OLLAMA.md).
+
 **Pour utiliser AIDO comme produit** (lancer un vrai projet gouverné),
 installez [AIDO Code](https://github.com/yannickameur/aido-code) : c'est
 elle qui possède désormais la commande `aido` (voir « Frontière moteur/
