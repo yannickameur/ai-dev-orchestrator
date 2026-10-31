@@ -46,6 +46,12 @@ capacity from a warmup alone. Avoid running two model sessions concurrently
 on this 32 GB machine. A pulled model need not already be loaded in RAM for
 the availability probe to pass.
 
+The first governed attempt stalled while Ralph injected its built-in skill
+reference into that 4096-token context. For Ollama Codex workers, AIDO now
+sets `skills.enabled: false` in the temporary Ralph config for each execution.
+The task prompt still carries the required `work.completed` and `work.failed`
+protocol. This change needs a fresh two-session run before acceptance.
+
 Before calling P2 accepted, run the explicit BMAX recipe from
 [WI-P2-04](../ROADMAP.md)
 in a disposable Git repository. Capture two successive Qwen worker sessions

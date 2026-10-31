@@ -743,6 +743,7 @@ def _render_ralph_config(
     prompt_path: Path,
     max_runtime_seconds: int,
     backend_command: str | None = None,
+    disable_skills: bool = False,
 ) -> str:
     # `backend_command` is only set for solo-mode backends (see
     # `_SOLO_MODE_BACKENDS`) — Ralph's "custom" backend requires an
@@ -750,7 +751,13 @@ def _render_ralph_config(
     # without it, the Vibe spike (Git history)); native backends never set this,
     # Ralph resolves their binary itself.
     command_line = f"  command: {_yaml_str(backend_command)}\n" if backend_command else ""
+    # Ralph 2.10.1 auto-injects built-in skills into every model turn. On the
+    # observed 4096-token Ollama route, loading ralph-tools alone exhausted
+    # the worker before it could edit or commit. This is request-scoped: cloud
+    # workers keep Ralph's default skill behavior.
+    skills_section = "skills:\n  enabled: false\n\n" if disable_skills else ""
     return (
+        f"{skills_section}"
         "cli:\n"
         f"  backend: {_yaml_str(backend_type)}\n"
         f"{command_line}"
@@ -824,6 +831,7 @@ def _write_runtime_config(
             prompt_path=prompt_path,
             max_runtime_seconds=max(1, int(request.timeout_seconds)),
             backend_command=sys.executable if solo_mode else None,
+            disable_skills=backend == "codex" and request.worker.provider == "ollama",
         )
     )
 
