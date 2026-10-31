@@ -269,6 +269,66 @@ class TestRecordCreatedBeforeSubprocess:
 
 
 class TestWorkerSnapshotAndTranslation:
+    def test_ollama_codex_route_is_explicit_in_both_ralph_configs(self, tmp_path: Path) -> None:
+        captured = {}
+
+        def _on_call(args, cwd, timeout):
+            captured["config"] = yaml.safe_load(Path(args[args.index("-c") + 1]).read_text())
+            captured["hats"] = yaml.safe_load(Path(args[args.index("-H") + 1]).read_text())
+
+        worker = _victor(provider="ollama", model="qwen3.5:9b", reasoning_effort=None)
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        result = asyncio.run(RalphExecutionEngine(
+            _store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW,
+        ).execute(_request(tmp_path, worker=worker)))
+
+        expected = ["--model", "qwen3.5:9b", "--oss", "--local-provider", "ollama", "-c", 'model_provider="ollama"']
+        assert captured["config"]["cli"]["backend"] == "codex"
+        assert captured["config"]["cli"]["args"] == expected
+        assert captured["hats"]["hats"]["worker"]["backend"]["args"] == expected
+        assert result.record.provider == "ollama"
+        assert result.record.model == "qwen3.5:9b"
+        assert result.record.status is ExecutionStatus.SUCCEEDED
+
+    def test_openai_codex_route_has_no_ollama_overrides(self, tmp_path: Path) -> None:
+        captured = {}
+
+        def _on_call(args, cwd, timeout):
+            captured["config"] = yaml.safe_load(Path(args[args.index("-c") + 1]).read_text())
+
+        runner = _make_fake_runner(events_lines=[_event_line("work.completed")], on_call=_on_call)
+        asyncio.run(RalphExecutionEngine(
+            _store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW,
+        ).execute(_request(tmp_path, worker=_victor())))
+
+        args = captured["config"]["cli"]["args"]
+        assert args == ["--model", "gpt-5.6-terra", "-c", 'model_reasoning_effort="high"']
+
+    @pytest.mark.parametrize(
+        ("timed_out", "expected_status"),
+        [
+            (False, ExecutionStatus.FAILED),
+            (True, ExecutionStatus.INTERRUPTED),
+        ],
+    )
+    def test_ollama_codex_keeps_fail_closed_and_interruption_verdicts(
+        self, tmp_path: Path, timed_out: bool, expected_status: ExecutionStatus,
+    ) -> None:
+        from orchestrator.ralph_execution_engine import RalphTimeoutError
+
+        runner = (
+            _make_fake_runner(raise_exc=RalphTimeoutError("timed out"))
+            if timed_out else _make_fake_runner(events_lines=[], exit_code=0)
+        )
+        worker = _victor(provider="ollama", model="qwen3.5:9b", reasoning_effort=None)
+        result = asyncio.run(RalphExecutionEngine(
+            _store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW,
+        ).execute(_request(tmp_path, worker=worker)))
+
+        assert result.record.status is expected_status
+        assert result.record.provider == "ollama"
+        assert result.record.model == "qwen3.5:9b"
+
     def test_full_worker_snapshot_is_captured(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
         runner = _make_fake_runner(events_lines=[_event_line("work.completed")])
