@@ -80,6 +80,18 @@ def test_pulled_but_unloaded_model_is_available() -> None:
     assert state.availability.available is True
 
 
+@pytest.mark.parametrize("required,listed", [
+    ("qwen2.5-coder", "qwen2.5-coder:latest"),
+    ("qwen2.5-coder:latest", "qwen2.5-coder"),
+])
+def test_bare_model_and_latest_tag_are_equivalent(required: str, listed: str) -> None:
+    async def get(url: str, timeout: float):
+        return 200, json.dumps({"models": [{"name": listed}]}).encode()
+
+    state = asyncio.run(OllamaAdapter(required_models=frozenset({required}), http_get=get).probe())
+    assert state.availability.available is True
+
+
 def test_failed_local_probe_does_not_block_cloud_selection() -> None:
     async def get(url: str, timeout: float):
         raise OSError("connection refused")
