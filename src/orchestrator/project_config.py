@@ -74,6 +74,7 @@ import yaml
 from orchestrator.execution_policy import ExecutionPermissionMode
 from orchestrator.validation import ValidationCommand, ValidationKind
 from orchestrator.worker_registry import WorkerRegistry, WorkerRegistryError
+from orchestrator.worker_selector import WorkerSelectionPolicy
 
 SUPPORTED_SCHEMA_VERSION = 1
 DEFAULT_CONFIG_FILENAME = "aido.yaml"
@@ -82,8 +83,9 @@ _FORBIDDEN_KEY_SUBSTRINGS = ("api_key", "apikey", "token", "secret", "password",
 
 _TOP_LEVEL_KEYS = frozenset({
     "schema_version", "project", "workers", "execution", "git", "mvp", "work_items", "qa",
-    "qa_protected_paths",
+    "qa_protected_paths", "selection",
 })
+_SELECTION_KEYS = frozenset({"preferred_provider"})
 _PROJECT_KEYS = frozenset({"id", "name", "workspace", "state_dir"})
 _WORKERS_KEYS = frozenset({"registry"})
 _EXECUTION_KEYS = frozenset({"permission_mode"})
@@ -395,7 +397,7 @@ class ProjectConfig:
 
     __slots__ = (
         "schema_version", "project", "workers_registry_path", "execution",
-        "git", "mvp", "work_items", "qa_commands", "qa_protected_paths", "source_path",
+        "git", "mvp", "work_items", "qa_commands", "qa_protected_paths", "source_path", "selection_policy",
     )
 
     def __init__(
@@ -403,6 +405,7 @@ class ProjectConfig:
         execution: ExecutionConfig, git: GitConfig, mvp: MVPConfig,
         work_items: tuple[WorkItemConfig, ...], qa_commands: tuple[ValidationCommand, ...],
         qa_protected_paths: tuple[str, ...] = (),
+        selection_policy: WorkerSelectionPolicy | None = None,
         source_path: Path,
     ) -> None:
         self.schema_version = schema_version
@@ -414,6 +417,7 @@ class ProjectConfig:
         self.work_items = work_items
         self.qa_commands = qa_commands
         self.qa_protected_paths = qa_protected_paths
+        self.selection_policy = selection_policy or WorkerSelectionPolicy()
         self.source_path = source_path
 
     @classmethod
@@ -491,6 +495,13 @@ class ProjectConfig:
         )
         execution = ExecutionConfig(permission_mode=permission_mode)
 
+        selection_data = _require_mapping(top.get("selection", {}), context="selection")
+        _reject_unknown_keys(selection_data, _SELECTION_KEYS, context="selection")
+        preferred_provider = selection_data.get("preferred_provider")
+        if preferred_provider is not None and (not isinstance(preferred_provider, str) or not preferred_provider.strip()):
+            raise InvalidProjectConfigError("selection.preferred_provider must be a non-empty string")
+        selection_policy = WorkerSelectionPolicy(preferred_provider=preferred_provider)
+
         git_data = top.get("git", {})
         git_data = _require_mapping(git_data, context="git")
         _reject_unknown_keys(git_data, _GIT_KEYS, context="git")
@@ -528,7 +539,7 @@ class ProjectConfig:
         return cls(
             schema_version=schema_version, project=project, workers_registry_path=workers_registry_path,
             execution=execution, git=git, mvp=mvp, work_items=work_items, qa_commands=qa_commands,
-            qa_protected_paths=qa_protected_paths, source_path=source_path,
+            qa_protected_paths=qa_protected_paths, selection_policy=selection_policy, source_path=source_path,
         )
 
     def load_worker_registry(self) -> WorkerRegistry:

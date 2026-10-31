@@ -152,6 +152,11 @@ workers:
 execution:
   permission_mode: standard    # standard | unrestricted — see below
 
+# Optional, global worker selection preference. Omit to keep the existing
+# quota/priority ordering and soft cross-provider reviewer preference.
+selection:
+  preferred_provider: ollama
+
 git:
   base_branch: main            # optional, defaults to "main"
 
@@ -272,7 +277,17 @@ through to the real `MVPManager` it constructs; there is no separate
 "protected QA" engine or code path — this is the existing
 `qa_protection.py` mechanism, wired to the one real `aido run` path.
 
+## Worker selection
+
+`selection.preferred_provider` opts the project into selecting eligible
+workers from that provider first for every role. Availability, capabilities,
+quality tier, and worker exclusions still apply. A reviewer always has a
+different `worker_id` from the author. When no eligible preferred worker
+remains, selection falls back to the existing cloud pool. A hard
+`require_distinct_provider_for_review` policy still takes precedence.
+
 ## Execution permission mode
+
 
 `execution.permission_mode` is `orchestrator.execution_policy.ExecutionPermissionMode`:
 
