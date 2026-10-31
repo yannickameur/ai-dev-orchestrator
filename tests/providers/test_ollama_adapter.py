@@ -2,7 +2,10 @@
 
 import asyncio
 import json
+import threading
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from time import monotonic
 
 import pytest
 
@@ -63,6 +66,41 @@ def test_failed_probe_is_unavailable(failure: str) -> None:
     state = asyncio.run(adapter.probe())
     assert state.availability.available is False
     assert state.quota_windows == ()
+
+
+def test_default_http_probe_returns_at_deadline_during_slow_response() -> None:
+    release = threading.Event()
+
+    class SlowHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"models":[')
+            self.wfile.flush()
+            release.wait(2)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), SlowHandler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        adapter = OllamaAdapter(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            timeout_seconds=0.05,
+            required_models=frozenset({"model:latest"}),
+            clock=lambda: NOW,
+        )
+        started = monotonic()
+        state = asyncio.run(adapter.probe())
+        assert monotonic() - started < 0.5
+        assert state.availability.available is False
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
 
 
 def test_registry_models_are_passed_to_adapter() -> None:

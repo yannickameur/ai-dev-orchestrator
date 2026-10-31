@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import math
+import threading
 import urllib.request
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
@@ -22,11 +24,30 @@ Clock = Callable[[], datetime]
 
 def _sync_get(url: str, timeout: float) -> tuple[int, bytes]:
     with urllib.request.urlopen(url, timeout=timeout) as response:
-        return response.status, response.read()
+        return response.status, response.read(1_048_577)
 
 
 async def _default_http_get(url: str, timeout: float) -> tuple[int, bytes]:
-    return await asyncio.to_thread(_sync_get, url, timeout)
+    # asyncio.to_thread leaves a non-daemon executor thread behind on cancellation;
+    # asyncio.run then waits for that thread, defeating the probe deadline.
+    result: concurrent.futures.Future[tuple[int, bytes]] = concurrent.futures.Future()
+
+    def read() -> None:
+        try:
+            value = _sync_get(url, timeout)
+        except Exception as exc:
+            try:
+                result.set_exception(exc)
+            except concurrent.futures.InvalidStateError:
+                pass  # The timed-out probe cancelled its future.
+        else:
+            try:
+                result.set_result(value)
+            except concurrent.futures.InvalidStateError:
+                pass  # The timed-out probe cancelled its future.
+
+    threading.Thread(target=read, daemon=True).start()
+    return await asyncio.wrap_future(result)
 
 
 def _models_present(body: bytes, required: frozenset[str]) -> bool:
