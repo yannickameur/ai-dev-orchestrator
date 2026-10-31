@@ -46,10 +46,11 @@ Selection order:
     2. required capabilities satisfied
     3. governance exclusions (explicit exclusions + author != reviewer)
     4. provider AVAILABLE (via QuotaManager)
-    5. review provider-independence policy
-    6. quota pressure (known utilization, with a 10-point tolerance band)
-    7. priority
-    8. worker_id lexical tie-break
+    5. hard review provider-independence policy
+    6. optional global preferred provider, then soft review provider diversity
+    7. quota pressure (known utilization, with a 10-point tolerance band)
+    8. priority
+    9. worker_id lexical tie-break
 """
 
 from __future__ import annotations
@@ -294,13 +295,21 @@ class WorkerSelectionPolicy:
     independence: prefer tries a different-provider reviewer first and
     only falls back to a same-provider one when none exists; require never
     falls back and raises ``ReviewIndependenceError`` instead.
+
+    ``preferred_provider`` is a global, opt-in routing preference for all
+    selections. It applies only after capability, governance, availability,
+    and any hard review provider rule. When no eligible worker remains on
+    that provider, normal selection continues across the full pool.
     """
 
     require_distinct_worker_for_review: bool = True
     prefer_distinct_provider_for_review: bool = True
     require_distinct_provider_for_review: bool = False
+    preferred_provider: str | None = None
 
     def __post_init__(self) -> None:
+        if self.preferred_provider is not None:
+            _require_non_empty_str(self.preferred_provider, field_name="WorkerSelectionPolicy.preferred_provider")
         if self.require_distinct_worker_for_review is not True:
             raise ValueError(
                 "WorkerSelectionPolicy.require_distinct_worker_for_review must be True: "
@@ -467,19 +476,32 @@ class WorkerSelector:
         quota_pressure_by_provider = {d.provider: d.quota_pressure for d in diagnostics}
 
         if author is None:
-            return self._pick_best(eligible, quota_pressure_by_provider)
+            return self._pick_with_provider_preference(eligible, quota_pressure_by_provider)
 
         cross_provider = [w for w in eligible if w.provider != author.provider]
 
         if self._policy.require_distinct_provider_for_review:
             if not cross_provider:
                 raise ReviewIndependenceError(author, diagnostics=diagnostics)
-            return self._pick_best(cross_provider, quota_pressure_by_provider)
+            return self._pick_with_provider_preference(cross_provider, quota_pressure_by_provider)
+
+        preferred = self._preferred_candidates(eligible)
+        if preferred:
+            return self._pick_best(preferred, quota_pressure_by_provider)
 
         if self._policy.prefer_distinct_provider_for_review and cross_provider:
             return self._pick_best(cross_provider, quota_pressure_by_provider)
 
         return self._pick_best(eligible, quota_pressure_by_provider)
+
+    def _preferred_candidates(self, candidates: Sequence[Worker]) -> list[Worker]:
+        provider = self._policy.preferred_provider
+        return [worker for worker in candidates if worker.provider == provider] if provider else []
+
+    def _pick_with_provider_preference(
+        self, candidates: Sequence[Worker], quota_pressure_by_provider: dict[str, float | None]
+    ) -> Worker:
+        return self._pick_best(self._preferred_candidates(candidates) or candidates, quota_pressure_by_provider)
 
     def _resolve_author(self, author_worker_id: str | None) -> Worker | None:
         if author_worker_id is None:

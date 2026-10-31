@@ -14,7 +14,7 @@ from orchestrator.providers.adapter import ProviderAdapter
 from orchestrator.providers.contracts import ProviderAvailability, ProviderState, UnavailabilityReason
 from orchestrator.providers.ollama_adapter import OllamaAdapter
 from orchestrator.quota_manager import QuotaManager, QuotaPolicy
-from orchestrator.worker_selector import ExecutionProfile, QualityTier, Worker, WorkerSelectionRequest, WorkerSelector
+from orchestrator.worker_selector import ExecutionProfile, QualityTier, Worker, WorkerSelectionPolicy, WorkerSelectionRequest, WorkerSelector
 
 NOW = datetime(2026, 10, 31, tzinfo=timezone.utc)
 
@@ -180,5 +180,150 @@ def test_failed_refresh_replaces_previous_available_observation() -> None:
         assert (await manager.get("ollama")).availability.available is True
         assert (await manager.refresh("ollama")).availability.available is False
         assert (await manager.get("ollama")).availability.available is False
+
+    asyncio.run(scenario())
+
+
+def _cloud_adapter(provider: str) -> ProviderAdapter:
+    class CloudAdapter(ProviderAdapter):
+        async def probe(self) -> ProviderState:
+            return ProviderState(
+                provider=provider,
+                availability=ProviderAvailability(available=True, observed_at=NOW),
+                observed_at=NOW,
+            )
+
+    return CloudAdapter()
+
+
+def _selection_workers(*, second_local: bool = True) -> list[Worker]:
+    workers = [
+        Worker.with_single_profile(
+            worker_id="qwen_developer", display_name="Qwen Developer", provider="ollama", backend="codex",
+            model="qwen3.5:9b", capabilities={"development"}, priority=10,
+        ),
+    ]
+    if second_local:
+        workers.append(Worker.with_single_profile(
+            worker_id="qwen_reviewer", display_name="Qwen Reviewer", provider="ollama", backend="codex",
+            model="qwen3.5:9b", capabilities={"development"}, priority=9,
+        ))
+    workers.extend([
+        Worker.with_single_profile(
+            worker_id="cloud_anthropic", display_name="Cloud A", provider="anthropic", backend="claude_code",
+            model="sonnet", capabilities={"development"}, priority=100,
+        ),
+        Worker.with_single_profile(
+            worker_id="cloud_openai", display_name="Cloud B", provider="openai", backend="codex",
+            model="gpt", capabilities={"development"}, priority=90,
+        ),
+    ])
+    return workers
+
+
+def _selection_manager(get) -> QuotaManager:
+    return QuotaManager(
+        {
+            "ollama": OllamaAdapter(required_models=frozenset({"qwen3.5:9b"}), http_get=get, clock=lambda: NOW),
+            "anthropic": _cloud_adapter("anthropic"),
+            "openai": _cloud_adapter("openai"),
+        },
+        QuotaPolicy(state_ttl=timedelta(minutes=2)), clock=lambda: NOW,
+    )
+
+
+def test_local_preference_selects_distinct_qwen_workers_with_cloud_available() -> None:
+    async def get(url: str, timeout: float):
+        return 200, b'{"models":[{"name":"qwen3.5:9b"}]}'
+
+    selector = WorkerSelector(
+        _selection_workers(), _selection_manager(get),
+        WorkerSelectionPolicy(preferred_provider="ollama"),
+    )
+
+    async def scenario() -> None:
+        request = WorkerSelectionRequest(required_capabilities=frozenset({"development"}))
+        dev_a = await selector.select(request)
+        dev_b = await selector.select(WorkerSelectionRequest(
+            required_capabilities=request.required_capabilities, author_worker_id=dev_a.worker_id,
+        ))
+        assert (dev_a.worker_id, dev_b.worker_id) == ("qwen_developer", "qwen_reviewer")
+        assert dev_a is not dev_b
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("local_state", ["server_down", "model_missing"])
+def test_local_preference_falls_back_to_cloud_when_local_unavailable(local_state: str) -> None:
+    async def get(url: str, timeout: float):
+        if local_state == "server_down":
+            raise OSError("connection refused")
+        return 200, b'{"models":[{"name":"other:latest"}]}'
+
+    selector = WorkerSelector(
+        _selection_workers(), _selection_manager(get),
+        WorkerSelectionPolicy(preferred_provider="ollama"),
+    )
+
+    async def scenario() -> None:
+        dev_a = await selector.select(WorkerSelectionRequest(required_capabilities=frozenset({"development"})))
+        dev_b = await selector.select(WorkerSelectionRequest(
+            required_capabilities=frozenset({"development"}), author_worker_id=dev_a.worker_id,
+        ))
+        assert (dev_a.worker_id, dev_b.worker_id) == ("cloud_anthropic", "cloud_openai")
+
+    asyncio.run(scenario())
+
+
+def test_local_preference_with_one_qwen_uses_cloud_reviewer() -> None:
+    async def get(url: str, timeout: float):
+        return 200, b'{"models":[{"name":"qwen3.5:9b"}]}'
+
+    selector = WorkerSelector(
+        _selection_workers(second_local=False), _selection_manager(get),
+        WorkerSelectionPolicy(preferred_provider="ollama"),
+    )
+
+    async def scenario() -> None:
+        dev_a = await selector.select(WorkerSelectionRequest(required_capabilities=frozenset({"development"})))
+        dev_b = await selector.select(WorkerSelectionRequest(
+            required_capabilities=frozenset({"development"}), author_worker_id=dev_a.worker_id,
+        ))
+        assert (dev_a.worker_id, dev_b.worker_id) == ("qwen_developer", "cloud_anthropic")
+
+    asyncio.run(scenario())
+
+
+def test_hard_cross_provider_review_rule_overrides_local_preference() -> None:
+    async def get(url: str, timeout: float):
+        return 200, b'{"models":[{"name":"qwen3.5:9b"}]}'
+
+    selector = WorkerSelector(
+        _selection_workers(), _selection_manager(get),
+        WorkerSelectionPolicy(preferred_provider="ollama", require_distinct_provider_for_review=True),
+    )
+
+    async def scenario() -> None:
+        dev_a = await selector.select(WorkerSelectionRequest(required_capabilities=frozenset({"development"})))
+        dev_b = await selector.select(WorkerSelectionRequest(
+            required_capabilities=frozenset({"development"}), author_worker_id=dev_a.worker_id,
+        ))
+        assert (dev_a.worker_id, dev_b.worker_id) == ("qwen_developer", "cloud_anthropic")
+
+    asyncio.run(scenario())
+
+
+def test_without_opt_in_cloud_and_cross_provider_preference_remain() -> None:
+    async def get(url: str, timeout: float):
+        return 200, b'{"models":[{"name":"qwen3.5:9b"}]}'
+
+    selector = WorkerSelector(_selection_workers(), _selection_manager(get))
+
+    async def scenario() -> None:
+        dev_a = await selector.select(WorkerSelectionRequest(required_capabilities=frozenset({"development"})))
+        dev_b = await selector.select(WorkerSelectionRequest(
+            required_capabilities=frozenset({"development"}), author_worker_id=dev_a.worker_id,
+        ))
+        assert (dev_a.worker_id, dev_b.worker_id) == ("cloud_anthropic", "cloud_openai")
 
     asyncio.run(scenario())

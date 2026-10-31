@@ -97,6 +97,7 @@ class TestValidConfigs:
         assert config.project.name == "Demo Project"
         assert config.project.workspace == (tmp_path / "proj").resolve()
         assert config.execution.permission_mode is ExecutionPermissionMode.STANDARD
+        assert config.selection_policy.preferred_provider is None
         assert config.git.base_branch == "main"
         assert config.mvp.id == "mvp-1"
         assert len(config.work_items) == 1
@@ -104,6 +105,17 @@ class TestValidConfigs:
         assert len(config.qa_commands) == 1
         assert config.qa_commands[0].kind is ValidationKind.UNIT_TEST
         assert config.qa_commands[0].argv == ("pytest", "-q")
+
+    def test_selection_preferred_provider_is_explicit_opt_in(self, tmp_path: Path) -> None:
+        path = _minimal_project(tmp_path, extra_top="selection: {preferred_provider: ollama}")
+        config = ProjectConfig.load(path)
+        assert config.selection_policy.preferred_provider == "ollama"
+
+    @pytest.mark.parametrize("value", ["''", "[]", "false"])
+    def test_invalid_selection_preferred_provider_is_rejected(self, tmp_path: Path, value: str) -> None:
+        path = _minimal_project(tmp_path, extra_top=f"selection: {{preferred_provider: {value}}}")
+        with pytest.raises(InvalidProjectConfigError, match="selection.preferred_provider"):
+            ProjectConfig.load(path)
 
     @pytest.mark.parametrize("project_id", ["demo", "aido-code", "ai_dev_orchestrator", "a.b-c1"])
     def test_realistic_project_ids_are_preserved_verbatim(self, tmp_path: Path, project_id: str) -> None:

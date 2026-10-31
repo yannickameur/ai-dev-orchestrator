@@ -366,6 +366,49 @@ def _new_stack(
 
 
 class TestWorkItemNominalFlow:
+    def test_local_preference_runs_distinct_dev_executions_with_cloud_available(self, tmp_path: Path) -> None:
+        from orchestrator.providers.adapter import ProviderAdapter
+        from orchestrator.providers.contracts import ProviderAvailability, ProviderState
+        from orchestrator.quota_manager import QuotaManager, QuotaPolicy
+        from orchestrator.worker_selector import WorkerSelectionPolicy, WorkerSelector
+
+        class AvailableAdapter(ProviderAdapter):
+            def __init__(self, provider: str) -> None:
+                self.provider = provider
+
+            async def probe(self) -> ProviderState:
+                return ProviderState(
+                    provider=self.provider,
+                    availability=ProviderAvailability(available=True, observed_at=UTC_NOW),
+                    observed_at=UTC_NOW,
+                )
+
+        workers = [
+            _worker("qwen_developer", provider="ollama", backend="codex", priority=10),
+            _worker("qwen_reviewer", provider="ollama", backend="codex", priority=9),
+            _worker("alice", provider="anthropic", backend="claude_code", priority=100),
+            _worker("victor", provider="openai", backend="codex", priority=90),
+        ]
+        stack = _new_stack(
+            tmp_path, workers=workers,
+            dev_actions=[_commit_action("feature.py", "x = 1\n", "DEV A"), None],
+        )
+        quota = QuotaManager(
+            {name: AvailableAdapter(name) for name in ("ollama", "anthropic", "openai")},
+            QuotaPolicy(state_ttl=timedelta(hours=1)), clock=lambda: UTC_NOW,
+        )
+        stack["manager"]._worker_selector = WorkerSelector(
+            workers, quota, WorkerSelectionPolicy(preferred_provider="ollama"),
+        )
+
+        result = asyncio.run(stack["manager"].run_next_work_item("mvp-1"))
+        requests = stack["engine"].requests
+        assert result.work_item.status is WorkItemStatus.COMPLETED
+        assert [request.worker.worker_id for request in requests] == ["qwen_developer", "qwen_reviewer"]
+        assert requests[0].execution_id != requests[1].execution_id
+        assert len(stack["qa_engine"].requests) == 1
+        assert stack["git_store"].get("wi-1").status is GitWorkItemStatus.MERGED
+
     def test_external_qa_plan_without_keyword_support_still_runs(self, tmp_path: Path) -> None:
         class ExternalQA(DynamicQAEngine):
             def build_plan(self, request, *, phase):
