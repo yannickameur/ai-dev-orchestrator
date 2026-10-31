@@ -17,10 +17,12 @@ from orchestrator.providers.contracts import (
     ResetCreditStatus,
     UnavailabilityReason,
 )
+from orchestrator.providers.ollama_adapter import OllamaAdapter
 
 __all__ = [
     "ClaudeCodeAdapter",
     "CodexAdapter",
+    "OllamaAdapter",
     "ProviderAdapter",
     "ProviderAvailability",
     "ProviderState",

@@ -392,14 +392,15 @@ class OrchestratorEngine:
         reported honestly (``"unknown"``/``"probe_error: ..."``), never
         guessed as available or fabricated as a quota percentage."""
         registry = self._load_worker_registry()
-        providers = {w.provider for w in registry.enabled_workers()}
+        enabled_workers = registry.enabled_workers()
+        providers = {w.provider for w in enabled_workers}
         if not providers:
             return ()
         if self._provider_adapters is not None:
             adapters = {p: a for p, a in self._provider_adapters.items() if p in providers}
         else:
             try:
-                adapters = resolve_provider_adapters(providers)
+                adapters = resolve_provider_adapters(providers, workers=enabled_workers)
             except ProjectRuntimeError as exc:
                 raise EngineConfigError(str(exc)) from exc
 
