@@ -247,7 +247,7 @@ class ProjectRuntime:
             )
 
             quota_manager = QuotaManager(adapters, QuotaPolicy(state_ttl=timedelta(minutes=2)), clock=clock)
-            worker_selector = WorkerSelector(enabled_workers, quota_manager, config.selection_policy)
+            worker_selector = WorkerSelector(enabled_workers, quota_manager, registry.selection_policy)
             # P12: the project's execution permission policy always reaches
             # RalphExecutionEngine explicitly — never omitted for this path,
             # never inherited from host-global CLI configuration.

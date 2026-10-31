@@ -40,7 +40,7 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
-from orchestrator.worker_selector import ExecutionProfile, QualityTier, UnknownWorkerError, Worker
+from orchestrator.worker_selector import ExecutionProfile, QualityTier, UnknownWorkerError, Worker, WorkerSelectionPolicy
 
 _FORBIDDEN_KEY_SUBSTRINGS = ("api_key", "apikey", "token", "secret", "password", "passwd", "credential")
 
@@ -189,10 +189,23 @@ def _parse_worker(data: Any) -> Worker:
         raise InvalidWorkerConfigError(f"{context}: {exc}") from exc
 
 
-def _parse_workers_document(document: Any) -> tuple[Worker, ...]:
+def _parse_workers_document(document: Any) -> tuple[tuple[Worker, ...], WorkerSelectionPolicy]:
     if not isinstance(document, Mapping) or "workers" not in document:
         raise InvalidWorkerConfigError("top-level document must be a mapping with a 'workers' key")
     _reject_secrets(document)
+    unknown = set(document) - {"workers", "selection"}
+    if unknown:
+        raise InvalidWorkerConfigError(f"unknown top-level fields: {sorted(unknown)!r}")
+    selection = document.get("selection", {})
+    if not isinstance(selection, Mapping):
+        raise InvalidWorkerConfigError("'selection' must be a mapping")
+    unknown_selection = set(selection) - {"preferred_provider"}
+    if unknown_selection:
+        raise InvalidWorkerConfigError(f"unknown selection fields: {sorted(unknown_selection)!r}")
+    preferred_provider = selection.get("preferred_provider")
+    if preferred_provider is not None and (not isinstance(preferred_provider, str) or not preferred_provider.strip()):
+        raise InvalidWorkerConfigError("selection.preferred_provider must be a non-empty string")
+    policy = WorkerSelectionPolicy(preferred_provider=preferred_provider)
     entries = document["workers"]
     if not isinstance(entries, list):
         raise InvalidWorkerConfigError("'workers' must be a list")
@@ -205,7 +218,7 @@ def _parse_workers_document(document: Any) -> tuple[Worker, ...]:
             raise DuplicateWorkerError(worker.worker_id)
         seen_ids.add(worker.worker_id)
         workers.append(worker)
-    return tuple(workers)
+    return tuple(workers), policy
 
 
 class WorkerRegistry:
@@ -217,7 +230,7 @@ class WorkerRegistry:
     ``WorkerRegistry.load(...)`` from a YAML file.
     """
 
-    def __init__(self, workers: Sequence[Worker]) -> None:
+    def __init__(self, workers: Sequence[Worker], selection_policy: WorkerSelectionPolicy | None = None) -> None:
         by_id: dict[str, Worker] = {}
         for worker in workers:
             if worker.worker_id in by_id:
@@ -225,6 +238,7 @@ class WorkerRegistry:
             by_id[worker.worker_id] = worker
         self._workers = tuple(workers)
         self._by_id = by_id
+        self.selection_policy = selection_policy or WorkerSelectionPolicy()
 
     @classmethod
     def load(cls, path: str | Path) -> "WorkerRegistry":
@@ -240,8 +254,8 @@ class WorkerRegistry:
             document = yaml.safe_load(text)
         except yaml.YAMLError as exc:
             raise InvalidWorkerConfigError(f"invalid YAML: {exc}") from exc
-        workers = _parse_workers_document(document)
-        return cls(workers)
+        workers, policy = _parse_workers_document(document)
+        return cls(workers, policy)
 
     def all_workers(self) -> tuple[Worker, ...]:
         """Every configured worker, enabled or not — for inspection/audit."""
