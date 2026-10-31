@@ -110,6 +110,12 @@ def test_registry_models_are_passed_to_adapter() -> None:
     assert adapter._required_models == frozenset({"qwen2.5-coder:7b"})
 
 
+def test_probe_uses_codex_oss_endpoint_host(monkeypatch) -> None:
+    monkeypatch.setenv("CODEX_OSS_BASE_URL", "http://ollama.example:11434/v1/")
+    adapter = resolve_provider_adapters({"ollama"}, workers=(_worker("qwen2.5-coder:7b"),))["ollama"]
+    assert adapter._url == "http://ollama.example:11434/api/tags"
+
+
 def test_pulled_but_unloaded_model_is_available() -> None:
     async def get(url: str, timeout: float):
         return 200, json.dumps({"models": [{"name": "qwen2.5-coder:7b"}]}).encode()

@@ -52,6 +52,7 @@ mutating history if it is not.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable
@@ -170,7 +171,12 @@ def resolve_provider_adapters(
                     profile.model for worker in workers if worker.provider == "ollama"
                     for profile in worker.profiles
                 )
-                adapters[provider] = OllamaAdapter(required_models=models)
+                # Codex speaks to /v1; the probe uses Ollama's native API
+                # on the same host. The endpoint remains machine-local.
+                base_url = os.environ.get("CODEX_OSS_BASE_URL", "http://localhost:11434").rstrip("/")
+                if base_url.endswith("/v1"):
+                    base_url = base_url[:-3]
+                adapters[provider] = OllamaAdapter(base_url=base_url, required_models=models)
             else:
                 adapters[provider] = factory()
         except ProviderConfigError as exc:
