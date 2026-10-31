@@ -42,13 +42,11 @@ def _models_present(body: bytes, required: frozenset[str]) -> bool:
             return False
         names.add(name)
     # A bare model name means its default tag. Other tags are distinct models.
-    return all(
-        any(
-            name == candidate or (":" not in name and candidate == f"{name}:latest")
-            for candidate in names
-        )
-        for name in required
-    )
+    def normalized(name: str) -> str:
+        return name if ":" in name else f"{name}:latest"
+
+    available = {normalized(candidate) for candidate in names}
+    return all(normalized(name) in available for name in required)
 
 
 class OllamaAdapter(ProviderAdapter):
