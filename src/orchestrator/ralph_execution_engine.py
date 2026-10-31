@@ -297,9 +297,16 @@ def _codex_permission_args(mode: ExecutionPermissionMode) -> list[str]:
 def _build_backend_args(
     backend: str, model: str, reasoning_effort: str | None,
     permission_mode: ExecutionPermissionMode | None = None,
+    *, provider: str = "openai",
 ) -> list[str]:
     if backend == "codex":
         args = ["--model", model]
+        if provider == "ollama":
+            # The installed Codex 0.166.0 needs all three selections for
+            # noninteractive local execution. The endpoint is supplied by
+            # CODEX_OSS_BASE_URL in the worker environment, never embedded
+            # in generated Ralph configuration.
+            args += ["--oss", "--local-provider", "ollama", "-c", 'model_provider="ollama"']
         if reasoning_effort:
             args += ["-c", f'model_reasoning_effort="{reasoning_effort}"']
         if permission_mode is not None:
@@ -796,7 +803,10 @@ def _write_runtime_config(
 ) -> tuple[Path, Path | None, Path]:
     backend = request.worker.backend
     backend_type = _ralph_backend_type(backend)
-    backend_args = _build_backend_args(backend, request.model, request.reasoning_effort, permission_mode)
+    backend_args = _build_backend_args(
+        backend, request.model, request.reasoning_effort, permission_mode,
+        provider=request.worker.provider if backend == "codex" else "openai",
+    )
     solo_mode = backend in _SOLO_MODE_BACKENDS
     if solo_mode:
         # Installed wheels need not preserve script execute bits. Use the
