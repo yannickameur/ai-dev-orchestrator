@@ -194,6 +194,7 @@ importable (tests, développement dual-repo) mais n'est plus installé.
 | P14 complet : tokens, coûts, tentatives | `APPROUVÉ`, non implémenté |
 | P15 prompt optimization externe | `APPROUVÉ POUR ÉTUDE`, pas d'intégration |
 | P16 revue YAGNI/REUSE FIRST | `APPROUVÉ POUR REVUE`, pas de refactor global |
+| P2 Ollama / deux workers Qwen prioritaires | `APPROUVÉ` (2026-10-31) — WorkItems préparés, exécution gouvernée à démarrer sur BMAX |
 
 P21.1 : `wi-acc-01` `COMPLETED`, QA gouvernée `PASS` sur `f1e28f8d`,
 1 441 tests moteur et 311 tests AIDO Code `PASS`, merge et tag gouvernés,
@@ -203,6 +204,66 @@ synthétiques déterministes. Les statuts historiques WI-P21.1-04
 `BLOCKED` et WI-P21.1-05 `FAILED` restent inchangés dans le runtime.
 
 ## 8. Travaux futurs
+
+### P2 — Deux workers Qwen prioritaires via Ollama et Ralph (`APPROUVÉ`)
+
+**Décision du 2026-10-31.** Priorité au support de deux agents locaux sur le **BMAX Ubuntu**. Dépôts sur **GitHub**, sans GitLab, Mac, SwiftUI, HA-AI ou travaux annexes. Issue de réalisation : [#63](https://github.com/yannickameur/ai-dev-orchestrator/issues/63). L'objectif est un chemin réel et séquentiel `DEV A (Qwen Developer) → DEV B (Qwen Reviewer, correctif) → QA déterministe → merge gouverné` ; les fournisseurs cloud actuels restent utilisables en fallback.
+
+**Contexte à vérifier sur BMAX**, pas une intégration déjà validée : Ollama 0.40.13, modèle initial `qwen3.5:9b`, Radeon 780M/Vulkan, 32 Go RAM, profil Codex `bmax` annoncé. `qwen3.5:4b` ne sera envisagé pour la revue que si sa qualité est mesurée. Une inférence à 16K ne prouve ni les appels d'outils ni les événements de fin Ralph. Ne pas modifier le service Ollama utilisé par HA-AI. L'endpoint est configurable localement, sans IP codée en dur ; `127.0.0.1:11434` est préféré si vérifié.
+
+**Architecture cible minimale :** réutiliser `WorkerRegistry`, `WorkerSelector`, `QuotaManager`, `RalphExecutionEngine`, `ProjectRuntime`, `MVPManager`, la QA et Git existants. Provider `ollama` distinct de `openai`; probe HTTP réel et borné, modèles requis réellement présents, absence de faux quotas/crédits/reset. Exécuter via Codex/Ralph si le profil local sait réellement appeler des outils ; adaptation/bridge seulement après preuve d'un besoin. Deux `worker_id` et sessions distincts, même modèle et même fournisseur déclarés honnêtement. Aucun appel parallèle à des gros modèles.
+
+**WorkItems proposés pour le prochain cycle gouverné (ce bloc n'est pas un état d'exécution persisté) :**
+
+#### WI-P2-01 — Probe Ollama local, sans quota fictif
+
+Dependencies: none
+Capabilities: development
+
+Acceptance criteria:
+
+- Ajouter l'adaptateur minimal de fournisseur `ollama` en réutilisant les contrats `ProviderAdapter` et `ProviderState`, enregistré dans `project_runtime.py`; pas de réinterprétation des quotas OpenAI.
+- Sonde HTTP avec timeout borné, lecture de `/api/tags` et, seulement si utile, `/api/ps` ; vérifier les modèles réellement requis par le registre sans coder le nom de modèle en dur ; modèle non chargé n'implique pas modèle absent.
+- Sur indisponibilité du service, modèle absent, réponse invalide ou timeout : jamais de sélection sur observation périmée ni de succès inventé. Provider state normalisé et `quota_windows=()` si rien de mesurable.
+- Tests offline via fakes HTTP/horloge ; état Ollama indisponible sans bloquer les workers cloud.
+
+#### WI-P2-02 — Exécution Qwen via Codex/Ralph
+
+Dependencies: WI-P2-01
+Capabilities: development
+
+Acceptance criteria:
+
+- Vérifier localement sur BMAX la version effective de Codex et de Ralph, le profil `bmax`, le modèle réellement servi et l'exécution **non interactive avec appels d'outils** dans un dépôt jetable, avant de déclarer ce backend validé.
+- Réutiliser le backend `codex` et les mécanismes Ralph existants ; ajouter le minimum nécessaire pour sélectionner le fournisseur Ollama explicitement, sans repli silencieux vers OpenAI ou une configuration machine codée en dur.
+- Préserver les permissions, l'identité Git par worker, les événements Ralph, le fail-closed, la reprise après erreur, l'arrêt de l'arbre de processus et la QA existante.
+- Tests offline sur génération des arguments, absence de chute vers OpenAI, défaillances, interruptions et traces du modèle/provider.
+
+#### WI-P2-03 — Sélection locale prioritaire avec relecteur distinct
+
+Dependencies: WI-P2-01, WI-P2-02
+Capabilities: development
+
+Acceptance criteria:
+
+- Tester le cas réel où Qwen Developer et Qwen Reviewer sont disponibles **en même temps que les workers cloud** : DEV A = `qwen_developer`, DEV B = `qwen_reviewer`, identités/sessions différentes.
+- Examiner `WorkerSelectionPolicy.prefer_distinct_provider_for_review` : une simple priorité YAML ne suffit pas nécessairement. Offrir une préférence locale explicite **globale et opt-in**, à l'endroit architectural approprié ; préserver le comportement par défaut et la sélection cloud.
+- `DEV_B.worker_id != DEV_A.worker_id` reste absolu ; faire un vrai fallback cloud si Qwen est indisponible ou non éligible, sans quota fictif, `WAITING` fictif ou contournement de QA.
+- Tests offline : 2 Qwen choisis malgré cloud disponible, serveur en panne, modèle manquant, 1 worker seulement, politique non opt-in inchangée.
+
+#### WI-P2-04 — Recette BMAX et préparation release moteur
+
+Dependencies: WI-P2-03
+Capabilities: development
+
+Acceptance criteria:
+
+- Tests CI offline Python 3.10 et 3.12, puis **recette réelle et explicite sur BMAX** sur un Git test jetable avec deux sessions Qwen successives via AIDO + Ralph ; commits audités et QA liée au SHA avant merge.
+- Vérifier les pannes Ollama et événements Ralph manquants (aucun faux PASS), les quotas inconnus et le fonctionnement conservé des providers cloud ; éviter toute coupure d'Ollama impactant HA-AI.
+- Documenter la configuration BMAX, la limitation mémoire/contexte et la procédure de retour arrière ; publier la release moteur seulement après QA gouvernée, tests et recette PASS.
+- Version cible indicative `v0.2.2` (à confirmer au moment de tagger) : wheel, sdist, SHA256SUMS ; pas de PyPI ; mettre à jour la roadmap avec des preuves, pas des statuts supposés.
+
+**Gouvernance :** suivre `CONTRIBUTING.md`. Les changements fonctionnels du moteur doivent passer par le WorkItem Flow réellement installé et opérationnel ; un agent Codex/Qwen qui prépare le cycle ne peut pas s'attribuer seul DEV A, DEV B et QA. Avant de remplacer le jalon courant d'un projet auto-gouverné, contrôler l'état persistant local et exécuter `aido validate` ; ne jamais éditer SQLite manuellement.
 
 ### P14 — Observabilité de consommation (`APPROUVÉ`, version simplifiée livrée)
 
@@ -245,7 +306,6 @@ Candidats connus, à traiter un par un avec preuve de gain net
 
 | ID | Question |
 |---|---|
-| P2 | Un provider local (Ollama) justifie-t-il un adaptateur ? |
 | P5 | Continuer la validation sur des projets externes plus complexes ? |
 | P6 | Étendre la gouvernance Git locale à push/PR/statut CI distants ? |
 | P7 | Une instance gérant plusieurs projets isolés ? |
@@ -259,6 +319,4 @@ explicite de l'utilisateur.
 
 ## 9. Prochain jalon à discuter
 
-Aucun jalon moteur n'est engagé. Candidats naturels : le reste de P14
-(tokens et coûts, prérequis de P15), puis P16 au fil de l'eau. AIDO Code M4 (mode non interactif) n'est pas commencé et ne
-requiert aucune capacité moteur nouvelle connue.
+P2 (Ollama / deux workers Qwen prioritaires) est maintenant approuvé et prioritaire sur le reste de P14 et P16. Les WorkItems sont préparés ci-dessus, mais aucune exécution BMAX n'est attestée dans GitHub : vérifier le contrôleur stable et l'état local avant d'engager le WorkItem Flow. La partie AIDO Code est suivie dans [M3.6 / issue #17](https://github.com/yannickameur/aido-code/issues/17).
