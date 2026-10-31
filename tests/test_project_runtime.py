@@ -396,6 +396,22 @@ class TestWorkerRegistryInjection:
             selected_ids = {w.worker_id for w in rt.manager._worker_selector._workers}
             assert selected_ids == {"carol", "dave"}
 
+    def test_global_registry_policy_reaches_selector(self, tmp_path: Path) -> None:
+        from orchestrator.worker_selector import WorkerSelectionPolicy
+
+        config = _write_project(tmp_path, include_workers_section=False)
+        registry = WorkerRegistry([
+            Worker.with_single_profile(
+                worker_id="alice", display_name="Alice", provider="anthropic",
+                backend="claude_code", model="sonnet", capabilities=["development"],
+            ),
+        ], selection_policy=WorkerSelectionPolicy(preferred_provider="ollama"))
+        with ProjectRuntime.open(
+            config, clock=lambda: UTC_T0, worker_registry=registry,
+            provider_adapters={"anthropic": _FakeAdapter()},
+        ) as rt:
+            assert rt.manager._worker_selector._policy is registry.selection_policy
+
     def test_project_config_needs_no_workers_yaml_path_for_the_modern_api(self, tmp_path: Path) -> None:
         config = _write_project(tmp_path, include_workers_section=False)
         assert config.workers_registry_path is None

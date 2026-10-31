@@ -63,6 +63,17 @@ def _write(tmp_path: Path, text: str, name: str = "workers.yaml") -> Path:
 
 
 class TestLoadValidConfig:
+    def test_global_provider_preference_is_opt_in(self, tmp_path: Path) -> None:
+        default = WorkerRegistry.load(_write(tmp_path, VALID_CONFIG))
+        preferred = WorkerRegistry.load(_write(tmp_path, "selection: {preferred_provider: ollama}\n" + VALID_CONFIG))
+        assert default.selection_policy.preferred_provider is None
+        assert preferred.selection_policy.preferred_provider == "ollama"
+
+    @pytest.mark.parametrize("selection", ["selection: []", "selection: {preferred_provider: ''}", "selection: {preferred_provider: false}", "selection: {unknown: true}"])
+    def test_invalid_global_selection_is_rejected(self, tmp_path: Path, selection: str) -> None:
+        with pytest.raises(InvalidWorkerConfigError):
+            WorkerRegistry.load(_write(tmp_path, selection + "\n" + VALID_CONFIG))
+
     def test_loads_multiple_workers(self, tmp_path: Path) -> None:
         registry = WorkerRegistry.load(_write(tmp_path, VALID_CONFIG))
         assert {w.worker_id for w in registry.all_workers()} == {"alice", "victor"}

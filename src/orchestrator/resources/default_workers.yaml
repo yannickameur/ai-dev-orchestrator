@@ -26,6 +26,11 @@
 # labels with no special meaning to the engine; cost_rank is what
 # adaptive selection (Slice 17) actually reads.
 
+# Optional global opt-in for local-first selection across projects:
+# selection:
+#   preferred_provider: ollama
+# Omit to retain the existing quota/priority and reviewer provider ordering.
+
 workers:
   - worker_id: alice
     display_name: Alice

@@ -152,11 +152,6 @@ workers:
 execution:
   permission_mode: standard    # standard | unrestricted — see below
 
-# Optional, global worker selection preference. Omit to keep the existing
-# quota/priority ordering and soft cross-provider reviewer preference.
-selection:
-  preferred_provider: ollama
-
 git:
   base_branch: main            # optional, defaults to "main"
 
@@ -279,7 +274,7 @@ through to the real `MVPManager` it constructs; there is no separate
 
 ## Worker selection
 
-`selection.preferred_provider` opts the project into selecting eligible
+The global `workers.yaml` may set `selection.preferred_provider: ollama` to opt into selecting eligible
 workers from that provider first for every role. Availability, capabilities,
 quality tier, and worker exclusions still apply. A reviewer always has a
 different `worker_id` from the author. When no eligible preferred worker
