@@ -320,3 +320,83 @@ explicite de l'utilisateur.
 ## 9. Prochain jalon à discuter
 
 P2 (Ollama / deux workers Qwen prioritaires) est maintenant approuvé et prioritaire sur le reste de P14 et P16. Les WorkItems sont préparés ci-dessus, mais aucune exécution BMAX n'est attestée dans GitHub : vérifier le contrôleur stable et l'état local avant d'engager le WorkItem Flow. La partie AIDO Code est suivie dans [M3.6 / issue #17](https://github.com/yannickameur/aido-code/issues/17).
+
+## Current milestone
+
+Status: APPROVED
+
+### ID
+
+p2
+
+### Objective
+
+Implement the approved P2 Ollama integration. Reuse the existing governed flow and contracts. Work only in this checkout. Do not publish releases, push, change services, modify virtualenvs, or start nested AIDO runs. Real acceptance is explicitly manual and opt-in, never part of offline QA. Keep the Git identity configured by the engine.
+
+### Acceptance criteria
+
+- Explicit Ollama routing, distinct sequential local workers, opt-in priority and cloud fallback, with offline regression tests.
+- Real BMAX acceptance evidence is required before release; never invent it.
+
+### WorkItems
+
+#### WI-P2-01 — Probe Ollama local, sans quota fictif
+
+Dependencies: none
+Capabilities: development
+
+Acceptance criteria:
+
+- Ajouter l'adaptateur minimal de fournisseur `ollama` en réutilisant les contrats `ProviderAdapter` et `ProviderState`, enregistré dans `project_runtime.py`; pas de réinterprétation des quotas OpenAI.
+- Sonde HTTP avec timeout borné, lecture de `/api/tags` et, seulement si utile, `/api/ps` ; vérifier les modèles réellement requis par le registre sans coder le nom de modèle en dur ; modèle non chargé n'implique pas modèle absent.
+- Sur indisponibilité du service, modèle absent, réponse invalide ou timeout : jamais de sélection sur observation périmée ni de succès inventé. Provider state normalisé et `quota_windows=()` si rien de mesurable.
+- Tests offline via fakes HTTP/horloge ; état Ollama indisponible sans bloquer les workers cloud.
+
+#### WI-P2-02 — Exécution Qwen via Codex/Ralph
+
+Dependencies: WI-P2-01
+Capabilities: development
+
+Acceptance criteria:
+
+- Vérifier localement sur BMAX la version effective de Codex et de Ralph, le profil `bmax`, le modèle réellement servi et l'exécution **non interactive avec appels d'outils** dans un dépôt jetable, avant de déclarer ce backend validé.
+- Réutiliser le backend `codex` et les mécanismes Ralph existants ; ajouter le minimum nécessaire pour sélectionner le fournisseur Ollama explicitement, sans repli silencieux vers OpenAI ou une configuration machine codée en dur.
+- Préserver les permissions, l'identité Git par worker, les événements Ralph, le fail-closed, la reprise après erreur, l'arrêt de l'arbre de processus et la QA existante.
+- Tests offline sur génération des arguments, absence de chute vers OpenAI, défaillances, interruptions et traces du modèle/provider.
+
+#### WI-P2-03 — Sélection locale prioritaire avec relecteur distinct
+
+Dependencies: WI-P2-01, WI-P2-02
+Capabilities: development
+
+Acceptance criteria:
+
+- Tester le cas réel où Qwen Developer et Qwen Reviewer sont disponibles **en même temps que les workers cloud** : DEV A = `qwen_developer`, DEV B = `qwen_reviewer`, identités/sessions différentes.
+- Examiner `WorkerSelectionPolicy.prefer_distinct_provider_for_review` : une simple priorité YAML ne suffit pas nécessairement. Offrir une préférence locale explicite **globale et opt-in**, à l'endroit architectural approprié ; préserver le comportement par défaut et la sélection cloud.
+- `DEV_B.worker_id != DEV_A.worker_id` reste absolu ; faire un vrai fallback cloud si Qwen est indisponible ou non éligible, sans quota fictif, `WAITING` fictif ou contournement de QA.
+- Tests offline : 2 Qwen choisis malgré cloud disponible, serveur en panne, modèle manquant, 1 worker seulement, politique non opt-in inchangée.
+
+#### WI-P2-04 — Recette BMAX et préparation release moteur
+
+Dependencies: WI-P2-03
+Capabilities: development
+
+Acceptance criteria:
+
+- Tests CI offline Python 3.10 et 3.12, puis **recette réelle et explicite sur BMAX** sur un Git test jetable avec deux sessions Qwen successives via AIDO + Ralph ; commits audités et QA liée au SHA avant merge.
+- Vérifier les pannes Ollama et événements Ralph manquants (aucun faux PASS), les quotas inconnus et le fonctionnement conservé des providers cloud ; éviter toute coupure d'Ollama impactant HA-AI.
+- Documenter la configuration BMAX, la limitation mémoire/contexte et la procédure de retour arrière ; publier la release moteur seulement après QA gouvernée, tests et recette PASS.
+- Version cible indicative `v0.2.2` (à confirmer au moment de tagger) : wheel, sdist, SHA256SUMS ; pas de PyPI ; mettre à jour la roadmap avec des preuves, pas des statuts supposés.
+
+### QA
+
+#### QA-P2-01 — Full offline engine suite
+
+Kind: unit_test
+Required: true
+Timeout: 600
+Argv: [".venv/bin/python", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+
+### Out of scope
+
+- HA-AI, service changes, parallel model execution and PyPI.
