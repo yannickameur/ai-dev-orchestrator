@@ -54,7 +54,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Callable, Iterable
 
 from orchestrator.execution_store import ExecutionStore
 from orchestrator.git_governance import GitGovernancePolicy, GitGovernanceService, GitWorkItemStore
@@ -72,13 +72,14 @@ from orchestrator.providers.claude_code_adapter import ClaudeCodeAdapter
 from orchestrator.providers.codex_adapter import CodexAdapter
 from orchestrator.providers.gravity_adapter import GravityAdapter
 from orchestrator.providers.mistral_vibe_adapter import MistralVibeAdapter
+from orchestrator.providers.ollama_adapter import OllamaAdapter
 from orchestrator.qa import QAPolicy, QARunStore
 from orchestrator.quota_manager import QuotaManager, QuotaPolicy
 from orchestrator.ralph_execution_engine import RalphExecutionEngine
 from orchestrator.validation import QualityGateRunner, ValidationStore
 from orchestrator.wait import WaitStore
 from orchestrator.worker_registry import WorkerRegistry
-from orchestrator.worker_selector import WorkerSelector
+from orchestrator.worker_selector import Worker, WorkerSelector
 
 Clock = Callable[[], datetime]
 
@@ -96,6 +97,7 @@ _PROVIDER_ADAPTER_FACTORIES: dict[str, Callable[[], ProviderAdapter]] = {
     "openai": CodexAdapter,
     "mistral": MistralVibeAdapter,
     "gravity": GravityAdapter,
+    "ollama": OllamaAdapter,
 }
 
 # Deterministic, stable filenames under ProjectConfig.project.state_dir —
@@ -148,19 +150,29 @@ class ConfigRuntimeConflictError(ProjectRuntimeError):
     historical Project/MVP/WorkItem definition."""
 
 
-def resolve_provider_adapters(providers: set[str]) -> dict[str, ProviderAdapter]:
+def resolve_provider_adapters(
+    providers: set[str], *, workers: Iterable[Worker] = ()
+) -> dict[str, ProviderAdapter]:
     """Builds one real provider adapter per name in ``providers`` from the
     explicit factory table above. Public (P13, ROADMAP.md): also the
     primitive ``orchestrator.engine.OrchestratorEngine.probe_workers()``
     reuses for an explicit, on-demand provider probe, never a second,
-    parallel way to resolve a provider adapter."""
+    parallel way to resolve a provider adapter. ``workers`` supplies the
+    enabled profiles whose Ollama models must be locally present."""
     adapters: dict[str, ProviderAdapter] = {}
     for provider in sorted(providers):
         factory = _PROVIDER_ADAPTER_FACTORIES.get(provider)
         if factory is None:
             raise UnsupportedProviderError(provider)
         try:
-            adapters[provider] = factory()
+            if provider == "ollama":
+                models = frozenset(
+                    profile.model for worker in workers if worker.provider == "ollama"
+                    for profile in worker.profiles
+                )
+                adapters[provider] = OllamaAdapter(required_models=models)
+            else:
+                adapters[provider] = factory()
         except ProviderConfigError as exc:
             raise ProviderConfigurationError(provider, exc) from exc
     return adapters
@@ -223,7 +235,9 @@ class ProjectRuntime:
             enabled_workers = list(registry.enabled_workers())
             adapters = (
                 provider_adapters if provider_adapters is not None
-                else resolve_provider_adapters({w.provider for w in enabled_workers})
+                else resolve_provider_adapters(
+                    {w.provider for w in enabled_workers}, workers=enabled_workers
+                )
             )
 
             quota_manager = QuotaManager(adapters, QuotaPolicy(state_ttl=timedelta(minutes=2)), clock=clock)
