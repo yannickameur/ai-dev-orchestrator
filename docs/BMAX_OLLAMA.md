@@ -1,10 +1,13 @@
 # BMAX Ollama operator notes (P2)
 
-These notes describe the local setup observed on 2026-10-31. They are not a
-record of the required two-session AIDO + Ralph acceptance. The local evidence
-is in `.local-p2/bmax-evidence.txt` (untracked, machine-local): Ollama 0.40.13,
-Codex 0.166.0, Ralph 2.10.1, and one successful Qwen tool-use smoke test.
-The Ollama service was not changed.
+These notes describe the BMAX setup and governed acceptance verified on
+2026-11-01 with Ollama 0.40.13, Codex 0.166.0 and Ralph 2.10.1.
+Engine [v0.2.2](https://github.com/yannickameur/ai-dev-orchestrator/releases/tag/v0.2.2)
+is published with wheel, sdist and verified SHA256SUMS after PR #65 and green
+Python 3.10/3.12 CI. The successful two-session evidence is in
+[P2_ACCEPTANCE.json](P2_ACCEPTANCE.json). Earlier attempts below explain the
+configuration decisions; they are not additional successful acceptance runs.
+The shared HA-AI Ollama service was not changed.
 
 ## Configure the local route
 
@@ -56,7 +59,7 @@ orientation without making a Git edit. The temporary config now also sets
 Ralph 2.10.1 keys that orientation to the memory setting. Cloud workers retain
 Ralph's defaults. This does not suppress business completion events.
 The task prompt still carries the required `work.completed` and `work.failed`
-protocol. This change needs a fresh two-session run before acceptance.
+protocol. The successful two-session run below validates this configuration.
 Ralph 2.10.1 treats `event_loop.completion_promise` as an emitted event topic.
 The temporary Ollama config now uses the request's success topic and its
 failure topic as `cancellation_promise` when each verdict has one topic. The
@@ -65,7 +68,7 @@ The first 16K isolated-endpoint attempt produced a developer commit and
 `work.completed`, but the earlier `LOOP_COMPLETE` promise kept Ralph running.
 That interrupted attempt is diagnostic evidence, not a two-session PASS.
 
-Before calling P2 accepted, run the explicit BMAX recipe from
+To reproduce acceptance, run the explicit BMAX recipe from
 [WI-P2-04](../ROADMAP.md)
 in a disposable Git repository. Capture two successive Qwen worker sessions
 through AIDO + Ralph, their distinct identities and audited commits, Ralph
@@ -82,9 +85,9 @@ restore the previous routing order. To exclude local workers entirely, set
 their `enabled` fields to `false` in that registry. Start a new AIDO run or
 resume the affected work item through its normal recovery path, then verify
 the selected worker and QA state. Leave Ollama running for HA-AI; rollback
-does not require stopping or reconfiguring its service. Keep the existing
-engine version until the governed QA, BMAX recipe, and release artifacts
-have passed.
+does not require stopping or reconfiguring its service. Preserve the previous
+installation when deploying the validated release;
+restore its launcher and compatible global registry together for rollback.
 
 ## Verified BMAX acceptance (2026-11-01)
 

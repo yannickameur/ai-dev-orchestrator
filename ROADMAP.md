@@ -194,7 +194,7 @@ importable (tests, développement dual-repo) mais n'est plus installé.
 | P14 complet : tokens, coûts, tentatives | `APPROUVÉ`, non implémenté |
 | P15 prompt optimization externe | `APPROUVÉ POUR ÉTUDE`, pas d'intégration |
 | P16 revue YAGNI/REUSE FIRST | `APPROUVÉ POUR REVUE`, pas de refactor global |
-| P2 Ollama / deux workers Qwen prioritaires | `VALIDÉ` (2026-11-01) — WI-P2-01/02/03/04 terminés, QA et recette réelle PASS ; release v0.2.2 préparée |
+| P2 Ollama / deux workers Qwen prioritaires | `VALIDÉ` (2026-11-01) — WI-P2-01/02/03/04 terminés, QA et recette réelle PASS ; release v0.2.2 publiée |
 
 P21.1 : `wi-acc-01` `COMPLETED`, QA gouvernée `PASS` sur `f1e28f8d`,
 1 441 tests moteur et 311 tests AIDO Code `PASS`, merge et tag gouvernés,
@@ -205,7 +205,7 @@ synthétiques déterministes. Les statuts historiques WI-P21.1-04
 
 ## 8. Travaux futurs
 
-### P2 — Deux workers Qwen prioritaires via Ollama et Ralph (`VALIDÉ`, release v0.2.2 préparée)
+### P2 — Deux workers Qwen prioritaires via Ollama et Ralph (`VALIDÉ`, release v0.2.2 publiée)
 
 **Décision du 2026-10-31.** Priorité au support de deux agents locaux sur le **BMAX Ubuntu**. Dépôts sur **GitHub**, sans GitLab, Mac, SwiftUI, HA-AI ou travaux annexes. Issue de réalisation : [#63](https://github.com/yannickameur/ai-dev-orchestrator/issues/63). L'objectif est un chemin réel et séquentiel `DEV A (Qwen Developer) → DEV B (Qwen Reviewer, correctif) → QA déterministe → merge gouverné` ; les fournisseurs cloud actuels restent utilisables en fallback.
 
@@ -319,7 +319,7 @@ explicite de l'utilisateur.
 
 ## 9. Prochain jalon à discuter
 
-P2 est implémenté et validé par le WorkItem Flow : quatre WorkItems terminés, QA moteur 1 541 tests PASS sur `d7f08b1`, recette BMAX `LIVE-QWEN-06` avec DEV A `qwen_developer`, DEV B correctif `qwen_reviewer`, QA PASS et merge gouverné sur `d66b5bd`. Preuves structurées : [`docs/P2_ACCEPTANCE.json`](docs/P2_ACCEPTANCE.json). Release moteur v0.2.2 préparée ; ne publier qu’après CI verte et vérification des artifacts. La partie AIDO Code est suivie dans [M3.6 / issue #17](https://github.com/yannickameur/aido-code/issues/17).
+P2 est implémenté et validé par le WorkItem Flow : quatre WorkItems terminés, QA moteur 1 541 tests PASS sur `d7f08b1`, recette BMAX `LIVE-QWEN-06` avec DEV A `qwen_developer`, DEV B correctif `qwen_reviewer`, QA PASS et merge gouverné sur `d66b5bd`. Preuves structurées : [`docs/P2_ACCEPTANCE.json`](docs/P2_ACCEPTANCE.json). Release moteur [v0.2.2](https://github.com/yannickameur/ai-dev-orchestrator/releases/tag/v0.2.2) publiée après merge de la PR #65, CI Python 3.10/3.12 verte sur `4b505d4` et vérification des wheel, sdist et SHA256SUMS téléchargés. La partie AIDO Code est suivie dans [M3.6 / issue #17](https://github.com/yannickameur/aido-code/issues/17).
 
 ## Current milestone
 
