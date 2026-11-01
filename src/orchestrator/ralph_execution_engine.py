@@ -747,6 +747,8 @@ def _render_ralph_config(
     max_runtime_seconds: int,
     backend_command: str | None = None,
     disable_skills: bool = False,
+    disable_tasks: bool = False,
+    disable_memories: bool = False,
 ) -> str:
     # `backend_command` is only set for solo-mode backends (see
     # `_SOLO_MODE_BACKENDS`) — Ralph's "custom" backend requires an
@@ -759,8 +761,15 @@ def _render_ralph_config(
     # the worker before it could edit or commit. This is request-scoped: cloud
     # workers keep Ralph's default skill behavior.
     skills_section = "skills:\n  enabled: false\n\n" if disable_skills else ""
+    # Ralph's task-management orientation also consumes the constrained
+    # Ollama context before the worker reaches the requested Git change.
+    tasks_section = "tasks:\n  enabled: false\n\n" if disable_tasks else ""
+    # Ralph 2.10.1 keys the task orientation prompt off memories.enabled.
+    memories_section = "memories:\n  enabled: false\n\n" if disable_memories else ""
     return (
         f"{skills_section}"
+        f"{tasks_section}"
+        f"{memories_section}"
         "cli:\n"
         f"  backend: {_yaml_str(backend_type)}\n"
         f"{command_line}"
@@ -835,6 +844,8 @@ def _write_runtime_config(
             max_runtime_seconds=max(1, int(request.timeout_seconds)),
             backend_command=sys.executable if solo_mode else None,
             disable_skills=backend == "codex" and request.worker.provider == "ollama",
+            disable_tasks=backend == "codex" and request.worker.provider == "ollama",
+            disable_memories=backend == "codex" and request.worker.provider == "ollama",
         )
     )
 
