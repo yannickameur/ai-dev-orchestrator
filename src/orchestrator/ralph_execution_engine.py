@@ -306,7 +306,10 @@ def _build_backend_args(
             # noninteractive local execution. The endpoint is supplied by
             # CODEX_OSS_BASE_URL in the worker environment, never embedded
             # in generated Ralph configuration.
-            args += ["--oss", "--local-provider", "ollama", "-c", 'model_provider="ollama"']
+            args += [
+                "--oss", "--local-provider", "ollama", "-c", 'model_provider="ollama"',
+                "--disable", "goals", "--disable", "apps", "-c", 'web_search="disabled"',
+            ]
         if reasoning_effort:
             args += ["-c", f'model_reasoning_effort="{reasoning_effort}"']
         if permission_mode is not None:

@@ -29,8 +29,9 @@ The Ollama service was not changed.
    This preference belongs to the global registry, not a project manifest.
    It does not override availability, capability, or author/reviewer
    separation. See [worker selection](PROJECT_CONFIG.md#worker-selection).
-3. The engine passes `--oss --local-provider ollama` and
-   `-c model_provider="ollama"` to Codex for Ollama workers. The last setting
+3. The engine passes `--oss --local-provider ollama`,
+   `-c model_provider="ollama"`, `--disable goals`, `--disable apps`, and
+   `-c web_search="disabled"` to Codex for Ollama workers. The provider setting
    was needed by Codex 0.166.0: `--oss` alone caused `providerMismatch` in
    the local smoke test. A machine-local Codex profile named `bmax` was also
    created with `model_provider = "ollama"`, `model = "qwen3.5:9b"`, disabled

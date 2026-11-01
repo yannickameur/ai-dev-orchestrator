@@ -282,7 +282,11 @@ class TestWorkerSnapshotAndTranslation:
             _store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW,
         ).execute(_request(tmp_path, worker=worker)))
 
-        expected = ["--model", "qwen3.5:9b", "--oss", "--local-provider", "ollama", "-c", 'model_provider="ollama"']
+        expected = [
+            "--model", "qwen3.5:9b", "--oss", "--local-provider", "ollama",
+            "-c", 'model_provider="ollama"', "--disable", "goals",
+            "--disable", "apps", "-c", 'web_search="disabled"',
+        ]
         assert captured["config"]["cli"]["backend"] == "codex"
         assert captured["config"]["cli"]["args"] == expected
         assert captured["config"]["skills"] == {"enabled": False}
