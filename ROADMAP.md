@@ -161,7 +161,7 @@ le provider indisponible. Les bridges Vibe/Gravity passent par le Python
 de l'application (`sys.executable`), même sans droit d'exécution sur les
 scripts installés ; régression vérifiée depuis une wheel avec des fichiers
 en `644`. DeepSeek et Kimi ont été retirés faute de
-preuve d'exécution réelle. Ollama n'est pas un provider actuel (P2).
+preuve d'exécution réelle. Ollama est maintenant disponible via Codex/Ralph (P2), avec opt-in global. La recette et ses limites sont documentées dans `docs/BMAX_OLLAMA.md`.
 
 ## 6. Capacités optionnelles construites, non enchaînées
 
@@ -194,7 +194,7 @@ importable (tests, développement dual-repo) mais n'est plus installé.
 | P14 complet : tokens, coûts, tentatives | `APPROUVÉ`, non implémenté |
 | P15 prompt optimization externe | `APPROUVÉ POUR ÉTUDE`, pas d'intégration |
 | P16 revue YAGNI/REUSE FIRST | `APPROUVÉ POUR REVUE`, pas de refactor global |
-| P2 Ollama / deux workers Qwen prioritaires | `APPROUVÉ` (2026-10-31) — WorkItems préparés, exécution gouvernée à démarrer sur BMAX |
+| P2 Ollama / deux workers Qwen prioritaires | `VALIDÉ` (2026-11-01) — WI-P2-01/02/03/04 terminés, QA et recette réelle PASS ; release v0.2.2 préparée |
 
 P21.1 : `wi-acc-01` `COMPLETED`, QA gouvernée `PASS` sur `f1e28f8d`,
 1 441 tests moteur et 311 tests AIDO Code `PASS`, merge et tag gouvernés,
@@ -205,7 +205,7 @@ synthétiques déterministes. Les statuts historiques WI-P21.1-04
 
 ## 8. Travaux futurs
 
-### P2 — Deux workers Qwen prioritaires via Ollama et Ralph (`APPROUVÉ`)
+### P2 — Deux workers Qwen prioritaires via Ollama et Ralph (`VALIDÉ`, release v0.2.2 préparée)
 
 **Décision du 2026-10-31.** Priorité au support de deux agents locaux sur le **BMAX Ubuntu**. Dépôts sur **GitHub**, sans GitLab, Mac, SwiftUI, HA-AI ou travaux annexes. Issue de réalisation : [#63](https://github.com/yannickameur/ai-dev-orchestrator/issues/63). L'objectif est un chemin réel et séquentiel `DEV A (Qwen Developer) → DEV B (Qwen Reviewer, correctif) → QA déterministe → merge gouverné` ; les fournisseurs cloud actuels restent utilisables en fallback.
 
@@ -319,7 +319,7 @@ explicite de l'utilisateur.
 
 ## 9. Prochain jalon à discuter
 
-P2 (Ollama / deux workers Qwen prioritaires) est maintenant approuvé et prioritaire sur le reste de P14 et P16. Les WorkItems sont préparés ci-dessus, mais aucune exécution BMAX n'est attestée dans GitHub : vérifier le contrôleur stable et l'état local avant d'engager le WorkItem Flow. La partie AIDO Code est suivie dans [M3.6 / issue #17](https://github.com/yannickameur/aido-code/issues/17).
+P2 est implémenté et validé par le WorkItem Flow : quatre WorkItems terminés, QA moteur 1 541 tests PASS sur `d7f08b1`, recette BMAX `LIVE-QWEN-06` avec DEV A `qwen_developer`, DEV B correctif `qwen_reviewer`, QA PASS et merge gouverné sur `d66b5bd`. Preuves structurées : [`docs/P2_ACCEPTANCE.json`](docs/P2_ACCEPTANCE.json). Release moteur v0.2.2 préparée ; ne publier qu’après CI verte et vérification des artifacts. La partie AIDO Code est suivie dans [M3.6 / issue #17](https://github.com/yannickameur/aido-code/issues/17).
 
 ## Current milestone
 
