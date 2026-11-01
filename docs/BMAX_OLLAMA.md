@@ -50,6 +50,11 @@ the availability probe to pass.
 The first governed attempt stalled while Ralph injected its built-in skill
 reference into that 4096-token context. For Ollama Codex workers, AIDO now
 sets `skills.enabled: false` in the temporary Ralph config for each execution.
+The next governed attempt still spent its 4096-token context on Ralph task
+orientation without making a Git edit. The temporary config now also sets
+`tasks.enabled: false` and `memories.enabled: false` for Ollama Codex workers;
+Ralph 2.10.1 keys that orientation to the memory setting. Cloud workers retain
+Ralph's defaults. This does not suppress business completion events.
 The task prompt still carries the required `work.completed` and `work.failed`
 protocol. This change needs a fresh two-session run before acceptance.
 

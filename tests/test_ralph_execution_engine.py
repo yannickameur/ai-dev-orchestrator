@@ -290,6 +290,8 @@ class TestWorkerSnapshotAndTranslation:
         assert captured["config"]["cli"]["backend"] == "codex"
         assert captured["config"]["cli"]["args"] == expected
         assert captured["config"]["skills"] == {"enabled": False}
+        assert captured["config"]["tasks"] == {"enabled": False}
+        assert captured["config"]["memories"] == {"enabled": False}
         assert captured["hats"]["hats"]["worker"]["backend"]["args"] == expected
         assert result.record.provider == "ollama"
         assert result.record.model == "qwen3.5:9b"
@@ -309,6 +311,8 @@ class TestWorkerSnapshotAndTranslation:
         args = captured["config"]["cli"]["args"]
         assert args == ["--model", "gpt-5.6-terra", "-c", 'model_reasoning_effort="high"']
         assert "skills" not in captured["config"]
+        assert "tasks" not in captured["config"]
+        assert "memories" not in captured["config"]
 
     @pytest.mark.parametrize(
         ("timed_out", "expected_status"),
