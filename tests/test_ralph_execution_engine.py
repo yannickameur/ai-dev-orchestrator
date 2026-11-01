@@ -292,6 +292,8 @@ class TestWorkerSnapshotAndTranslation:
         assert captured["config"]["skills"] == {"enabled": False}
         assert captured["config"]["tasks"] == {"enabled": False}
         assert captured["config"]["memories"] == {"enabled": False}
+        assert captured["config"]["event_loop"]["completion_promise"] == "work.completed"
+        assert captured["config"]["event_loop"]["cancellation_promise"] == "work.failed"
         assert captured["hats"]["hats"]["worker"]["backend"]["args"] == expected
         assert result.record.provider == "ollama"
         assert result.record.model == "qwen3.5:9b"
@@ -313,6 +315,29 @@ class TestWorkerSnapshotAndTranslation:
         assert "skills" not in captured["config"]
         assert "tasks" not in captured["config"]
         assert "memories" not in captured["config"]
+        assert captured["config"]["event_loop"]["completion_promise"] == "LOOP_COMPLETE"
+        assert "cancellation_promise" not in captured["config"]["event_loop"]
+
+    def test_ollama_uses_request_terminal_topics(self, tmp_path: Path) -> None:
+        captured = {}
+
+        def _on_call(args, cwd, timeout):
+            captured["config"] = yaml.safe_load(Path(args[args.index("-c") + 1]).read_text())
+
+        worker = _victor(provider="ollama", model="qwen3.5:9b", reasoning_effort=None)
+        runner = _make_fake_runner(events_lines=[_event_line("review.approved")], on_call=_on_call)
+        request = _request(
+            tmp_path, worker=worker,
+            success_topics=frozenset({"review.approved"}),
+            failure_topics=frozenset({"review.rejected"}),
+        )
+        result = asyncio.run(RalphExecutionEngine(
+            _store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW,
+        ).execute(request))
+
+        assert captured["config"]["event_loop"]["completion_promise"] == "review.approved"
+        assert captured["config"]["event_loop"]["cancellation_promise"] == "review.rejected"
+        assert result.record.status is ExecutionStatus.SUCCEEDED
 
     @pytest.mark.parametrize(
         ("timed_out", "expected_status"),

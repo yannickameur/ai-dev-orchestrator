@@ -749,6 +749,8 @@ def _render_ralph_config(
     disable_skills: bool = False,
     disable_tasks: bool = False,
     disable_memories: bool = False,
+    completion_topic: str = "LOOP_COMPLETE",
+    cancellation_topic: str | None = None,
 ) -> str:
     # `backend_command` is only set for solo-mode backends (see
     # `_SOLO_MODE_BACKENDS`) — Ralph's "custom" backend requires an
@@ -766,6 +768,10 @@ def _render_ralph_config(
     tasks_section = "tasks:\n  enabled: false\n\n" if disable_tasks else ""
     # Ralph 2.10.1 keys the task orientation prompt off memories.enabled.
     memories_section = "memories:\n  enabled: false\n\n" if disable_memories else ""
+    cancellation_line = (
+        f"  cancellation_promise: {_yaml_str(cancellation_topic)}\n"
+        if cancellation_topic else ""
+    )
     return (
         f"{skills_section}"
         f"{tasks_section}"
@@ -777,7 +783,8 @@ def _render_ralph_config(
         "\n"
         "event_loop:\n"
         f"  prompt_file: {_yaml_str(str(prompt_path))}\n"
-        '  completion_promise: "LOOP_COMPLETE"\n'
+        f"  completion_promise: {_yaml_str(completion_topic)}\n"
+        f"{cancellation_line}"
         f"  max_iterations: {DEFAULT_MAX_ITERATIONS}\n"
         f"  max_runtime_seconds: {max_runtime_seconds}\n"
     )
@@ -835,6 +842,17 @@ def _write_runtime_config(
     prompt_path = runtime_dir / "PROMPT.md"
     prompt_path.write_text(request.instructions)
 
+    local_codex = backend == "codex" and request.worker.provider == "ollama"
+    # Ralph 2.10.1 stops on emitted event topics, not on final response text.
+    # Use the request's business topics when each verdict has one topic; the
+    # engine still validates the actual emitted events independently.
+    single_terminal_topics = local_codex and len(request.success_topics) == len(request.failure_topics) == 1
+    completion_topic = (
+        next(iter(request.success_topics)) if local_codex and single_terminal_topics else "LOOP_COMPLETE"
+    )
+    cancellation_topic = (
+        next(iter(request.failure_topics)) if local_codex and single_terminal_topics else None
+    )
     config_path = runtime_dir / "ralph.yml"
     config_path.write_text(
         _render_ralph_config(
@@ -843,9 +861,11 @@ def _write_runtime_config(
             prompt_path=prompt_path,
             max_runtime_seconds=max(1, int(request.timeout_seconds)),
             backend_command=sys.executable if solo_mode else None,
-            disable_skills=backend == "codex" and request.worker.provider == "ollama",
-            disable_tasks=backend == "codex" and request.worker.provider == "ollama",
-            disable_memories=backend == "codex" and request.worker.provider == "ollama",
+            disable_skills=local_codex,
+            disable_tasks=local_codex,
+            disable_memories=local_codex,
+            completion_topic=completion_topic,
+            cancellation_topic=cancellation_topic,
         )
     )
 
