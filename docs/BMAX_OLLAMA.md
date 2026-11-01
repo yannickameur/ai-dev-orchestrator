@@ -57,6 +57,13 @@ Ralph 2.10.1 keys that orientation to the memory setting. Cloud workers retain
 Ralph's defaults. This does not suppress business completion events.
 The task prompt still carries the required `work.completed` and `work.failed`
 protocol. This change needs a fresh two-session run before acceptance.
+Ralph 2.10.1 treats `event_loop.completion_promise` as an emitted event topic.
+The temporary Ollama config now uses the request's success topic and its
+failure topic as `cancellation_promise` when each verdict has one topic. The
+engine still requires an actual business event; final text alone cannot pass.
+The first 16K isolated-endpoint attempt produced a developer commit and
+`work.completed`, but the earlier `LOOP_COMPLETE` promise kept Ralph running.
+That interrupted attempt is diagnostic evidence, not a two-session PASS.
 
 Before calling P2 accepted, run the explicit BMAX recipe from
 [WI-P2-04](../ROADMAP.md)
