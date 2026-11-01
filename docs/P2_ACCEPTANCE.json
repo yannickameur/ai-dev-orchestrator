@@ -1,0 +1,179 @@
+{
+  "engine_source_commit": "d7f08b15df8eda2d90b2b2c3a9601c4ecdf3ae22",
+  "project_id": "p2-qwen-acceptance-06",
+  "executions": [
+    {
+      "execution_id": "440b51e0b2894c09adb2ef0b70c17391",
+      "worker_id": "qwen_developer",
+      "provider": "ollama",
+      "backend": "codex",
+      "model": "qwen3.5:9b",
+      "role": "developer",
+      "started_at": "2026-11-01T07:26:12.565936+00:00",
+      "finished_at": "2026-11-01T07:31:27.095495+00:00",
+      "status": "succeeded",
+      "exit_code": 0,
+      "ralph_loop_id": "primary-20261101-072612",
+      "git_sha_before": "26bf0364d2dd4e3fec9a05dad1189c047cfa52ec",
+      "git_sha_after": "f745eab4189ea101d1ec2a0914cbcefe5719ec08",
+      "permission_mode": "standard"
+    },
+    {
+      "execution_id": "54045e8be78a40abbc2ce1c413008e77",
+      "worker_id": "qwen_reviewer",
+      "provider": "ollama",
+      "backend": "codex",
+      "model": "qwen3.5:9b",
+      "role": "developer",
+      "started_at": "2026-11-01T07:31:29.403117+00:00",
+      "finished_at": "2026-11-01T07:43:55.716579+00:00",
+      "status": "succeeded",
+      "exit_code": 0,
+      "ralph_loop_id": "primary-20261101-073129",
+      "git_sha_before": "f745eab4189ea101d1ec2a0914cbcefe5719ec08",
+      "git_sha_after": "d66b5bd946fe9775d6c127c2710e4129c93db67b",
+      "permission_mode": "standard"
+    }
+  ],
+  "qa": [
+    {
+      "run_id": "a6758c352ca44318ab7def8e65f3244b",
+      "work_item_id": "LIVE-QWEN-06",
+      "expected_head_sha": "d66b5bd946fe9775d6c127c2710e4129c93db67b",
+      "status": "completed",
+      "verdict_status": "pass",
+      "verdict_reason": "all mandatory QA evidence present and passing for the current head SHA"
+    }
+  ],
+  "git": [
+    {
+      "work_item_id": "LIVE-QWEN-06",
+      "status": "merged",
+      "base_sha": "26bf0364d2dd4e3fec9a05dad1189c047cfa52ec",
+      "current_head_sha": "d66b5bd946fe9775d6c127c2710e4129c93db67b",
+      "merged_sha": "d66b5bd946fe9775d6c127c2710e4129c93db67b",
+      "merged_at": "2026-11-01T07:43:55.957131+00:00"
+    }
+  ],
+  "provider_observation": {
+    "observed_at": "2026-11-01T07:44:15.805113+00:00",
+    "providers": [
+      {
+        "provider": "anthropic",
+        "available": false,
+        "reason": "probe_error: probe failed for provider 'anthropic': claude exited with code 1: ",
+        "reset_at": [],
+        "quota_windows": [],
+        "reset_credits": []
+      },
+      {
+        "provider": "gravity",
+        "available": false,
+        "reason": "quota_exhausted",
+        "reset_at": [
+          "2026-11-08T07:44:18+00:00",
+          "2026-11-07T12:38:22+00:00"
+        ],
+        "quota_windows": [
+          {
+            "window_type": "gemini-weekly",
+            "utilization": 0.0,
+            "remaining": 1.0,
+            "reset_at": "2026-11-08T07:44:18+00:00",
+            "source": "agy_usage_command"
+          },
+          {
+            "window_type": "3p-weekly",
+            "utilization": 1.0,
+            "remaining": 0.0,
+            "reset_at": "2026-11-07T12:38:22+00:00",
+            "source": "agy_usage_command"
+          }
+        ],
+        "reset_credits": []
+      },
+      {
+        "provider": "ollama",
+        "available": true,
+        "reason": "available",
+        "reset_at": [],
+        "quota_windows": [],
+        "reset_credits": []
+      },
+      {
+        "provider": "openai",
+        "available": true,
+        "reason": "available",
+        "reset_at": [
+          "2026-11-01T11:45:48+00:00",
+          "2026-11-07T10:02:51+00:00"
+        ],
+        "quota_windows": [
+          {
+            "window_type": "primary_5h",
+            "utilization": 0.84,
+            "remaining": 0.16000000000000003,
+            "reset_at": "2026-11-01T11:45:48+00:00",
+            "source": "codex_app_server"
+          },
+          {
+            "window_type": "secondary_7d",
+            "utilization": 0.45,
+            "remaining": 0.55,
+            "reset_at": "2026-11-07T10:02:51+00:00",
+            "source": "codex_app_server"
+          }
+        ],
+        "reset_credits": [
+          {
+            "title": "Full reset (Weekly + 5 hr)",
+            "status": "available",
+            "available_count": null
+          },
+          {
+            "title": "Full reset (Weekly + 5 hr)",
+            "status": "available",
+            "available_count": null
+          }
+        ]
+      }
+    ]
+  },
+  "model_observation": {
+    "models": [
+      {
+        "name": "qwen3.5:9b",
+        "model": "qwen3.5:9b",
+        "size": 6164200816,
+        "digest": "56671c2ab9385f9cfcb404638e32cd62d88e3501d44822208363c010179a3c90",
+        "details": {
+          "parent_model": "",
+          "format": "gguf",
+          "family": "qwen35",
+          "families": [
+            "qwen35"
+          ],
+          "parameter_size": "9.0B",
+          "quantization_level": "Q4_K_M"
+        },
+        "expires_at": "2026-11-01T08:34:21.287694854+01:00",
+        "size_vram": 6164200816,
+        "context_length": 16384,
+        "runner": "llamacpp"
+      }
+    ]
+  },
+  "manual_contract": {
+    "head": "d66b5bd946fe9775d6c127c2710e4129c93db67b",
+    "passed_cases": 6,
+    "cases": [
+      "E\u0301COLE",
+      "\u0130STANBUL",
+      "\u2003Hello\u00a0 WORLD\t",
+      "\n\r\t",
+      "Stra\u00dfe",
+      " A\u0308\tB "
+    ]
+  },
+  "operator_guidance": "The operator clarified the existing Unicode preservation criterion during DEV B; the reviewer committed the correction. No business completion event was fabricated."
+}

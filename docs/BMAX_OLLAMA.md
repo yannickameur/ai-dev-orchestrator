@@ -85,3 +85,33 @@ the selected worker and QA state. Leave Ollama running for HA-AI; rollback
 does not require stopping or reconfiguring its service. Keep the existing
 engine version until the governed QA, BMAX recipe, and release artifacts
 have passed.
+
+## Verified BMAX acceptance (2026-11-01)
+
+`LIVE-QWEN-06` completed against frozen engine `d7f08b1`: Qwen Developer
+committed `f745eab`, then distinct Qwen Reviewer corrected Unicode behavior
+in `d66b5bd`. The operator clarified the existing Unicode criterion during
+review. Deterministic `python3 -m unittest -q` passed on `d66b5bd`; AIDO
+merged that exact SHA and tagged `feature/LIVE-QWEN-06/done`. Six additional
+read-only contract cases passed. No protected recipe test was changed.
+Structured, reasoning-free evidence: [P2_ACCEPTANCE.json](P2_ACCEPTANCE.json).
+
+The original service truncated 5033/5371-token inputs to 2050 tokens.
+Successful acceptance used a separate temporary Ollama process on a loopback
+endpoint, the same installed model/digest, `OLLAMA_CONTEXT_LENGTH=16384`,
+`OLLAMA_NUM_PARALLEL=1`, `OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_VULKAN=1` and
+`OLLAMA_IGPU_ENABLE=1`. `/api/ps` confirmed 16K and the Radeon 780M. The
+HA-AI system service and model tags were unchanged. Use an explicit, local
+endpoint configuration and existing model storage; do not change a shared
+service to reproduce this setup. Stop the dedicated process/unit to undo it.
+
+Both Ollama and OpenAI were observed available during acceptance. A separate
+failed-endpoint probe reported Ollama `provider_error`, no quota windows,
+and available cloud providers. Offline tests cover missing models, local
+priority with cloud available, author exclusion, cloud fallback, missing
+business events and interruption. The preceding failed/interrupted recipes
+remain in local persisted state; they are not counted as acceptance PASS.
+
+BMAX's operator override disables the two Mistral workers after both stalled
+on noninteractive approval requests in standard mode. Other cloud workers
+remain configured; removing that user override restores packaged defaults.

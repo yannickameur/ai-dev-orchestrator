@@ -167,7 +167,7 @@ Installation depuis la release publiée (GitHub Release, pas de PyPI) :
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install https://github.com/yannickameur/ai-dev-orchestrator/releases/download/v0.2.1/ai_dev_orchestrator-0.2.1-py3-none-any.whl
+pip install https://github.com/yannickameur/ai-dev-orchestrator/releases/download/v0.2.2/ai_dev_orchestrator-0.2.2-py3-none-any.whl
 ```
 
 Installation pour le développement :
