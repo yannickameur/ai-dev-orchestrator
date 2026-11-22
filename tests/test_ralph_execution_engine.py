@@ -1183,6 +1183,57 @@ class TestDefaultSubprocessRunnerTimeout:
         assert not finished_marker.exists()  # never reached the post-sleep write: genuinely killed
 
 
+class TestDefaultSubprocessRunnerInactivity:
+    @pytest.mark.parametrize(
+        ("absolute_timeout", "expected_inactivity"),
+        [(900.0, 360.0), (360.0, None), (30.0, None)],
+    )
+    def test_calibrated_default_only_applies_below_absolute_deadline(
+        self, tmp_path: Path, monkeypatch, absolute_timeout: float, expected_inactivity: float | None,
+    ) -> None:
+        from orchestrator import ralph_execution_engine as module
+
+        observed = []
+
+        async def fake_run(args, cwd, timeout, **kwargs):
+            observed.append((timeout, kwargs["inactivity_timeout"]))
+            return 0, b"", b""
+
+        monkeypatch.setattr(module, "run_in_new_process_group", fake_run)
+        assert asyncio.run(_default_subprocess_runner(["ralph"], tmp_path, absolute_timeout)) == (0, b"", b"")
+        assert observed == [(absolute_timeout, expected_inactivity)]
+
+    @pytest.mark.parametrize(
+        ("cause", "expected_error", "message"),
+        [
+            ("inactivity", "RalphInactivityError", "ralph produced no output for 360s"),
+            ("absolute", "RalphTimeoutError", "ralph run timed out after 900.0s"),
+            ("cancellation", "CancelledError", None),
+        ],
+    )
+    def test_stop_causes_remain_distinct(
+        self, tmp_path: Path, monkeypatch, cause: str, expected_error: str, message: str | None,
+    ) -> None:
+        from orchestrator import ralph_execution_engine as module
+        from orchestrator.posix_subprocess import SubprocessInactivityError
+
+        errors = {
+            "inactivity": SubprocessInactivityError,
+            "absolute": asyncio.TimeoutError,
+            "cancellation": asyncio.CancelledError,
+        }
+
+        async def fake_run(*args, **kwargs):
+            raise errors[cause]
+
+        monkeypatch.setattr(module, "run_in_new_process_group", fake_run)
+        error_type = asyncio.CancelledError if cause == "cancellation" else getattr(module, expected_error)
+        with pytest.raises(error_type) as exc:
+            asyncio.run(_default_subprocess_runner(["ralph"], tmp_path, 900.0))
+        if message is not None:
+            assert str(exc.value) == message
+
+
 class TestNoForbiddenBehavior:
     def test_no_fallback_or_retry_on_failure(self, tmp_path: Path) -> None:
         calls = []

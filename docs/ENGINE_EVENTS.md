@@ -13,7 +13,7 @@ Optional fields are `execution_id`, `phase`, `status`, `worker_id`,
 | `execution.output` | `stream` (`stdout` or `stderr`), `text` | Bounded public subprocess output. Activity only. |
 | `execution.output_truncated` | `reason`, `delivered_events`, `delivered_chars` | Live output display limit reached; subprocess draining continues. |
 | `execution.heartbeat` | `elapsed_seconds` | Subprocess is still running during output silence. Activity only. |
-| `execution.inactivity` | `reason: "no_subprocess_output"` | Ralph produced no stdout/stderr bytes for 120 seconds and its process session was terminated. |
+| `execution.inactivity` | `reason: "no_subprocess_output"` | Ralph produced no stdout/stderr bytes for 360 seconds and its process session was terminated. |
 
 `execution.inactivity` is followed by the phase's `*.interrupted` event.
 The run's `FailureDiagnostic.interruption_reason` is `"inactivity"` or
@@ -25,7 +25,8 @@ coarse work item events and does not accumulate live activity events.
 Progress and delivery are separate. Attributed business events determine
 execution success; audited Git, distinct Developer and Reviewer phases, and
 deterministic QA on the audited SHA govern delivery. Output, heartbeat, and
-exit code do not establish those milestones. The 120 second inactivity
-limit applies to Ralph executions with an absolute deadline above 120
+exit code do not establish those milestones. The 360 second inactivity
+limit leaves 83.1 seconds beyond the observed 276.9 second quiet BMAX
+iteration and applies to Ralph executions with an absolute deadline above 360
 seconds; shorter executions keep their absolute deadline. Heartbeats do
 not reset inactivity, and output does not extend the absolute deadline.
