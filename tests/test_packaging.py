@@ -172,7 +172,8 @@ from orchestrator.ralph_execution_engine import _write_runtime_config
 
 backend, mode = sys.argv[1:]
 request = SimpleNamespace(worker=SimpleNamespace(backend=backend), model='test-model',
-    reasoning_effort=None, instructions='Corriger le café.\\nLOOP_COMPLETE', timeout_seconds=30)
+    reasoning_effort=None, instructions='Corriger le café.\\nLOOP_COMPLETE', timeout_seconds=30,
+    success_topics=frozenset({'work.completed'}), failure_topics=frozenset({'work.failed'}))
 mode = ExecutionPermissionMode(mode) if mode else None
 config_path, hats_path, prompt_path = _write_runtime_config(Path.cwd(), request, mode)
 cli = yaml.safe_load(config_path.read_text())['cli']
