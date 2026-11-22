@@ -4,7 +4,8 @@ claude:
     backend: claude
     args: [--model, sonnet]
   event_loop:
-    completion_promise: LOOP_COMPLETE
+    completion_promise: work.completed
+    cancellation_promise: work.failed
     max_iterations: 5
     max_runtime_seconds: 30
   hats:
