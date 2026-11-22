@@ -18,8 +18,14 @@ actually emitted `work.completed` while its configured completion topic was
 `LOOP_COMPLETE`; that mismatch explains its continued loop. No prior AIDO
 failure has been attributed to the quoted-output or final-iteration bugs.
 
-AIDO keeps the proven Ollama Codex arguments and request-scoped
-`work.completed`/`work.failed` promises. Its verdict still requires a current
+AIDO keeps the proven Ollama Codex arguments. Both cloud and Ollama requests
+with one success and one failure topic now use those business topics as
+request-scoped completion and cancellation promises. The observed cloud run
+`primary-20261122-153357` committed `00100f8` and emitted `work.completed`
+on iteration three, but continued through iterations four and five because
+its generated completion promise was `LOOP_COMPLETE`. Requests with multiple
+terminal topics retain the legacy promise because Ralph accepts only one
+completion and one cancellation topic. AIDO's verdict still requires a current
 run's JSONL business event: stdout text, Ralph exit status, and a bare
 `LOOP_COMPLETE` cannot supply one. Missing or conflicting terminal events
 fail closed. A success event on iteration five remains a success even if an

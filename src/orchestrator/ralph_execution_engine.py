@@ -843,15 +843,15 @@ def _write_runtime_config(
     prompt_path.write_text(request.instructions)
 
     local_codex = backend == "codex" and request.worker.provider == "ollama"
-    # Ralph 2.10.1 stops on emitted event topics, not on final response text.
+    # Ralph stops on emitted event topics, not on final response text.
     # Use the request's business topics when each verdict has one topic; the
     # engine still validates the actual emitted events independently.
-    single_terminal_topics = local_codex and len(request.success_topics) == len(request.failure_topics) == 1
+    single_terminal_topics = len(request.success_topics) == len(request.failure_topics) == 1
     completion_topic = (
-        next(iter(request.success_topics)) if local_codex and single_terminal_topics else "LOOP_COMPLETE"
+        next(iter(request.success_topics)) if single_terminal_topics else "LOOP_COMPLETE"
     )
     cancellation_topic = (
-        next(iter(request.failure_topics)) if local_codex and single_terminal_topics else None
+        next(iter(request.failure_topics)) if single_terminal_topics else None
     )
     config_path = runtime_dir / "ralph.yml"
     config_path.write_text(
