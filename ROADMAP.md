@@ -323,6 +323,8 @@ P2 est implémenté et validé par le WorkItem Flow : quatre WorkItems terminés
 
 La migration Ralph et la supervision sont suivies dans [#67](https://github.com/yannickameur/ai-dev-orchestrator/issues/67). Un dépôt BMAX jetable avec les configurations générées par le moteur a vérifié `doctor` et `run -a -q -c -H -P`. Face à une citation de `Event emitted:` suivie d’un véritable `ralph emit` après six secondes, 2.10.1 atteint la limite d’itérations sans événement métier. 2.12.0 émet `work.completed` et termine en une itération. Le JSONL observé conserve `topic` et `ts`. Cet essai utilise un backend Codex simulé. La recette Qwen réelle reste une condition de release.
 
+WI-R212-02 a été bloqué avant QA par des modifications non commitées après le SHA `614e70c` annoncé par DEV B. Son état et ses preuves restent dans l'historique. WI-R212-02R reprend les mêmes critères et couvre le rejet des horodatages UTC terminés par `Z` sous Python 3.10, mis en évidence par la [CI de la PR #69](https://github.com/yannickameur/ai-dev-orchestrator/pull/69).
+
 ## Current milestone
 
 Status: APPROVED
@@ -364,6 +366,16 @@ Acceptance criteria:
 - Extend the current subprocess supervision and public EngineEvent path. Treat stdout/stderr and heartbeat as technical signals. Use only verified existing milestones such as attributed business events, audited Git, and deterministic QA for attested progression. Keep progress and delivery verdict separate. Do not parse free-text claims as proof or expose private reasoning.
 - Use a bounded inactivity policy on missing subprocess activity, with a conservative default calibrated below the existing absolute deadline. Use monotonic time. No heartbeat may reset inactivity, no output may reset the absolute deadline, and routine log output remains distinct from attested work. Emit a typed inactivity diagnostic, distinct from the absolute timeout and external cancellation. Keep diagnostic evidence without a SQLite change.
 - Test silent and noisy processes, output just before inactivity, the absolute limit despite continuous output, Ctrl+C and child cleanup, prior event/diagnostic compatibility, bounded retry, distinct review, QA on the audited SHA and refusal to merge without passing QA. Document public event fields for AIDO Code.
+
+#### WI-R212-02R — Recover supervision and validate Ralph timestamps on Python 3.10
+
+Dependencies: WI-R212-01
+Capabilities: development
+
+Acceptance criteria:
+
+- Implement the same three supervision criteria as WI-R212-02. Reuse the locally archived work only after inspecting it, including the uncommitted review changes. Keep the original WorkItem and its commits intact. Commit the actual reviewed files with the assigned identity and leave the workspace clean before emitting completion.
+- Extend the current Ralph timestamp parser to accept a trailing `Z` on Python 3.10. Preserve numeric offsets and fractional-second handling. Keep the original contract fixtures and check the full offline suite on both Python 3.10 and 3.12.
 
 ### QA
 
