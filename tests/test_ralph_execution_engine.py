@@ -174,6 +174,15 @@ class TestParseRalphEventsOffline:
         events = parse_ralph_events(lines)
         assert events[0].timestamp.tzinfo is not None
 
+    @pytest.mark.parametrize("timestamp, expected", [
+        ("2026-09-12T13:30:55Z", "2026-09-12T13:30:55+00:00"),
+        ("2026-09-12T13:30:55.703784543Z", "2026-09-12T13:30:55.703784+00:00"),
+        ("2026-09-12T13:30:55.703784543+02:00", "2026-09-12T13:30:55.703784+02:00"),
+    ])
+    def test_utc_z_and_numeric_offsets(self, timestamp: str, expected: str) -> None:
+        event = parse_ralph_events([json.dumps({"topic": "review.ready", "ts": timestamp})])[0]
+        assert event.timestamp.isoformat() == expected
+
     def test_invalid_json_line_raises(self) -> None:
         with pytest.raises(RalphEventParseError):
             parse_ralph_events(["{not valid json"])

@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator.posix_subprocess import run_in_new_process_group
+from orchestrator.posix_subprocess import SubprocessInactivityError, run_in_new_process_group
 
 # A shell that backgrounds a real child (`sleep`), records its PID, then
 # waits on it — so the *direct* child (`sh`) has its own real descendant,
@@ -49,6 +49,64 @@ class TestTimeout:
         child_pid = _read_child_pid(tmp_path)
         time.sleep(0.3)  # let signal delivery/process teardown settle
         assert not _pid_alive(child_pid)
+
+
+class TestInactivity:
+    def test_silent_process_and_child_are_terminated_despite_heartbeats(self, tmp_path: Path) -> None:
+        beats: list[float] = []
+        with pytest.raises(SubprocessInactivityError):
+            asyncio.run(run_in_new_process_group(
+                ["sh", "-c", _SPAWN_CHILD_SCRIPT], tmp_path, 2,
+                inactivity_timeout=0.35, on_heartbeat=beats.append, heartbeat_interval=0.1,
+            ))
+        time.sleep(0.2)
+        assert beats and not _pid_alive(_read_child_pid(tmp_path))
+
+    def test_output_resets_inactivity_from_actual_bytes(self, tmp_path: Path) -> None:
+        code, out, _ = asyncio.run(run_in_new_process_group(
+            ["sh", "-c", "sleep 0.2; echo first; sleep 0.2; echo second"], tmp_path, 2,
+            inactivity_timeout=0.3,
+        ))
+        assert code == 0 and out == b"first\nsecond\n"
+
+    def test_output_then_silence_still_times_out(self, tmp_path: Path) -> None:
+        with pytest.raises(SubprocessInactivityError):
+            asyncio.run(run_in_new_process_group(
+                ["sh", "-c", "echo active; sleep 3"], tmp_path, 2,
+                inactivity_timeout=0.3,
+            ))
+
+    def test_absolute_deadline_wins_despite_continuous_output(self, tmp_path: Path) -> None:
+        with pytest.raises(asyncio.TimeoutError) as exc:
+            asyncio.run(run_in_new_process_group(
+                ["sh", "-c", "while true; do echo active; sleep 0.1; done"], tmp_path, 0.5,
+                inactivity_timeout=0.3,
+            ))
+        assert not isinstance(exc.value, SubprocessInactivityError)
+
+    def test_absolute_deadline_still_applies_when_output_observer_blocks(self, tmp_path: Path) -> None:
+        with pytest.raises(asyncio.TimeoutError) as exc:
+            asyncio.run(run_in_new_process_group(
+                ["sh", "-c", "echo active"], tmp_path, 0.3,
+                inactivity_timeout=0.9, on_output=lambda stream, text: time.sleep(0.5),
+            ))
+        assert not isinstance(exc.value, SubprocessInactivityError)
+
+    def test_cancellation_with_inactivity_supervision_reaps_child(self, tmp_path: Path) -> None:
+        async def _drive() -> None:
+            task = asyncio.create_task(run_in_new_process_group(
+                ["sh", "-c", _SPAWN_CHILD_SCRIPT], tmp_path, 30, inactivity_timeout=5,
+            ))
+            for _ in range(50):
+                if (tmp_path / "child.pid").exists():
+                    break
+                await asyncio.sleep(0.02)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(_drive())
+        assert not _pid_alive(_read_child_pid(tmp_path))
 
 
 class TestCancellation:

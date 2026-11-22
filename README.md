@@ -131,6 +131,8 @@ découplage initial) et P13.5 (l'injection `WorkerRegistry`) restent les
 jalons historiques ayant rendu ce découplage possible ; voir
 [`docs/PROJECT_CONFIG.md`](docs/PROJECT_CONFIG.md), « Engine/library
 boundary ».
+Les champs publics des événements d'activité sont décrits dans
+[`docs/ENGINE_EVENTS.md`](docs/ENGINE_EVENTS.md).
 
 ## Providers intégrés
 
