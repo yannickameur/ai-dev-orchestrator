@@ -44,6 +44,7 @@ def ralph_termination(events: tuple[RalphEvent, ...]) -> tuple[str | None, int |
 class StopCause(str, Enum):
     MAX_ITERATIONS = "max_iterations"
     TIMEOUT = "timeout"
+    INACTIVITY = "inactivity"
     TECHNICAL_ERROR = "technical_error"
     INCONSISTENT_EVENTS = "inconsistent_events"
     #: An attributed, valid ``work.failed``: a genuine business failure.
@@ -56,6 +57,8 @@ class StopCause(str, Enum):
 
 def classify_stop(result: ExecutionResult) -> StopCause:
     if result.record.status is ExecutionStatus.INTERRUPTED:
+        if result.interruption_reason == "inactivity":
+            return StopCause.INACTIVITY
         return StopCause.TIMEOUT
     if result.event_anomaly is not None:
         return StopCause.INCONSISTENT_EVENTS
