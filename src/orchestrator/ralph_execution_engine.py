@@ -1132,6 +1132,9 @@ def _guard_heartbeat(observer: HeartbeatObserver | None) -> HeartbeatObserver | 
     return beat_safely
 
 
+_RALPH_INACTIVITY_TIMEOUT_SECONDS = 360.0  # BMAX quiet DEV A took 276.9s; margin 83.1s.
+
+
 async def _default_subprocess_runner(
     args: Sequence[str], cwd: Path, timeout: float, *, env: Mapping[str, str] | None = None,
     on_output: OutputObserver | None = None, on_heartbeat: HeartbeatObserver | None = None,
@@ -1164,10 +1167,14 @@ async def _default_subprocess_runner(
         return await run_in_new_process_group(
             args, cwd, timeout, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", **(env or {})},
             on_output=on_output, on_heartbeat=on_heartbeat,
-            inactivity_timeout=120.0 if timeout > 120.0 else None,
+            inactivity_timeout=(
+                _RALPH_INACTIVITY_TIMEOUT_SECONDS if timeout > _RALPH_INACTIVITY_TIMEOUT_SECONDS else None
+            ),
         )
     except SubprocessInactivityError as exc:
-        raise RalphInactivityError(f"ralph produced no output for 120s") from exc
+        raise RalphInactivityError(
+            f"ralph produced no output for {_RALPH_INACTIVITY_TIMEOUT_SECONDS:g}s"
+        ) from exc
     except asyncio.TimeoutError:
         raise RalphTimeoutError(f"ralph run timed out after {timeout}s")
 
