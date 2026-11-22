@@ -316,8 +316,8 @@ class TestWorkerSnapshotAndTranslation:
         assert "skills" not in captured["config"]
         assert "tasks" not in captured["config"]
         assert "memories" not in captured["config"]
-        assert captured["config"]["event_loop"]["completion_promise"] == "LOOP_COMPLETE"
-        assert "cancellation_promise" not in captured["config"]["event_loop"]
+        assert captured["config"]["event_loop"]["completion_promise"] == "work.completed"
+        assert captured["config"]["event_loop"]["cancellation_promise"] == "work.failed"
 
     def test_ollama_uses_request_terminal_topics(self, tmp_path: Path) -> None:
         captured = {}
@@ -338,6 +338,26 @@ class TestWorkerSnapshotAndTranslation:
 
         assert captured["config"]["event_loop"]["completion_promise"] == "review.approved"
         assert captured["config"]["event_loop"]["cancellation_promise"] == "review.rejected"
+        assert result.record.status is ExecutionStatus.SUCCEEDED
+
+    @pytest.mark.parametrize("worker", [_alice(), _victor(provider="ollama", model="qwen3.5:9b", reasoning_effort=None)])
+    def test_multiple_terminal_topics_keep_legacy_promise(self, tmp_path: Path, worker: Worker) -> None:
+        captured = {}
+
+        def _on_call(args, cwd, timeout):
+            captured["config"] = yaml.safe_load(Path(args[args.index("-c") + 1]).read_text())
+
+        runner = _make_fake_runner(events_lines=[_event_line("review.approved")], on_call=_on_call)
+        result = asyncio.run(RalphExecutionEngine(
+            _store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW,
+        ).execute(_request(
+            tmp_path, worker=worker,
+            success_topics=frozenset({"review.approved", "review.accepted"}),
+            failure_topics=frozenset({"review.rejected"}),
+        )))
+
+        assert captured["config"]["event_loop"]["completion_promise"] == "LOOP_COMPLETE"
+        assert "cancellation_promise" not in captured["config"]["event_loop"]
         assert result.record.status is ExecutionStatus.SUCCEEDED
 
     @pytest.mark.parametrize(
