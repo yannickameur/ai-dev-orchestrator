@@ -1,0 +1,43 @@
+# Observed Ralph 2.12.0 `run --help` flags and generated YAML contract.
+claude:
+  cli:
+    backend: claude
+    args: [--model, sonnet]
+  event_loop:
+    completion_promise: LOOP_COMPLETE
+    max_iterations: 5
+    max_runtime_seconds: 30
+  hats:
+    worker:
+      name: Alice
+      description: "Runs worker 'claude_dev_01' in role 'developer' for execution 'exec-001'."
+      triggers: [work.start]
+      publishes: [work.completed, work.failed]
+      backend:
+        type: claude
+        args: [--model, sonnet]
+      instructions: |
+        Follow the OBJECTIVE above, including its acceptance criteria and completion/failure protocol.
+ollama:
+  skills: {enabled: false}
+  tasks: {enabled: false}
+  memories: {enabled: false}
+  cli:
+    backend: codex
+    args: [--model, "qwen3.5:9b", --oss, --local-provider, ollama, -c, 'model_provider="ollama"', --disable, goals, --disable, apps, -c, 'web_search="disabled"']
+  event_loop:
+    completion_promise: work.completed
+    cancellation_promise: work.failed
+    max_iterations: 5
+    max_runtime_seconds: 30
+  hats:
+    worker:
+      name: Victor
+      description: "Runs worker 'codex_dev_01' in role 'developer' for execution 'exec-001'."
+      triggers: [work.start]
+      publishes: [work.completed, work.failed]
+      backend:
+        type: codex
+        args: [--model, "qwen3.5:9b", --oss, --local-provider, ollama, -c, 'model_provider="ollama"', --disable, goals, --disable, apps, -c, 'web_search="disabled"']
+      instructions: |
+        Follow the OBJECTIVE above, including its acceptance criteria and completion/failure protocol.

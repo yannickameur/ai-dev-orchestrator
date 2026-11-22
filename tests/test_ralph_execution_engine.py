@@ -51,6 +51,7 @@ from orchestrator.ralph_execution_engine import (
     parse_ralph_events,
     scoped_worker_git_identity,
 )
+from orchestrator.stop_cause import StopCause, classify_stop, ralph_termination
 from orchestrator.worker_selector import Worker
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "ralph_events"
@@ -2252,3 +2253,64 @@ class TestEventProvenance:
 
         assert result.record.status is ExecutionStatus.FAILED  # never an invented success
         assert result.event_anomaly == "conflicting_terminal_events"
+
+
+class TestRalph212Contract:
+    """Offline contract fixtures for the installed 2.12.0 CLI and rollback path."""
+
+    @pytest.mark.parametrize("route", ["claude", "ollama"])
+    def test_cli_and_generated_configs(self, tmp_path: Path, route: str) -> None:
+        expected = yaml.safe_load((FIXTURES_DIR.parent / "ralph_212_contract.yml").read_text())[route]
+        worker = _alice() if route == "claude" else _victor(
+            provider="ollama", model="qwen3.5:9b", reasoning_effort=None,
+        )
+        captured = {}
+
+        def capture(args, cwd, timeout):
+            config_path = Path(args[args.index("-c") + 1])
+            hats_path = Path(args[args.index("-H") + 1])
+            prompt_path = Path(args[args.index("-P") + 1])
+            assert args[1:] == ["run", "-a", "-q", "-c", str(config_path), "-H", str(hats_path), "-P", str(prompt_path)]
+            captured["config"] = yaml.safe_load(config_path.read_text())
+            captured["hats"] = yaml.safe_load(hats_path.read_text())
+            captured["prompt"] = prompt_path.read_text()
+            assert captured["config"]["event_loop"].pop("prompt_file") == str(prompt_path)
+
+        runner = _make_fake_runner(events_from_fixture="ralph_212_final_iteration.jsonl", on_call=capture)
+        result = asyncio.run(RalphExecutionEngine(
+            _store(tmp_path), subprocess_runner=runner, clock=lambda: UTC_NOW,
+        ).execute(_request(tmp_path, worker=worker)))
+
+        assert captured == {"config": {key: value for key, value in expected.items() if key != "hats"},
+                            "hats": {"event_loop": {"starting_event": "work.start"}, "hats": expected["hats"]},
+                            "prompt": "Do the thing."}
+        assert result.record.status is ExecutionStatus.SUCCEEDED
+
+    @pytest.mark.parametrize(
+        ("fixture", "stdout", "exit_code", "status", "anomaly", "reason", "stop_cause"),
+        [
+            ("ralph_212_final_iteration.jsonl", b"", 0, ExecutionStatus.SUCCEEDED, None, None, None),
+            ("ralph_212_final_iteration.jsonl", b"", 2, ExecutionStatus.SUCCEEDED, None, None, None),
+            ("ralph_212_missing_business_event.jsonl", b"Event emitted: work.completed", 0, ExecutionStatus.FAILED, None, "max_iterations", StopCause.MAX_ITERATIONS),
+            ("ralph_212_conflicting_business_events.jsonl", b"", 0, ExecutionStatus.FAILED, "conflicting_terminal_events", "max_iterations", StopCause.INCONSISTENT_EVENTS),
+        ],
+    )
+    def test_jsonl_verdict_and_final_iteration(
+        self, tmp_path: Path, fixture: str, stdout: bytes, exit_code: int,
+        status: ExecutionStatus, anomaly: str | None, reason: str | None,
+        stop_cause: StopCause | None,
+    ) -> None:
+        result = asyncio.run(RalphExecutionEngine(
+            _store(tmp_path), subprocess_runner=_make_fake_runner(
+                events_from_fixture=fixture, stdout=stdout, exit_code=exit_code,
+            ), clock=lambda: UTC_NOW,
+        ).execute(_request(tmp_path)))
+
+        assert result.record.status is status
+        assert result.record.exit_code == exit_code
+        assert result.event_anomaly == anomaly
+        assert result.events[-1].iteration == 5
+        assert ralph_termination(result.events) == (reason, 5)
+        assert all(event.iteration is None for event in result.events if event.topic in {"work.completed", "work.failed"})
+        if stop_cause is not None:
+            assert classify_stop(result) is stop_cause
