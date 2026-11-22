@@ -1,0 +1,3 @@
+{"topic":"work.start","payload":"Do the thing.","ts":"2026-11-13T18:00:00Z"}
+{"topic":"iteration.summary","payload":"Quoted: Event emitted: work.completed","ts":"2026-11-13T18:00:01Z","iteration":5,"hat":"worker"}
+{"topic":"loop.terminate","payload":"## Reason\nmax_iterations\n\n## Summary\n- Iterations: 5","ts":"2026-11-13T18:00:02Z","iteration":5,"hat":"loop"}
