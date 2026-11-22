@@ -267,7 +267,7 @@ def _build_failure_diagnostic(
     exit_part = f"exit_code={result.exit_code}" if result.exit_code is not None else "exit_code unknown"
     summary = f"{termination}; {outcome}; {exit_part}."
     if result.record.status is ExecutionStatus.INTERRUPTED:
-        summary = f"Execution interrupted (timeout or cancellation); {summary}"
+        summary = f"Execution interrupted ({result.interruption_reason or 'timeout or cancellation'}); {summary}"
     return FailureDiagnostic(
         work_item_id=work_item_id, phase=phase, execution_id=result.record.execution_id,
         worker_id=worker.worker_id, worker_display_name=worker.display_name,
@@ -278,6 +278,7 @@ def _build_failure_diagnostic(
         last_output_stream=(result.last_output_stream if result.last_output else observed_stream if observed_output else None),
         summary=summary, next_action=_NEXT_ACTION_AFTER_FAILURE,
         output_delivery_failures=delivery_failures, last_output_delivery_error=last_delivery_error,
+        interruption_reason=result.interruption_reason,
     )
 
 
@@ -821,6 +822,8 @@ class MVPManager:
                 work_item.work_item_id, repository_path=project.workspace,
             )
         if on_event is not None:
+            if result.interruption_reason == "inactivity":
+                deliver("execution.inactivity", {"reason": "no_subprocess_output"})
             outcome_kind = {
                 ExecutionStatus.SUCCEEDED: "completed",
                 ExecutionStatus.INTERRUPTED: "interrupted",

@@ -93,7 +93,7 @@ from typing import Awaitable, Callable, Iterator, Mapping, Sequence
 from orchestrator.execution_policy import ExecutionPermissionMode
 from orchestrator.execution_store import ExecutionRecord, ExecutionStore
 from orchestrator.public_output import ClaudePublicOutputFilter, public_text_from_capture
-from orchestrator.posix_subprocess import HeartbeatObserver, OutputObserver, run_in_new_process_group
+from orchestrator.posix_subprocess import HeartbeatObserver, OutputObserver, SubprocessInactivityError, run_in_new_process_group
 from orchestrator.qa_protection import hash_file
 from orchestrator.worker_selector import Worker
 
@@ -202,6 +202,10 @@ class RalphLaunchError(RalphExecutionEngineError):
 
 class RalphTimeoutError(RalphExecutionEngineError):
     """Internal: raised when the ralph subprocess exceeds its timeout."""
+
+
+class RalphInactivityError(RalphTimeoutError):
+    """The worker stopped producing subprocess output."""
 
 
 class RalphEventParseError(RalphExecutionEngineError):
@@ -504,6 +508,7 @@ class ExecutionResult:
     #: Hotfix #58 — ``stale_events`` (``current-events`` untouched by this
     #: run) or ``conflicting_terminal_events``; ``None`` when attributable.
     event_anomaly: str | None = None
+    interruption_reason: str | None = None
 
 
 _FRACTIONAL_SECONDS_RE = re.compile(r"\.(\d+)")
@@ -516,7 +521,7 @@ def _parse_ralph_timestamp(value: str) -> datetime:
     match = _FRACTIONAL_SECONDS_RE.search(value)
     if match and len(match.group(1)) > 6:
         value = value[: match.start(1)] + match.group(1)[:6] + value[match.end(1) :]
-    return datetime.fromisoformat(value)
+    return datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
 
 
 def parse_ralph_events(lines: Sequence[str]) -> list[RalphEvent]:
@@ -1159,7 +1164,10 @@ async def _default_subprocess_runner(
         return await run_in_new_process_group(
             args, cwd, timeout, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", **(env or {})},
             on_output=on_output, on_heartbeat=on_heartbeat,
+            inactivity_timeout=120.0 if timeout > 120.0 else None,
         )
+    except SubprocessInactivityError as exc:
+        raise RalphInactivityError(f"ralph produced no output for 120s") from exc
     except asyncio.TimeoutError:
         raise RalphTimeoutError(f"ralph run timed out after {timeout}s")
 
@@ -1277,7 +1285,7 @@ class RalphExecutionEngine:
                         exit_code, stdout, stderr = await self._run_subprocess(
                             args, request.workspace, request.timeout_seconds
                         )
-                except RalphTimeoutError:
+                except RalphTimeoutError as exc:
                     if public_filter is not None:
                         public_filter.finish()
                     loop_id = _read_ralph_loop_id(request.workspace)
@@ -1287,7 +1295,10 @@ class RalphExecutionEngine:
                     untracked_changes = _diff_untracked_files(
                         untracked_before, _list_untracked_files_with_hashes(request.workspace)
                     )
-                    return ExecutionResult(record=updated, untracked_changes=untracked_changes)
+                    return ExecutionResult(
+                        record=updated, untracked_changes=untracked_changes,
+                        interruption_reason="inactivity" if isinstance(exc, RalphInactivityError) else "timeout",
+                    )
                 except asyncio.CancelledError:
                     # P18-03: an external cancellation (real Ctrl+C, via
                     # asyncio.run()'s own cancellation pass) — the

@@ -114,3 +114,6 @@ class FailureDiagnostic:
     #: never a worker/QA/Git verdict.
     output_delivery_failures: int = 0
     last_output_delivery_error: str | None = None
+    #: "inactivity" or "timeout" for an interrupted subprocess; None
+    #: for legacy or non-interrupted results. No schema migration required.
+    interruption_reason: str | None = None

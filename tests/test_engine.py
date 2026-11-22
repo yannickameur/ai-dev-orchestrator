@@ -1300,9 +1300,30 @@ class TestExecutionOutputAndDiagnostics:
         )
         (diag,) = engine.run(max_cycles=1).diagnostics
         assert diag.execution_status == "interrupted"
+        assert diag.interruption_reason == "timeout"
         assert diag.business_verdict == "absent"
         assert diag.last_output == "worker progress before timeout"
         assert diag.last_output_stream == "stdout"
+
+    def test_inactivity_has_distinct_public_event_and_diagnostic(self, tmp_path: Path) -> None:
+        from orchestrator.ralph_execution_engine import RalphInactivityError
+
+        class InactiveRunner:
+            async def __call__(self, args, cwd, timeout, *, on_output=None):
+                on_output("stdout", _claude_ndjson("observed activity"))
+                raise RalphInactivityError("inactive")
+
+        engine = OrchestratorEngine.open(
+            str(_write_config(tmp_path)),
+            provider_adapters={"anthropic": _FakeAdapter(available=True)},
+            subprocess_runner=InactiveRunner(),
+        )
+        seen: list[EngineEvent] = []
+        (diag,) = engine.run(max_cycles=1, on_event=seen.append).diagnostics
+        assert diag.interruption_reason == "inactivity"
+        assert diag.business_verdict == "absent"
+        assert diag.last_output == "observed activity"
+        assert any(event.kind == "execution.inactivity" and event.payload == {"reason": "no_subprocess_output"} for event in seen)
 
     def test_explicit_work_failed_keeps_business_verdict_failed(self, tmp_path: Path) -> None:
         engine = _open_engine(tmp_path, [{"topic": "work.failed", "exit_code": 0}])

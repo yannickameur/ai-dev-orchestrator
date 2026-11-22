@@ -46,3 +46,10 @@ def test_classification(result, expected) -> None:
 
 def test_only_an_explicit_failure_is_not_recoverable() -> None:
     assert {c for c in StopCause if not c.recoverable} == {StopCause.EXPLICIT_FAILURE}
+
+
+def test_inactivity_is_distinct_and_recoverable() -> None:
+    result = _result(ExecutionStatus.INTERRUPTED)
+    from dataclasses import replace
+
+    assert classify_stop(replace(result, interruption_reason="inactivity")) is StopCause.INACTIVITY

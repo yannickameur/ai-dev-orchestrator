@@ -65,11 +65,16 @@ _READ_SIZE = 4096
 GRACE_PERIOD_SECONDS = 5.0
 
 
+class SubprocessInactivityError(asyncio.TimeoutError):
+    """No stdout or stderr bytes arrived within the configured interval."""
+
+
 async def run_in_new_process_group(
     argv: Sequence[str], cwd: Path, timeout: float, *, env: Mapping[str, str] | None = None,
     on_output: OutputObserver | None = None,
     on_heartbeat: HeartbeatObserver | None = None,
     heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    inactivity_timeout: float | None = None,
 ) -> tuple[int, bytes, bytes]:
     """Runs ``argv`` in its own POSIX session/process group
     (``start_new_session=True``) so the whole group — not just the
@@ -100,19 +105,48 @@ async def run_in_new_process_group(
     external binaries already treated as such elsewhere in this
     codebase.
     """
+    if inactivity_timeout is not None and inactivity_timeout <= 0:
+        raise ValueError("inactivity_timeout must be positive")
     process = await asyncio.create_subprocess_exec(
         *argv, cwd=str(cwd), env=dict(env) if env is not None else None,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
+    communication: asyncio.Task[tuple[bytes, bytes]] | None = None
     try:
-        if on_output is None and on_heartbeat is None:
+        if on_output is None and on_heartbeat is None and inactivity_timeout is None:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        elif inactivity_timeout is not None:
+            started = time.monotonic()
+            output_activity = [started]
+            communication = asyncio.create_task(_communicate_observed(
+                process, on_output, on_heartbeat, heartbeat_interval, output_activity,
+            ))
+            deadline = started + timeout
+            while True:
+                now = time.monotonic()
+                if now >= deadline:
+                    raise asyncio.TimeoutError
+                if now >= output_activity[0] + inactivity_timeout:
+                    raise SubprocessInactivityError
+                if communication.done():
+                    stdout, stderr = communication.result()
+                    break
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(communication),
+                        min(deadline - now, output_activity[0] + inactivity_timeout - now),
+                    )
+                except asyncio.TimeoutError:
+                    continue
         else:
             stdout, stderr = await asyncio.wait_for(
                 _communicate_observed(process, on_output, on_heartbeat, heartbeat_interval), timeout=timeout,
             )
     except (asyncio.TimeoutError, asyncio.CancelledError):
+        if communication is not None:
+            communication.cancel()
+            await asyncio.gather(communication, return_exceptions=True)
         await _terminate_process_group(process)
         raise
     return process.returncode, stdout, stderr
@@ -131,6 +165,7 @@ def _notify(on_output: OutputObserver | None, stream: str, text: str) -> None:
 async def _drain(
     reader: asyncio.StreamReader, stream: str, on_output: OutputObserver | None,
     activity: list[float] | None = None,
+    output_activity: list[float] | None = None,
 ) -> bytes:
     """Reads ``reader`` to EOF, returning every byte read and notifying
     ``on_output`` line by line (plus the final unterminated fragment)."""
@@ -144,6 +179,8 @@ async def _drain(
         captured += data
         if activity is not None:
             activity[0] = time.monotonic()
+            if output_activity is not None:
+                output_activity[0] = activity[0]
         pending += decoder.decode(data)
         *lines, pending = pending.split("\n")
         for line in lines:
@@ -180,13 +217,14 @@ async def _communicate_observed(
     process: "asyncio.subprocess.Process", on_output: OutputObserver | None,
     on_heartbeat: HeartbeatObserver | None = None,
     heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    output_activity: list[float] | None = None,
 ) -> tuple[bytes, bytes]:
     assert process.stdout is not None and process.stderr is not None
     started = time.monotonic()
     activity = [started]
     tasks = [
-        asyncio.ensure_future(_drain(process.stdout, "stdout", on_output, activity)),
-        asyncio.ensure_future(_drain(process.stderr, "stderr", on_output, activity)),
+        asyncio.ensure_future(_drain(process.stdout, "stdout", on_output, activity, output_activity)),
+        asyncio.ensure_future(_drain(process.stderr, "stderr", on_output, activity, output_activity)),
     ]
     beat = None
     if on_heartbeat is not None:
