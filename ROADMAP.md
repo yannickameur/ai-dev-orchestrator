@@ -321,7 +321,64 @@ explicite de l'utilisateur.
 
 P2 est implémenté et validé par le WorkItem Flow : quatre WorkItems terminés, QA moteur 1 541 tests PASS sur `d7f08b1`, recette BMAX `LIVE-QWEN-06` avec DEV A `qwen_developer`, DEV B correctif `qwen_reviewer`, QA PASS et merge gouverné sur `d66b5bd`. Preuves structurées : [`docs/P2_ACCEPTANCE.json`](docs/P2_ACCEPTANCE.json). Release moteur [v0.2.2](https://github.com/yannickameur/ai-dev-orchestrator/releases/tag/v0.2.2) publiée après merge de la PR #65, CI Python 3.10/3.12 verte sur `4b505d4` et vérification des wheel, sdist et SHA256SUMS téléchargés. La partie AIDO Code est suivie dans [M3.6 / issue #17](https://github.com/yannickameur/aido-code/issues/17).
 
+La migration Ralph et la supervision sont suivies dans [#67](https://github.com/yannickameur/ai-dev-orchestrator/issues/67). Un dépôt BMAX jetable avec les configurations générées par le moteur a vérifié `doctor` et `run -a -q -c -H -P`. Face à une citation de `Event emitted:` suivie d’un véritable `ralph emit` après six secondes, 2.10.1 atteint la limite d’itérations sans événement métier. 2.12.0 émet `work.completed` et termine en une itération. Le JSONL observé conserve `topic` et `ts`. Cet essai utilise un backend Codex simulé. La recette Qwen réelle reste une condition de release.
+
 ## Current milestone
+
+Status: APPROVED
+
+### ID
+
+ralph-212
+
+### Objective
+
+Integrate the separately installed Ralph 2.12.0 and expose bounded, factual worker supervision. Follow issue #67 and use the existing execution, review, QA and Git gates. Workers work only on their assigned item, run offline tests, and leave release, deployment and real-provider acceptance to the operator. Keep P2 history and the installed Ralph 2.10.1 available for rollback.
+
+### Acceptance criteria
+
+- The engine uses the documented Ralph CLI and attributes real terminal events to the current execution. Process liveness, public output and attested work are distinguishable. Missing or contradictory verdicts cannot complete a WorkItem.
+- Track an inactivity deadline and an independent monotonic absolute deadline. Preserve interruption cleanup, bounded recovery, independent DEV B, SHA-bound QA and governed Git merge.
+- Release requires offline QA, Python 3.10 and 3.12 CI, and an operator-run acceptance with the verified isolated Ralph 2.12.0, Codex and Qwen on a disposable project.
+
+### WorkItems
+
+#### WI-R212-01 — Verify and adapt the Ralph CLI contract
+
+Dependencies: none
+Capabilities: development
+
+Acceptance criteria:
+
+- Cover the observed 2.12.0 contract with focused offline fixtures for the existing CLI arguments, generated core and hat config, JSONL business events and loop termination. Cover completion on the final iteration, missing/conflicting events, and the difference between a stdout quotation and an actual event.
+- Preserve the existing flags and Ollama routing where verified. Change code only for a demonstrated incompatibility. Keep 2.10.1-compatible behavior needed by rollback. Preserve commit identity, subprocess permissions, and safe output filtering.
+- Document verified version behavior and the distinction between published Ralph fixes and causes actually established for prior runs. Preserve all existing delivery tests.
+
+#### WI-R212-02 — Supervise activity, evidence and deadlines
+
+Dependencies: WI-R212-01
+Capabilities: development
+
+Acceptance criteria:
+
+- Extend the current subprocess supervision and public EngineEvent path. Treat stdout/stderr and heartbeat as technical signals. Use only verified existing milestones such as attributed business events, audited Git, and deterministic QA for attested progression. Keep progress and delivery verdict separate. Do not parse free-text claims as proof or expose private reasoning.
+- Use a bounded inactivity policy on missing subprocess activity, with a conservative default calibrated below the existing absolute deadline. Use monotonic time. No heartbeat may reset inactivity, no output may reset the absolute deadline, and routine log output remains distinct from attested work. Emit a typed inactivity diagnostic, distinct from the absolute timeout and external cancellation. Keep diagnostic evidence without a SQLite change.
+- Test silent and noisy processes, output just before inactivity, the absolute limit despite continuous output, Ctrl+C and child cleanup, prior event/diagnostic compatibility, bounded retry, distinct review, QA on the audited SHA and refusal to merge without passing QA. Document public event fields for AIDO Code.
+
+### QA
+
+#### QA-R212-01 — Full offline engine suite
+
+Kind: unit_test
+Required: true
+Timeout: 600
+Argv: [".venv/bin/python", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+
+### Out of scope
+
+- Direct SQLite edits, HA-AI changes, concurrent worker execution, dependence on private Ralph output, and changes to the approved AIDO Code M4 behavior.
+
+## Archived milestone P2
 
 Status: APPROVED
 
