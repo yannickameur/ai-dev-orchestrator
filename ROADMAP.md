@@ -325,6 +325,8 @@ La migration Ralph et la supervision sont suivies dans [#67](https://github.com/
 
 WI-R212-02 a été bloqué avant QA par des modifications non commitées après le SHA `614e70c` annoncé par DEV B. Son état et ses preuves restent dans l'historique. WI-R212-02R reprend les mêmes critères et couvre le rejet des horodatages UTC terminés par `Z` sous Python 3.10, mis en évidence par la [CI de la PR #69](https://github.com/yannickameur/ai-dev-orchestrator/pull/69).
 
+La [PR #71](https://github.com/yannickameur/ai-dev-orchestrator/pull/71) passe la CI mais le candidat interrompt les trois tentatives de recette Qwen au bout de 120 secondes de silence. Avec les mêmes commandes Ralph, la recette témoin sans ce seuil a obtenu un commit DEV A après 276,9 secondes d'itération sans sortie continue. Ralph `-q` masque ce flux. WI-R212-03 calibre le délai de silence sans toucher au plafond absolu ni aux règles de livraison.
+
 ## Current milestone
 
 Status: APPROVED
@@ -376,6 +378,17 @@ Acceptance criteria:
 
 - Implement the same three supervision criteria as WI-R212-02. Reuse the locally archived work only after inspecting it, including the uncommitted review changes. Keep the original WorkItem and its commits intact. Commit the actual reviewed files with the assigned identity and leave the workspace clean before emitting completion.
 - Extend the current Ralph timestamp parser to accept a trailing `Z` on Python 3.10. Preserve numeric offsets and fractional-second handling. Keep the original contract fixtures and check the full offline suite on both Python 3.10 and 3.12.
+
+#### WI-R212-03 — Calibrate bounded inactivity for quiet Ralph workers
+
+Dependencies: WI-R212-02R
+Capabilities: development
+
+Acceptance criteria:
+
+- Calibrate the existing default subprocess inactivity deadline against the measured quiet intervals in the BMAX Qwen reference run, with a documented margin. Keep Ralph quiet mode and the existing 900-second absolute deadline. Keep the timeout bounded and independent of the absolute deadline. Neither heartbeat nor model uptime is attested progress. Do not add configuration, an alternate supervisor or a retry exception.
+- Reuse one default for both the watchdog and its diagnostic text. Update tests for the calibrated default, short absolute deadlines and unchanged distinction between inactivity, absolute deadline and cancellation. Keep the public API and all QA/Git checks.
+- Keep the failed 120-second acceptance evidence. Actual Qwen acceptance against the newly governed SHA remains an operator gate.
 
 ### QA
 
