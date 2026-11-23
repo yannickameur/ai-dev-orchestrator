@@ -343,7 +343,7 @@ Integrate the separately installed Ralph 2.12.0 and expose bounded, factual work
 
 - The engine uses the documented Ralph CLI and attributes real terminal events to the current execution. Process liveness, public output and attested work are distinguishable. Missing or contradictory verdicts cannot complete a WorkItem.
 - Track an inactivity deadline and an independent monotonic absolute deadline. Preserve interruption cleanup, bounded recovery, independent DEV B, SHA-bound QA and governed Git merge.
-- Release requires offline QA, Python 3.10 and 3.12 CI, and an operator-run acceptance with the verified isolated Ralph 2.12.0, Codex and Qwen on a disposable project.
+- Release requires offline QA, Python 3.14 CI, and an operator-run acceptance with the verified isolated Ralph 2.12.0, Codex and Qwen on a disposable project.
 
 ### WorkItems
 
@@ -377,7 +377,7 @@ Capabilities: development
 Acceptance criteria:
 
 - Implement the same three supervision criteria as WI-R212-02. Reuse the locally archived work only after inspecting it, including the uncommitted review changes. Keep the original WorkItem and its commits intact. Commit the actual reviewed files with the assigned identity and leave the workspace clean before emitting completion.
-- Extend the current Ralph timestamp parser to accept a trailing `Z` on Python 3.10. Preserve numeric offsets and fractional-second handling. Keep the original contract fixtures and check the full offline suite on both Python 3.10 and 3.12.
+- Accept a trailing `Z` in Ralph timestamps. Preserve numeric offsets and fractional-second handling. Keep the original contract fixtures and check the full offline suite on Python 3.14.
 
 #### WI-R212-03 — Calibrate bounded inactivity for quiet Ralph workers
 
@@ -389,6 +389,16 @@ Acceptance criteria:
 - Calibrate the existing default subprocess inactivity deadline against the measured quiet intervals in the BMAX Qwen reference run, with a documented margin. Keep Ralph quiet mode and the existing 900-second absolute deadline. Keep the timeout bounded and independent of the absolute deadline. Neither heartbeat nor model uptime is attested progress. Do not add configuration, an alternate supervisor or a retry exception.
 - Reuse one default for both the watchdog and its diagnostic text. Update tests for the calibrated default, short absolute deadlines and unchanged distinction between inactivity, absolute deadline and cancellation. Keep the public API and all QA/Git checks.
 - Keep the failed 120-second acceptance evidence. Actual Qwen acceptance against the newly governed SHA remains an operator gate.
+
+#### WI-R212-04 — Standardize the engine on Python 3.14
+
+Dependencies: none
+Capabilities: development
+
+Acceptance criteria:
+
+- Restrict package metadata, development environments and CI to Python 3.14. Verify dependency installation, wheel metadata and the full offline suite.
+- Update setup and CI documentation. Retain all functional and governance coverage, stable installations and persisted state.
 
 ### QA
 

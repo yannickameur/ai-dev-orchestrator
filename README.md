@@ -153,7 +153,7 @@ voter »), et ne sont ni un travail approuvé, ni un travail en cours.
 ## Démarrage rapide
 
 Prérequis :
-- Python 3.10+ ;
+- Python 3.14 ;
 - Ralph CLI (`ralph`) installé et sur le `PATH` ;
 - Claude Code CLI et/ou Codex CLI et/ou Mistral Vibe CLI et/ou Gravity
   (`agy`), authentifiés pour les providers que vous comptez utiliser
@@ -167,7 +167,7 @@ installés. Les CLI `agy` et `vibe` doivent rester exécutables et sur le `PATH`
 Installation depuis la release publiée (GitHub Release, pas de PyPI) :
 
 ```bash
-python3 -m venv .venv
+python3.14 -m venv .venv
 source .venv/bin/activate
 pip install https://github.com/yannickameur/ai-dev-orchestrator/releases/download/v0.2.2/ai_dev_orchestrator-0.2.2-py3-none-any.whl
 ```
@@ -177,7 +177,7 @@ Installation pour le développement :
 ```bash
 git clone https://github.com/yannickameur/ai-dev-orchestrator.git
 cd ai-dev-orchestrator
-python3 -m venv .venv
+python3.14 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 ```
