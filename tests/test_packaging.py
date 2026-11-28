@@ -34,7 +34,7 @@ with (REPO_ROOT / "pyproject.toml").open("rb") as pyproject_file:
 
 def test_distribution_name_and_version():
     assert PROJECT_METADATA["name"] == "ai-dev-orchestrator"
-    assert PROJECT_METADATA["version"] == "0.2.2"
+    assert PROJECT_METADATA["version"] == "0.2.3"
 
 
 def test_no_dependency_on_third_party_orchestrator_package():
@@ -69,7 +69,7 @@ def built_wheel(tmp_path_factory) -> Path:
 
 def test_wheel_builds_with_correct_metadata(built_wheel):
     wheel_path = built_wheel
-    assert wheel_path.name.startswith("ai_dev_orchestrator-0.2.2-")
+    assert wheel_path.name.startswith("ai_dev_orchestrator-0.2.3-")
 
     with zipfile.ZipFile(wheel_path) as z:
         metadata_name = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
@@ -82,7 +82,7 @@ def test_wheel_builds_with_correct_metadata(built_wheel):
         entry_points = z.read(entry_points_names[0]).decode() if entry_points_names else ""
 
     assert metadata["Name"] == "ai-dev-orchestrator"
-    assert metadata["Version"] == "0.2.2"
+    assert metadata["Version"] == "0.2.3"
     assert set(metadata["Requires-Python"].split(",")) == {">=3.14", "<3.15"}
     for dependency in metadata.get_all("Requires-Dist", []):
         assert not dependency.lower().startswith("orchestrator")
