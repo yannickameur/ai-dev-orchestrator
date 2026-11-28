@@ -17,37 +17,28 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
+import tomllib
 import zipfile
+from email.parser import Parser
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Minimal, regex-based reads of pyproject.toml rather than tomllib: this
-# repo supports Python 3.10, where tomllib doesn't exist yet (3.11+ only)
-# and adding a tomli backport dependency just for these checks isn't
-# worth it for the handful of scalar fields below.
-
-
-def _pyproject_text() -> str:
-    return (REPO_ROOT / "pyproject.toml").read_text()
+with (REPO_ROOT / "pyproject.toml").open("rb") as pyproject_file:
+    PROJECT_METADATA = tomllib.load(pyproject_file)["project"]
 
 
 def test_distribution_name_and_version():
-    text = _pyproject_text()
-    assert re.search(r'(?m)^name\s*=\s*"ai-dev-orchestrator"\s*$', text)
-    assert re.search(r'(?m)^version\s*=\s*"0\.2\.2"\s*$', text)
+    assert PROJECT_METADATA["name"] == "ai-dev-orchestrator"
+    assert PROJECT_METADATA["version"] == "0.2.3"
 
 
 def test_no_dependency_on_third_party_orchestrator_package():
-    text = _pyproject_text()
-    deps_match = re.search(r"dependencies\s*=\s*\[(.*?)\]", text, re.S)
-    assert deps_match, "expected a top-level [project] dependencies list"
-    for dep in re.findall(r'"([^"]+)"', deps_match.group(1)):
+    for dep in PROJECT_METADATA["dependencies"]:
         assert not dep.strip().lower().startswith("orchestrator"), (
             f"unexpected dependency on third-party 'orchestrator' package: {dep!r}"
         )
@@ -56,9 +47,7 @@ def test_no_dependency_on_third_party_orchestrator_package():
 def test_no_product_console_script_declared():
     """AIDO Code, not this engine, owns the ``aido`` console script — a
     normal ``pip install ai-dev-orchestrator`` must never re-claim it."""
-    text = _pyproject_text()
-    assert "[project.scripts]" not in text
-    assert not re.search(r'(?m)^aido\s*=', text)
+    assert "scripts" not in PROJECT_METADATA
 
 
 @pytest.fixture(scope="module")
@@ -80,11 +69,11 @@ def built_wheel(tmp_path_factory) -> Path:
 
 def test_wheel_builds_with_correct_metadata(built_wheel):
     wheel_path = built_wheel
-    assert wheel_path.name.startswith("ai_dev_orchestrator-0.2.2-")
+    assert wheel_path.name.startswith("ai_dev_orchestrator-0.2.3-")
 
     with zipfile.ZipFile(wheel_path) as z:
         metadata_name = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
-        metadata = z.read(metadata_name).decode()
+        metadata = Parser().parsestr(z.read(metadata_name).decode())
 
         # No console script is declared any more (AIDO Code owns "aido") —
         # the wheel may omit entry_points.txt entirely, or ship an empty
@@ -92,11 +81,11 @@ def test_wheel_builds_with_correct_metadata(built_wheel):
         entry_points_names = [n for n in z.namelist() if n.endswith(".dist-info/entry_points.txt")]
         entry_points = z.read(entry_points_names[0]).decode() if entry_points_names else ""
 
-    assert "Name: ai-dev-orchestrator" in metadata
-    assert "Version: 0.2.2" in metadata
-    for line in metadata.splitlines():
-        if line.startswith("Requires-Dist:"):
-            assert not line[len("Requires-Dist:") :].strip().lower().startswith("orchestrator")
+    assert metadata["Name"] == "ai-dev-orchestrator"
+    assert metadata["Version"] == "0.2.3"
+    assert set(metadata["Requires-Python"].split(",")) == {">=3.14", "<3.15"}
+    for dependency in metadata.get_all("Requires-Dist", []):
+        assert not dependency.lower().startswith("orchestrator")
 
     assert "aido" not in entry_points
 

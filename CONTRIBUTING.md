@@ -5,14 +5,13 @@ and opinionated — please read this before opening a PR.
 
 ## Development setup
 
-Package requirement: Python 3.10+ (per `pyproject.toml`; developed/tested
-against 3.14). CI release checks currently validate Python 3.10 and 3.12
-(`.github/workflows/ci.yml`) — that pair is what every PR must pass.
+Python 3.14 is the only supported version. Package metadata, development
+environments and CI use that version.
 
 ```bash
 git clone https://github.com/yannickameur/ai-dev-orchestrator.git
 cd ai-dev-orchestrator
-python3 -m venv .venv
+python3.14 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 ```
@@ -58,10 +57,8 @@ into an unrelated change.
 5. Run the offline suite locally before opening a PR: `pytest`.
 6. Commit normally, then push your branch — never force-push to `main`.
 7. Open a Pull Request against `main`.
-8. The PR must be up to date with `main`, and both required GitHub
-   Actions checks must pass: `test (3.10)` and `test (3.12)`. A failed
-   required check must be fixed on the branch and rerun — never
-   bypassed.
+8. Keep the PR up to date with `main` and pass the `test (3.14)` GitHub
+   Actions check. Fix a failed check on the branch and rerun it.
 9. There is currently no mandatory human approval on PRs, because this
    project has a single maintainer today. This is intentional and may
    change once additional maintainers join.
@@ -71,13 +68,10 @@ into an unrelated change.
 
 ### Protected `main`
 
-`main` is protected by a GitHub ruleset: required CI checks (`test
-(3.10)` and `test (3.12)`, kept up to date with `main`), no force
-pushes, no branch deletion, linear history — and, today, no mandatory
-reviewer. This is the project's actual GitHub configuration, not just a
-convention. It enforces CI and history hygiene, not the use of Pull
-Requests as such — using PRs against `main` is this project's
-contribution workflow, described above.
+`main` is protected by a GitHub ruleset that requires CI and linear
+history and prevents force-pushes and branch deletion. When integrating
+the Python 3.14 workflow, update the ruleset's required checks to
+`test (3.14)` and retain the up-to-date branch requirement.
 
 ## Real worker execution and permissions
 
